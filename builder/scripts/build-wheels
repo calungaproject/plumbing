@@ -1,0 +1,141 @@
+#!/bin/bash
+set -euo pipefail
+
+# Initialize variables
+WHEEL_SERVER_URL=""
+PACKAGE=""
+
+# Help function
+show_help() {
+    cat << EOF
+Build Python wheels for a package and its dependencies.
+
+This script uses fromager to resolve dependencies, create a build order, and build
+wheels for the specified package and all its dependencies. It sets up the build
+environment, handles CA trust configuration, and outputs both source distributions
+and wheels.
+
+USAGE:
+    $0 [OPTIONS] <PACKAGE>
+
+ARGUMENTS:
+    PACKAGE                 The package to build wheels for (required)
+
+OPTIONS:
+    --cache-wheel-server-url URL    Optional wheel cache server URL for faster builds
+    --help                          Show this help message
+
+EXAMPLES:
+    $0 urllib3==2.4.0
+    $0 --cache-wheel-server-url https://wheels.example.com urllib3==2.4.0
+
+ENVIRONMENT:
+    DEBUG=1                        Enable debug mode with verbose output
+
+OUTPUT:
+    The script creates wheels and source distributions in the output directory
+    and displays the locations of built artifacts.
+EOF
+    exit 0
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help)
+            show_help
+            ;;
+        --cache-wheel-server-url)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --cache-wheel-server-url requires a value" >&2
+                exit 1
+            fi
+            WHEEL_SERVER_URL="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Error: Unknown option $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -n "$PACKAGE" ]]; then
+                echo "Error: Multiple packages specified. Only one package is allowed." >&2
+                exit 1
+            fi
+            PACKAGE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Check if required positional argument is provided
+if [[ -z "$PACKAGE" ]]; then
+    echo "Error: Package argument is required" >&2
+    echo "Use --help for usage information" >&2
+    exit 1
+fi
+
+if [ "${DEBUG:-}" = "1" ]; then
+    set -x
+fi
+
+# Logging function with timestamp
+log() {
+    echo "[$(date --utc -Ins)] $1" >&2
+}
+
+log "Setting up CA trust"
+ca_bundle=/mnt/trusted-ca/ca-bundle.crt
+if [ -f "$ca_bundle" ]; then
+    echo "INFO: Using mounted CA bundle: $ca_bundle"
+    cp -vf $ca_bundle /etc/pki/ca-trust/source/anchors
+    update-ca-trust
+fi
+
+log "Preparing build environment"
+rm -rf output
+mkdir output
+cd output
+
+log "Processing package: ${PACKAGE}"
+
+log "Resolving dependencies and creating build order"
+# Create bootstrap to resolve dependencies
+fromager_args=(
+    bootstrap
+    "${PACKAGE}"
+)
+
+# Add wheel server URL if provided
+if [ -n "$WHEEL_SERVER_URL" ]; then
+    fromager_args+=(--cache-wheel-server-url "$WHEEL_SERVER_URL")
+fi
+
+echo "Running: fromager ${fromager_args[*]}"
+fromager "${fromager_args[@]}"
+
+log "Building wheels from build order"
+
+# Build wheels using the generated build order
+fromager_build_args=(
+    build-sequence
+    work-dir/build-order.json
+)
+
+if [ -n "$WHEEL_SERVER_URL" ]; then
+    fromager_build_args+=(--cache-wheel-server-url "$WHEEL_SERVER_URL")
+fi
+
+echo "Running: fromager ${fromager_build_args[*]}"
+fromager "${fromager_build_args[@]}"
+
+log "Build completed successfully"
+
+echo 'Source Distributions:'
+find "$(pwd)/sdists-repo/builds" -type f
+
+echo 'Wheels:'
+find "$(pwd)/wheels-repo/downloads" -type f
+
+log "End build-wheels"

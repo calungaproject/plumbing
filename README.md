@@ -1,1 +1,16 @@
-# plumbing
+# Calunga Plumbing
+
+The repository provides a containerized solution for building Python wheels from source
+distributions using [Fromager](https://github.com/python-wheel-build/fromager). This is designed to
+work within trusted build environments and can be used as part of larger CI/CD pipelines.
+
+## Components
+
+### Builder Image
+
+The `builder/` directory contains everything needed to build a container image that can:
+
+- Resolve dependencies automatically using Fromager
+- Build Python wheels from source distributions
+- Handle CA trust configuration for enterprise environments
+- Output both wheels and source distributions

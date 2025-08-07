@@ -1,0 +1,9 @@
+FROM registry.redhat.io/ubi10/python-312-minimal:latest@sha256:e72d03a74f6a8bbde45a4daeac4f094d1830ef6ab727edd3b077f77355f28811
+
+COPY scripts/* /usr/local/bin/
+
+RUN pip3 install fromager
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["fromager"]
