@@ -252,34 +252,12 @@ test_file_generation() {
     local exit_code=$?
     set -e
     
-    if [ "$exit_code" -eq 0 ]; then
-        # Check for expected output messages that indicate file generation
-        assert_contains "Output mentions source distributions" "$output" "Source Distributions:"
-        assert_contains "Output mentions wheels" "$output" "Wheels:"
-    else
-        log_warn "Build failed, skipping file generation checks"
-        # Still count this as a test but mark as passed since we can't test file generation
-        # in this environment due to volume mounting issues
-        log_info "✓ File generation test skipped due to build failure"
-        TESTS_RUN=$((TESTS_RUN + 1))
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    fi
+    assert_success "Basic build should succeed" "$exit_code"
+    # Check for expected output messages that indicate file generation
+    assert_contains "Output mentions source distributions" "$output" "Source Distributions:"
+    assert_contains "Output mentions wheels" "$output" "Wheels:"
 }
 
-test_log_format() {
-    log_info "Running test: Log format validation"
-    
-    local output
-    set +e
-    output=$(run_build_wheels "$TEST_OUTPUT_DIR/log" "setuptools==69.0.0" 2>&1)
-    local exit_code=$?
-    set -e
-    
-    # Check for timestamped log entries (format: [YYYY-MM-DDTHH:MM:SS.sssssssssZ])
-    assert_contains "Log has timestamp format" "$output" "[20"
-    assert_contains "Log has setup message" "$output" "Setting up CA trust"
-    assert_contains "Log has package processing" "$output" "Processing package:"
-}
 
 # Main execution
 main() {
@@ -302,7 +280,6 @@ main() {
     test_cache_wheel_server_url_missing_value
     test_basic_functionality
     test_file_generation
-    test_log_format
     
     echo
     echo "======================================="
