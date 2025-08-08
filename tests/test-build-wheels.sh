@@ -128,18 +128,15 @@ setup() {
     # Create test output directory
     mkdir -p "$TEST_OUTPUT_DIR"
     
-    # Build the container image using test Containerfile
+    # Build the container image using builder Containerfile
     log_info "Building container image: $CONTAINER_IMAGE"
-    cd "$PROJECT_ROOT"
     
-    if podman build -t "$CONTAINER_IMAGE" -f tests/Containerfile.test .; then
+    if podman build -t "$CONTAINER_IMAGE" -f "$BUILDER_DIR/Containerfile" "$BUILDER_DIR"; then
         log_info "Container image built successfully"
     else
         log_error "Failed to build container image"
         exit 1
     fi
-    
-    cd "$SCRIPT_DIR"
 }
 
 # Helper function to run build-wheels in container
@@ -164,8 +161,10 @@ test_help_flag() {
     log_info "Running test: Help flag"
     
     local output
+    set +e
     output=$(run_build_wheels "$TEST_OUTPUT_DIR/help" --help)
     local exit_code=$?
+    set -e
     
     assert_success "Help flag exits successfully" "$exit_code"
     assert_contains "Help contains usage information" "$output" "USAGE:"
@@ -235,11 +234,6 @@ test_basic_functionality() {
     output=$(run_build_wheels "$test_dir" "setuptools==69.0.0" 2>&1)
     local exit_code=$?
     set -e
-    
-    if [ "$exit_code" -ne 0 ]; then
-        log_error "Build failed with output:"
-        echo "$output" | head -50
-    fi
     
     assert_success "Basic build should succeed" "$exit_code"
     assert_contains "Log contains build completion" "$output" "Build completed successfully"
