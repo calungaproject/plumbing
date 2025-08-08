@@ -1,0 +1,12 @@
+FROM python:3.12-slim
+
+# Install fromager and dependencies
+RUN pip3 install fromager
+
+# Copy the build-wheels script
+COPY builder/scripts/* /usr/local/bin/
+
+# Set environment
+ENV PYTHONUNBUFFERED=1
+
+CMD ["fromager"]
