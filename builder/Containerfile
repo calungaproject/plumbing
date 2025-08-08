@@ -2,7 +2,6 @@ FROM registry.redhat.io/ubi10/python-312-minimal:latest@sha256:e72d03a74f6a8bbde
 
 COPY scripts/* /usr/local/bin/
 
-RUN pip3 install fromager
 
 ENV PYTHONUNBUFFERED=1
 
