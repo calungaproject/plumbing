@@ -4,21 +4,41 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Cache Podman
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/share/containers
+        key: ${{ runner.os }}-podman-${{ hashFiles('builder/Dockerfile') }}
+        restore-keys: |
+          ${{ runner.os }}-podman-
+      
     - name: Install Podman
       run: |
         sudo apt-get update
-        sudo apt-get install -y podman
+        sudo apt-get install -y podman=3.4.4+ds1-1ubuntu1.22.04.2 || sudo apt-get install -y podman
         
     - name: Run test suite
       run: |
         chmod +x tests/test-build-wheels.sh
         ./tests/test-build-wheels.sh
+        
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: tests/test-output/
+        retention-days: 7
