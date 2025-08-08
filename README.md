@@ -8,7 +8,7 @@ work within trusted build environments and can be used as part of larger CI/CD p
 
 ### Builder Image
 
-The `builder/` directory contains everything needed to build a container image that can:
+The [builder](./builder) directory contains everything needed to build a container image that can:
 
 - Resolve dependencies automatically using Fromager
 - Build Python wheels from source distributions
