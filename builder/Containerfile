@@ -1,9 +1,50 @@
-FROM registry.redhat.io/ubi10/python-312-minimal:latest@sha256:e72d03a74f6a8bbde45a4daeac4f094d1830ef6ab727edd3b077f77355f28811
+# This Containerfile is inspired by the Containerfile used by Hermeto:
+#   https://github.com/hermetoproject/hermeto/blob/main/Dockerfile
+
+FROM registry.access.redhat.com/ubi10/ubi:latest as ubi
+
+########################
+# PREPARE OUR BASE IMAGE
+########################
+FROM ubi as base
+RUN dnf -y install \
+    --setopt install_weak_deps=0 \
+    --nodocs \
+    python3 \
+    && dnf clean all
+
+###############
+# BUILD/INSTALL
+###############
+FROM base as builder
+WORKDIR /src
+RUN dnf -y install \
+    --setopt install_weak_deps=0 \
+    --nodocs \
+    python3-devel \
+    python3-pip \
+    python3-setuptools \
+    && dnf clean all
+
+COPY requirements.txt .
+RUN python3 -m venv /venv && \
+    /venv/bin/pip install --upgrade pip && \
+    /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
+
+##########################
+# ASSEMBLE THE FINAL IMAGE
+##########################
+FROM base
+LABEL maintainer="Red Hat"
+
+COPY --from=builder /venv /venv
 
 COPY scripts/* /usr/local/bin/
 
-RUN pip3 install fromager
+RUN ln -s /venv/bin/fromager /usr/local/bin/fromager
 
+# Force the stdout and stderr streams to be unbuffered.
+# https://docs.python.org/3/using/cmdline.html#envvar-PYTHONUNBUFFERED
 ENV PYTHONUNBUFFERED=1
 
 CMD ["fromager"]
