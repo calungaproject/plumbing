@@ -18,17 +18,9 @@ RUN dnf -y install \
 ###############
 FROM base as builder
 WORKDIR /src
-RUN dnf -y install \
-    --setopt install_weak_deps=0 \
-    --nodocs \
-    python3-devel \
-    python3-pip \
-    python3-setuptools \
-    && dnf clean all
 
 COPY requirements.txt .
 RUN python3 -m venv /venv && \
-    /venv/bin/pip install --upgrade pip && \
     /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
 
 ##########################
@@ -41,7 +33,9 @@ COPY --from=builder /venv /venv
 
 COPY scripts/* /usr/local/bin/
 
-RUN ln -s /venv/bin/fromager /usr/local/bin/fromager
+RUN \
+    ln -s /venv/bin/fromager /usr/local/bin/fromager && \
+    ln -s /venv/bin/wheel /usr/local/bin/wheel
 
 # Force the stdout and stderr streams to be unbuffered.
 # https://docs.python.org/3/using/cmdline.html#envvar-PYTHONUNBUFFERED
