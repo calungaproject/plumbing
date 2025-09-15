@@ -1,0 +1,169 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-python-wheels-ta
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: python, wheels, fromager, konflux
+  labels:
+    app.kubernetes.io/version: "0.1"
+spec:
+  description: >-
+    Build Python wheels using Fromager and push them as an OCI artifact.
+
+    This task uses Fromager to build Python wheels from source distributions, resolving dependencies automatically. The built wheels are packaged as an OCI artifact and pushed to a registry.
+  params:
+    - name: PACKAGES
+      description: >-
+        List of packages to be built. Each is expected to be pinned to a version, e.g. ["urllib3==2.5.0", "numpy==2.3.1"]
+      type: array
+    - name: IMAGE
+      description: Reference of the OCI artifact to be produced.
+      type: string
+    - name: IMAGE_EXPIRES_AFTER
+      description: >-
+        Delete image tag after specified time. Empty means to keep the image tag. Time values could be something like 1h, 2d, 3w for hours, days, and weeks, respectively.
+      type: string
+      default: ""
+    - name: SOURCE_ARTIFACT
+      description: >-
+        The Trusted Artifact URI pointing to the artifact with the application source code.
+      type: string
+    - name: caTrustConfigMapKey
+      description: The name of the key in the ConfigMap that contains the CA bundle data.
+      type: string
+      default: ca-bundle.crt
+    - name: caTrustConfigMapName
+      description: The name of the ConfigMap to read CA bundle data from.
+      type: string
+      default: trusted-ca
+    # TODO: We want to hard-code the fromager image instead.
+    - name: FROMAGER_IMAGE
+      description: Container image with Fromager tool installed
+      type: string
+      default: registry.gitlab.com/redhat/rhel-ai/wheels/wheels/onboarder:latest
+    - name: WHEEL_SERVER_URL
+      description: Optional wheel server URL for prebuilt wheel lookup
+      type: string
+      default: ""
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the OCI-Artifact just built
+    - name: IMAGE_URL
+      description: OCI-Artifact repository and tag where the built OCI-Artifact was pushed
+    - name: IMAGE_REF
+      description: OCI-Artifact reference of the built OCI-Artifact
+  volumes:
+    - name: trusted-ca
+      configMap:
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        name: $(params.caTrustConfigMapName)
+        optional: true
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    computeResources:
+      limits:
+        memory: 4Gi
+      requests:
+        cpu: "1"
+        memory: 1Gi
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:2712c8a6453fc9db5fc4c2d9d952554a4eea46d2fdba47a272b79fa07f8c8c40
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+    - name: build-wheels
+      image: $(params.FROMAGER_IMAGE)
+      # TODO: Pull policy should come from a parameter?
+      imagePullPolicy: Always
+      workingDir: /var/workdir
+      volumeMounts:
+        - mountPath: /mnt/trusted-ca
+          name: trusted-ca
+          readOnly: true
+      command:
+        - build-wheels
+      args:
+        - $(params.PACKAGES[*])
+        - --cache-wheel-server-url
+        - $(params.WHEEL_SERVER_URL)
+    - name: collect-build-files
+      image: $(params.FROMAGER_IMAGE)
+      # TODO: Pull policy should come from a parameter?
+      imagePullPolicy: Always
+      workingDir: /var/workdir
+      command:
+        - collect-build-files
+      args:
+        - /var/workdir/output
+        - /var/workdir/artifact
+    - name: create-oci-artifact
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      workingDir: /var/workdir
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: IMAGE
+          value: $(params.IMAGE)
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.IMAGE_EXPIRES_AFTER)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "[$(date --utc -Ins)] Pushing OCI artifact"
+
+        select-oci-auth "$IMAGE" > auth.json
+        AUTHFILE="$(realpath auth.json)"
+
+        EXPIRE_LABEL=()
+        [ -n "$IMAGE_EXPIRES_AFTER" ] && EXPIRE_LABEL=("--annotation" "quay.expires-after=$IMAGE_EXPIRES_AFTER")
+
+        # Change into artifact directory for proper manifest structure
+        cd artifact
+
+        echo "Pushing OCI artifact to ${IMAGE}"
+        if ! retry oras push "$IMAGE" \
+          --registry-config "${AUTHFILE}" \
+          "${EXPIRE_LABEL[@]}" \
+          --artifact-type "application/vnd.python.wheels" \
+          *
+        then
+          echo "Failed to push OCI artifact ${IMAGE} to registry"
+          exit 1
+        fi
+
+        if ! RESULTING_DIGEST=$(retry oras resolve \
+          --registry-config "${AUTHFILE}" "${IMAGE}")
+        then
+          echo "Failed to get digest for ${IMAGE} from registry"
+          exit 1
+        fi
+
+        echo -n "$IMAGE" | tee "$(results.IMAGE_URL.path)"
+        echo -n "$RESULTING_DIGEST" | tee "$(results.IMAGE_DIGEST.path)"
+        echo -n "${IMAGE}@${RESULTING_DIGEST}" | tee "$(results.IMAGE_REF.path)"
+
+        echo "[$(date --utc -Ins)] End create-oci-artifact"
+      computeResources:
+        limits:
+          memory: 1Gi
+        requests:
+          cpu: "1"
+          memory: 1Gi

@@ -1,0 +1,118 @@
+#!/bin/bash
+set -euo pipefail
+
+SOURCE=""
+DESTINATION=""
+
+# Help function
+show_help() {
+    cat << EOF
+Collect build files produced by Fromager into a single directory.
+
+USAGE:
+    $0 [OPTIONS] SOURCE DESTINATION
+
+ARGUMENTS:
+    SOURCE                 The high-level Fromager output directory containing wheels, sdists, build
+                           sequence summary, and other files.
+    DESTINATION            The destination directory to copy the Fromager output to. Directory is
+                           created if it does not exist, or cleared otherwise.
+
+OPTIONS:
+    --help                          Show this help message
+
+EXAMPLES:
+    $0 /tmp/build-output /tmp/artifact
+
+ENVIRONMENT:
+    DEBUG=1                        Enable debug mode with verbose output
+
+OUTPUT:
+    The script looks for wheels, sdists, and the build sequence summary produced by Fromager into
+    a single directory. This is meant to facilitate creating an OCI artifact for those files.
+EOF
+    exit 0
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help)
+            show_help
+            ;;
+        -*)
+            echo "Error: Unknown option $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$SOURCE" ]]; then
+                SOURCE="$1"
+                shift
+            elif [[ -z "$DESTINATION" ]]; then
+                DESTINATION="$1"
+                shift
+            else
+                echo 'Error: Unexpected number of parameters.' >&2
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# Check if required positional argument is provided
+if [[ -z "$SOURCE" || -z "$DESTINATION" ]]; then
+    echo 'Error: SOURCE and DESTINATION are both required.' >&2
+    exit 1
+fi
+
+if [[ ! -d "${SOURCE}" ]]; then
+    echo "Error: SOURCE directory ${SOURCE} does not exist" >&2
+    exit 1
+fi
+
+if [ "${DEBUG:-}" = "1" ]; then
+    set -x
+fi
+
+# Logging function with timestamp
+log() {
+    echo "[$(date --utc -Ins)] $1" >&2
+}
+
+log "Collecting build files..."
+
+# Ensure output directory is clear
+rm -rf "${DESTINATION}/{*,.*}" && mkdir -p "${DESTINATION}"
+
+# TODO: The "downloads" name in the path is a misnomer. Those are actually built wheels.
+WHEELS_DIR="${SOURCE}/wheels-repo/downloads"
+# Copy all built wheels
+if [ -d "${WHEELS_DIR}" ]; then
+    find "${WHEELS_DIR}" -name '*.whl' -type f -exec cp {} "${DESTINATION}/" \;
+fi
+
+SDISTS_DIR="${SOURCE}/sdists-repo/builds"
+# Copy any source distributions
+if [ -d "${SDISTS_DIR}" ]; then
+    find "${SDISTS_DIR}" -name '*.tar.gz' -type f \
+    -exec cp {} "${DESTINATION}/" \; || true
+fi
+
+BUILD_SEQUENCE="${SOURCE}/work-dir/build-sequence-summary.json"
+# Copy build sequence if available
+if [ -f "${BUILD_SEQUENCE}" ]; then
+    cp "${BUILD_SEQUENCE}" "${DESTINATION}/"
+fi
+
+COPIED="$(find "${DESTINATION}" -type f)"
+# Verify we have content to push
+if [ -z "$COPIED" ]; then
+    log "ERROR: No files collected"
+    exit 1
+fi
+
+log "Collected files:"
+echo "${COPIED}" | sort
+
+log "End collect-build-files"
