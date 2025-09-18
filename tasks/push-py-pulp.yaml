@@ -1,0 +1,105 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: push-py-pulp
+spec:
+  description: |
+    Push Python packages from an OCI artifact to a Pulp repository.
+  params:
+    - name: SNAPSHOT_PATH
+      type: string
+      description: Path to the snapshot spec file containing image information
+    - name: PULP_SECRET_NAME
+      type: string
+      description: >-
+        The name of the secret containing the Pulp credentials. It must have the cert and key data
+        attributes.
+      default: pulp-credentials
+    - name: PULP_BASE_URL
+      type: string
+      description: The base URL of the Pulp server
+    - name: PULP_API_ROOT
+      type: string
+      description: The API root path of the Pulp server
+      default: "/api/pulp/"
+    - name: PULP_DOMAIN
+      type: string
+      description: The domain to use for Pulp operations
+    - name: PULP_REPOSITORY
+      type: string
+    - name: sourceDataArtifact
+      type: string
+      description: Trusted Artifact to use to obtain the Snapshot
+    - name: TRUSTED_ARTIFACTS_EXTRACT_DIR
+      description: Directory to use to extract trusted artifact archive.
+      type: string
+      # need to specify a subfolder during the extract to avoid the error:
+      # tar: .: Cannot change mode to rwxr-sr-x: Operation not permitted
+      default: "/var/workdir/ta"
+  volumes:
+    - name: pulp-secret
+      secret:
+        secretName: $(params.PULP_SECRET_NAME)
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    env:
+      - name: SNAPSHOT_PATH
+        value: $(params.SNAPSHOT_PATH)
+      - name: PULP_BASE_URL
+        value: $(params.PULP_BASE_URL)
+      - name: PULP_API_ROOT
+        value: $(params.PULP_API_ROOT)
+      - name: PULP_DOMAIN
+        value: $(params.PULP_DOMAIN)
+      - name: PULP_REPOSITORY
+        value: $(params.PULP_REPOSITORY)
+      - name: IMAGES_TXT
+        value: /var/workdir/images.txt
+      - name: FILES_DIR
+        value: /var/workdir/files
+      - name: TRUSTED_ARTIFACTS_EXTRACT_DIR
+        value: $(params.TRUSTED_ARTIFACTS_EXTRACT_DIR)
+    volumeMounts:
+      - name: pulp-secret
+        mountPath: "/etc/pulp-secret"
+        readOnly: true
+      - name: workdir
+        mountPath: "/var/workdir"
+    workingDir: "/var/workdir"
+  steps:
+    - name: use-trusted-artifact
+      args:
+        - use
+        - $(params.sourceDataArtifact)=$(params.TRUSTED_ARTIFACTS_EXTRACT_DIR)
+      computeResources: {}
+      image: quay.io/redhat-appstudio/build-trusted-artifacts:e02102ede09aa07187cba066ad547a54724e5cf4
+    - name: get-image-urls
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        < "${TRUSTED_ARTIFACTS_EXTRACT_DIR}/${SNAPSHOT_PATH}" jq -r '.components[].containerImage' | tee "${IMAGES_TXT}"
+
+    - name: extract-artifacts
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        AUTHFILE='/tmp/auth.json'
+        mkdir -p "${FILES_DIR}"
+        while read -r IMAGE; do
+          echo "Processing ${IMAGE}"
+          select-oci-auth "${IMAGE}" > "${AUTHFILE}"
+          retry oras pull --registry-config "${AUTHFILE}" "${IMAGE}" -o "${FILES_DIR}"
+        done < "${IMAGES_TXT}"
+
+        ls -la "${FILES_DIR}"
+
+    # TODO: Use nudging to keep this up to date.
+    - name: upload
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:5e154f2f21a881f6a17d8588b8c2ad0a048370d205a3a222dcf59d6af41f5f58
+      command:
+        - pulp-upload

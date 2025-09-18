@@ -1,0 +1,32 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: get-config
+spec:
+  description: |
+    Expose values of the release pipeline ConfigMap as Tekton results
+  params:
+    - name: configMapName
+      type: string
+      description: Name of the ConfigMap
+  results:
+    - name: ociStorage
+      type: string
+  volumes:
+    - name: release-pipeline-config
+      configMap:
+        name: $(params.configMapName)
+  stepTemplate:
+    volumeMounts:
+      - name: release-pipeline-config
+        mountPath: /etc/release-pipeline-config
+        readOnly: true
+  steps:
+    - name: map-config
+      image: registry.access.redhat.com/ubi10/ubi:latest
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        ls -la /etc/release-pipeline-config
+        cp /etc/release-pipeline-config/ociStorage "$(results.ociStorage.path)"
