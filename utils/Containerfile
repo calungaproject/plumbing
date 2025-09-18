@@ -31,7 +31,7 @@ LABEL maintainer="Red Hat"
 
 COPY --from=builder /venv /venv
 
-# COPY scripts/* /usr/local/bin/
+COPY scripts/* /usr/local/bin/
 
 RUN ln -s /venv/bin/pulp /usr/local/bin/pulp
 
