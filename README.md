@@ -14,3 +14,8 @@ The [builder](./builder) directory contains everything needed to build a contain
 - Build Python wheels from source distributions
 - Handle CA trust configuration for enterprise environments
 - Output both wheels and source distributions
+
+## Utils Image
+
+The [utils](./utils) directory is the source for the calunga utils image. This image is used for
+various purposes, including releasing content to a pulp repository.

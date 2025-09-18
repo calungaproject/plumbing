@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+cd "${FILES_DIR}"
+ls -la .
+
+pulp --help
+
+for pkg in *; do
+    if [ -f "$pkg" ]; then
+    echo "Uploading $pkg..."
+    pulp --base-url "${PULP_BASE_URL}" --api-root "${PULP_API_ROOT}" --domain "${PULP_DOMAIN}" \
+        --cert /etc/pulp-secret/cert --key /etc/pulp-secret/key \
+        python content upload \
+        --relative-path "$(basename ${pkg})" --file "${pkg}" --repository "${PULP_REPOSITORY}"
+    fi
+done
+
+# TODO: Echo the index URL, e.g https://console.redhat.com/api/pulp-content/public-calunga/mypypi/simple
