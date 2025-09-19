@@ -81,8 +81,7 @@ spec:
           - name: url
             value: https://github.com/calungaproject/plumbing.git
           - name: revision
-            # TODO: Update to main
-            value: add-release-task-pipeline
+            value: main
           - name: pathInRepo
             value: tasks/get-config.yaml
       params:
@@ -190,8 +189,7 @@ spec:
           - name: url
             value: https://github.com/calungaproject/plumbing.git
           - name: revision
-            # TODO: Update to main
-            value: add-release-task-pipeline
+            value: main
           - name: pathInRepo
             value: tasks/push-py-pulp.yaml
       params:
