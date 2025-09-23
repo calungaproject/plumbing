@@ -100,6 +100,6 @@ spec:
 
     # TODO: Use nudging to keep this up to date.
     - name: upload
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:5e154f2f21a881f6a17d8588b8c2ad0a048370d205a3a222dcf59d6af41f5f58
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:ce1e7cdf0c9281370c7fd6ed98944247ca744d8a6ca761968df6373639526776
       command:
         - pulp-upload
