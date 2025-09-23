@@ -2,7 +2,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: build-python-wheels-ta
+  name: build-python-wheels-oci-ta
   annotations:
     tekton.dev/pipelines.minVersion: 0.12.1
     tekton.dev/tags: python, wheels, fromager, konflux
