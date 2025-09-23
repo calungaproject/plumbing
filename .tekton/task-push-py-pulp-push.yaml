@@ -25,6 +25,8 @@ spec:
       value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp:{{revision}}
     - name: dockerfile
       value: Dockerfile
+    - name: path-context
+      value: tasks/push-py-pulp.yaml
   taskRunTemplate:
     serviceAccountName: build-pipeline-task-push-py-pulp
   workspaces:

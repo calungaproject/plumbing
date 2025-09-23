@@ -28,6 +28,8 @@ spec:
       value: 5d
     - name: dockerfile
       value: Dockerfile
+    - name: path-context
+      value: tasks/push-py-pulp.yaml
   taskRunTemplate:
     serviceAccountName: build-pipeline-task-push-py-pulp
   workspaces:
