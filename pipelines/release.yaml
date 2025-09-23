@@ -76,14 +76,14 @@ spec:
 
     - name: config
       taskRef:
-        resolver: "git"
         params:
-          - name: url
-            value: https://github.com/calungaproject/plumbing.git
-          - name: revision
-            value: main
-          - name: pathInRepo
-            value: tasks/get-config.yaml
+        - name: name
+          value: get-config
+        - name: bundle
+          value: quay.io/redhat-user-workloads/calunga-tenant/task-get-config@sha256:79f1324bdac7a2ce07fa8af59d2420d603ed306e08e5cd0f80b7b2ee8739534c
+        - name: kind
+          value: task
+        resolver: bundles
       params:
         - name: configMapName
           value: $(params.config)
@@ -184,14 +184,14 @@ spec:
 
     - name: push-py-pulp
       taskRef:
-        resolver: "git"
+        resolver: bundles
         params:
-          - name: url
-            value: https://github.com/calungaproject/plumbing.git
-          - name: revision
-            value: main
-          - name: pathInRepo
-            value: tasks/push-py-pulp.yaml
+        - name: name
+          value: get-config
+        - name: bundle
+          value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:4dec19b196f15c10cf171a1c72b651076d88246df547a6345fb8a624f467fbf4
+        - name: kind
+          value: task
       params:
         - name: SNAPSHOT_PATH
           value: $(tasks.collect-data.results.snapshotSpec)
