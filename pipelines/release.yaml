@@ -52,6 +52,7 @@ spec:
     - name: taskGitRevision
       type: string
       description: The revision in the taskGitUrl repo to be used. This is currently ignored.
+      default: ignored
     # TODO: Some of these should probably come from the RP or RPA.
     - name: pulpBaseUrl
       type: string
