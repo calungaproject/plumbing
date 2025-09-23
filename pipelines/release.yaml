@@ -187,7 +187,7 @@ spec:
         resolver: bundles
         params:
         - name: name
-          value: get-config
+          value: push-py-pulp
         - name: bundle
           value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:4dec19b196f15c10cf171a1c72b651076d88246df547a6345fb8a624f467fbf4
         - name: kind
