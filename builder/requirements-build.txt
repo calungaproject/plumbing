@@ -114,7 +114,7 @@ hatchling==1.27.0 \
     #   typing-inspection
     #   urllib3
     #   virtualenv
-maturin==1.9.3 \
+maturin==1.9.4 \
     --hash=sha256:267ac8d0471d1ee2320b8b2ee36f400a32cd2492d7becbd0d976bd3503c2f69b \
     --hash=sha256:30dae97d78fd8dc0a5648bf3f051581ea3a3cbfd93e20a368d48d00c464e3b3a \
     --hash=sha256:3dbd698ddc8ebd415ed9f5558730677b6b07984e19769c8194c249145d19aa14 \
