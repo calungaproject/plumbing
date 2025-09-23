@@ -38,11 +38,6 @@ spec:
       description: The name of the ConfigMap to read CA bundle data from.
       type: string
       default: trusted-ca
-    # TODO: We want to hard-code the fromager image instead.
-    - name: FROMAGER_IMAGE
-      description: Container image with Fromager tool installed
-      type: string
-      default: registry.gitlab.com/redhat/rhel-ai/wheels/wheels/onboarder:latest
     - name: WHEEL_SERVER_URL
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
@@ -86,9 +81,7 @@ spec:
           readOnly: true
           subPath: ca-bundle.crt
     - name: build-wheels
-      image: $(params.FROMAGER_IMAGE)
-      # TODO: Pull policy should come from a parameter?
-      imagePullPolicy: Always
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:bdfd4dd99bdb4d87bf9f181fb87d8b210f70a0dd0511e287bbbd1f422f9b9ecd
       workingDir: /var/workdir
       volumeMounts:
         - mountPath: /mnt/trusted-ca
@@ -101,9 +94,7 @@ spec:
         - --cache-wheel-server-url
         - $(params.WHEEL_SERVER_URL)
     - name: collect-build-files
-      image: $(params.FROMAGER_IMAGE)
-      # TODO: Pull policy should come from a parameter?
-      imagePullPolicy: Always
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:bdfd4dd99bdb4d87bf9f181fb87d8b210f70a0dd0511e287bbbd1f422f9b9ecd
       workingDir: /var/workdir
       command:
         - collect-build-files
