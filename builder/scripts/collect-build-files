@@ -99,11 +99,9 @@ if [ -d "${SDISTS_DIR}" ]; then
     -exec cp {} "${DESTINATION}/" \; || true
 fi
 
-BUILD_SEQUENCE="${SOURCE}/work-dir/build-sequence-summary.json"
-# Copy build sequence if available
-if [ -f "${BUILD_SEQUENCE}" ]; then
-    cp "${BUILD_SEQUENCE}" "${DESTINATION}/"
-fi
+# Copy all build sequence summary files (one per package)
+find "${SOURCE}" -maxdepth 1 -name 'build-sequence-summary-*.json' -type f \
+    -exec cp {} "${DESTINATION}/" \; || true
 
 COPIED="$(find "${DESTINATION}" -type f)"
 # Verify we have content to push

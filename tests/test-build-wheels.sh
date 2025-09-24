@@ -194,7 +194,7 @@ test_missing_package() {
     set -e
 
     assert_failure "Missing package should fail" "$exit_code"
-    assert_contains "Error message for missing package" "$output" "Package argument is required"
+    assert_contains "Error message for missing package" "$output" "At least one package argument is required"
 }
 
 test_multiple_packages() {
@@ -202,12 +202,17 @@ test_multiple_packages() {
 
     local output
     set +e
-    output=$(run_build_wheels "$TEST_OUTPUT_DIR/multiple" package1 package2 2>&1)
+    # Use real packages for the test - setuptools and wheel are core Python infrastructure
+    # packages that are stable and unlikely to become unavailable. Using real packages
+    # ensures we test actual functionality rather than mocked behavior.
+    output=$(run_build_wheels "$TEST_OUTPUT_DIR/multiple" "setuptools==69.0.0" "wheel==0.42.0" 2>&1)
     local exit_code=$?
     set -e
-
-    assert_failure "Multiple packages should fail" "$exit_code"
-    assert_contains "Error message for multiple packages" "$output" "Multiple packages specified"
+    
+    assert_success "Multiple packages should succeed" "$exit_code"
+    assert_contains "Build completion message" "$output" "Build completed successfully"
+    assert_contains "Multiple package processing" "$output" "Processing package: setuptools==69.0.0"
+    assert_contains "Multiple package processing" "$output" "Processing package: wheel==0.42.0"
 }
 
 test_cache_wheel_server_url_missing_value() {
@@ -258,6 +263,25 @@ test_file_generation() {
     assert_contains "Output mentions wheels" "$output" "Wheels:"
 }
 
+test_build_sequence_summaries() {
+    log_info "Running test: Build sequence summaries for multiple packages"
+    
+    local test_dir="$TEST_OUTPUT_DIR/summaries"
+    local output
+    
+    # Run a build with multiple packages to test build sequence summary handling
+    set +e
+    output=$(run_build_wheels "$test_dir" "setuptools==69.0.0" "wheel==0.42.0" 2>&1)
+    local exit_code=$?
+    set -e
+    
+    assert_success "Multiple packages build should succeed" "$exit_code"
+    # Check that build sequence summaries are mentioned in output
+    assert_contains "Output mentions build sequence summaries" "$output" "Build Sequence Summaries:"
+    assert_contains "Summary for first package" "$output" "build-sequence-summary-setuptools__69.0.0.json"
+    assert_contains "Summary for second package" "$output" "build-sequence-summary-wheel__0.42.0.json"
+}
+
 
 # Main execution
 main() {
@@ -280,7 +304,7 @@ main() {
     test_cache_wheel_server_url_missing_value
     test_basic_functionality
     test_file_generation
-
+    test_build_sequence_summaries
     echo
     echo "======================================="
     echo "  Test Results"
