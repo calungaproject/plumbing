@@ -148,11 +148,9 @@ for PACKAGE in "${PACKAGES[@]}"; do
     # Save build sequence summary before clearing work-dir
     save_build_sequence_summary "$PACKAGE"
 
-    # Clear work-dir for next package (but preserve sdists-repo and wheels-repo)
-    if [ "${#PACKAGES[@]}" -gt 1 ] && [ "$PACKAGE" != "${PACKAGES[-1]}" ]; then
-        log "Clearing work-dir for next package (preserving sdists-repo and wheels-repo)"
-        rm -rf work-dir
-    fi
+    # Clear work-dir after processing package (but preserve sdists-repo and wheels-repo)
+    log "Clearing work-dir after processing $PACKAGE (preserving sdists-repo and wheels-repo)"
+    rm -rf work-dir
 done
 
 log "Build completed successfully"
