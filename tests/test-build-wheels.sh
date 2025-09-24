@@ -202,7 +202,9 @@ test_multiple_packages() {
 
     local output
     set +e
-    # Use real packages for the test
+    # Use real packages for the test - setuptools and wheel are core Python infrastructure
+    # packages that are stable and unlikely to become unavailable. Using real packages
+    # ensures we test actual functionality rather than mocked behavior.
     output=$(run_build_wheels "$TEST_OUTPUT_DIR/multiple" "setuptools==69.0.0" "wheel==0.42.0" 2>&1)
     local exit_code=$?
     set -e

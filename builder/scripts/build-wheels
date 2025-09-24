@@ -36,7 +36,12 @@ ENVIRONMENT:
 
 OUTPUT:
     The script creates wheels and source distributions in the output directory
-    and displays the locations of built artifacts.
+    and displays the locations of built artifacts. When building multiple packages,
+    a separate build-sequence-summary-<package>.json file is generated for each package.
+
+BEHAVIOR:
+    In multi-package mode, if any package fails to build, the script will exit
+    immediately without processing remaining packages (fail-fast behavior).
 EOF
     exit 0
 }
