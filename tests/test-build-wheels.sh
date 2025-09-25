@@ -259,8 +259,8 @@ test_file_generation() {
 
     assert_success "Basic build should succeed" "$exit_code"
     # Check for expected output messages that indicate file generation
-    assert_contains "Output mentions source distributions" "$output" "Source Distributions:"
-    assert_contains "Output mentions wheels" "$output" "Wheels:"
+    assert_contains "Output mentions source distributions" "$output" "./sdists-repo/downloads/setuptools-69.0.0.tar.gz"
+    assert_contains "Output mentions wheels" "$output" "./wheels-repo/downloads/setuptools-69.0.0-0-py3-none-any.whl"
 }
 
 test_build_sequence_summaries() {
@@ -277,9 +277,8 @@ test_build_sequence_summaries() {
     
     assert_success "Multiple packages build should succeed" "$exit_code"
     # Check that build sequence summaries are mentioned in output
-    assert_contains "Output mentions build sequence summaries" "$output" "Build Sequence Summaries:"
-    assert_contains "Summary for first package" "$output" "build-sequence-summary-setuptools__69.0.0.json"
-    assert_contains "Summary for second package" "$output" "build-sequence-summary-wheel__0.42.0.json"
+    assert_contains "Summary for first package" "$output" "./build-sequence-summary-setuptools__69.0.0.json"
+    assert_contains "Summary for second package" "$output" "./build-sequence-summary-wheel__0.42.0.json"
 }
 
 
