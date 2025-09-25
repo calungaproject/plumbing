@@ -109,7 +109,7 @@ filelock==3.18.0 \
     --hash=sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2 \
     --hash=sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de
     # via virtualenv
-fromager==0.56.0 \
+fromager==0.67.1 \
     --hash=sha256:24470c17db5f89f59c8c821d37c4515b45213cc5551cdd842f2500547d91eb59 \
     --hash=sha256:8805c1bb275824ebb38d9964b413d9f209de7411700777ff56e5cce5b7a9e48f
     # via -r builder/requirements.in
