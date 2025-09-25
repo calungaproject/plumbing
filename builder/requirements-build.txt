@@ -220,7 +220,7 @@ types-psutil==7.0.0.20250822 \
     --hash=sha256:226cbc0c0ea9cc0a50b8abcc1d91a26c876dcb40be238131f697883690419698 \
     --hash=sha256:81c82f01aba5a4510b9d8b28154f577b780be75a08954aed074aa064666edc09
     # via mypy
-types-setuptools==80.9.0.20250801 \
+types-setuptools==80.9.0.20250822 \
     --hash=sha256:e1e92682fa07226415396bb4e2d31f116a16ffbe583b05b01f9910fcdea3b7e8 \
     --hash=sha256:ec908f825134af3964932e6b011dce90f54c291015139cd9cdf79741b7d31b3c
     # via mypy
