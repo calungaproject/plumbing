@@ -105,7 +105,7 @@ elfdeps==0.2.0 \
     --hash=sha256:8df0b4f0deceae9faf37bf5f1ad1b46fa5bc7c1731d016df0bdec2513ec82750 \
     --hash=sha256:d99002612d9e08548e14dda6396c7146071cf4150d674eb98f4ced0ea052968b
     # via fromager
-filelock==3.18.0 \
+filelock==3.19.1 \
     --hash=sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2 \
     --hash=sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de
     # via virtualenv
