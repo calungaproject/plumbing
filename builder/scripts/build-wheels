@@ -105,7 +105,7 @@ cd output
 save_build_sequence_summary() {
     local package="$1"
     local summary_file="work-dir/build-sequence-summary.json"
-    
+
     if [ -f "$summary_file" ]; then
         # Create a package-specific filename
         local safe_package_name=$(echo "$package" | sed 's/[^a-zA-Z0-9._-]/_/g')
@@ -160,18 +160,7 @@ done
 
 log "Build completed successfully"
 
-echo 'Source Distributions:'
-find "$(pwd)/sdists-repo/builds" -type f 2>/dev/null || echo "No source distributions found"
-
-echo 'Wheels:'
-find "$(pwd)/wheels-repo/downloads" -type f 2>/dev/null || echo "No wheels found"
-
-# Show build sequence summaries if any were saved
-if [ ${#BUILD_SEQUENCE_SUMMARIES[@]} -gt 0 ]; then
-    echo 'Build Sequence Summaries:'
-    for summary in "${BUILD_SEQUENCE_SUMMARIES[@]}"; do
-        echo "$(pwd)/$summary"
-    done
-fi
+log "Files:"
+find . -type f -exec sha256sum {} \;
 
 log "End build-wheels"

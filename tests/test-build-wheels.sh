@@ -148,9 +148,9 @@ run_build_wheels() {
     # Ensure output directory exists
     mkdir -p "$output_dir"
 
-    # For now, run the script without volume mounting to avoid permission issues
-    # We'll focus on testing the script logic rather than file output validation
     podman run --rm \
+        -v "${output_dir}:/mnt/workdir:z" \
+        --workdir '/mnt/workdir' \
         "$CONTAINER_IMAGE" \
         build-wheels "${args[@]}" 2>&1
 }
@@ -208,7 +208,7 @@ test_multiple_packages() {
     output=$(run_build_wheels "$TEST_OUTPUT_DIR/multiple" "setuptools==69.0.0" "wheel==0.42.0" 2>&1)
     local exit_code=$?
     set -e
-    
+
     assert_success "Multiple packages should succeed" "$exit_code"
     assert_contains "Build completion message" "$output" "Build completed successfully"
     assert_contains "Multiple package processing" "$output" "Processing package: setuptools==69.0.0"
@@ -259,27 +259,26 @@ test_file_generation() {
 
     assert_success "Basic build should succeed" "$exit_code"
     # Check for expected output messages that indicate file generation
-    assert_contains "Output mentions source distributions" "$output" "Source Distributions:"
-    assert_contains "Output mentions wheels" "$output" "Wheels:"
+    assert_contains "Output mentions source distributions" "$output" "./sdists-repo/downloads/setuptools-69.0.0.tar.gz"
+    assert_contains "Output mentions wheels" "$output" "./wheels-repo/downloads/setuptools-69.0.0-0-py3-none-any.whl"
 }
 
 test_build_sequence_summaries() {
     log_info "Running test: Build sequence summaries for multiple packages"
-    
+
     local test_dir="$TEST_OUTPUT_DIR/summaries"
     local output
-    
+
     # Run a build with multiple packages to test build sequence summary handling
     set +e
     output=$(run_build_wheels "$test_dir" "setuptools==69.0.0" "wheel==0.42.0" 2>&1)
     local exit_code=$?
     set -e
-    
+
     assert_success "Multiple packages build should succeed" "$exit_code"
     # Check that build sequence summaries are mentioned in output
-    assert_contains "Output mentions build sequence summaries" "$output" "Build Sequence Summaries:"
-    assert_contains "Summary for first package" "$output" "build-sequence-summary-setuptools__69.0.0.json"
-    assert_contains "Summary for second package" "$output" "build-sequence-summary-wheel__0.42.0.json"
+    assert_contains "Summary for first package" "$output" "./build-sequence-summary-setuptools__69.0.0.json"
+    assert_contains "Summary for second package" "$output" "./build-sequence-summary-wheel__0.42.0.json"
 }
 
 
