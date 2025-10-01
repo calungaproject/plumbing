@@ -216,7 +216,7 @@ trove-classifiers==2025.8.6.13 \
     --hash=sha256:5a0abad839d2ed810f213ab133d555d267124ddea29f1d8a50d6eca12a50ae6e \
     --hash=sha256:c4e7fc83012770d80b3ae95816111c32b085716374dccee0d3fbf5c235495f9f
     # via hatchling
-types-psutil==7.0.0.20250822 \
+types-psutil==7.0.0.20251001 \
     --hash=sha256:226cbc0c0ea9cc0a50b8abcc1d91a26c876dcb40be238131f697883690419698 \
     --hash=sha256:81c82f01aba5a4510b9d8b28154f577b780be75a08954aed074aa064666edc09
     # via mypy
