@@ -284,7 +284,7 @@ requests==2.32.5 \
     --hash=sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6 \
     --hash=sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf
     # via pulp-glue
-schema==0.7.7 \
+schema==0.7.8 \
     --hash=sha256:5d976a5b50f36e74e2157b47097b60002bd4d42e65425fcc9c9befadb4255dde \
     --hash=sha256:7da553abd2958a19dc2547c388cde53398b39196175a9be59ea1caf5ab0a1807
     # via pulp-cli
