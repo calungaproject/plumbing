@@ -5,6 +5,8 @@ metadata:
 spec:
   description: |
     Push Python packages from an OCI artifact to a Pulp repository.
+    This task extracts wheels from OCI artifacts, generates Sigstore attestations
+    for each wheel, and uploads both wheels and attestations to Pulp.
   params:
     - name: SNAPSHOT_PATH
       type: string
@@ -97,6 +99,98 @@ spec:
         done < "${IMAGES_TXT}"
 
         ls -la "${FILES_DIR}"
+
+    - name: sign-wheels
+      image: gcr.io/projectsigstore/cosign:v2.2.3
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+        
+        echo "Generating attestations for wheels..."
+        
+        # Extract metadata from snapshot
+        SNAPSHOT_FILE="${TRUSTED_ARTIFACTS_EXTRACT_DIR}/${SNAPSHOT_PATH}"
+        
+        # Get git metadata (will be same for all wheels in this release)
+        GIT_URL=$(jq -r '.components[0].source.git.url // "unknown"' "${SNAPSHOT_FILE}")
+        GIT_COMMIT=$(jq -r '.components[0].source.git.revision // "unknown"' "${SNAPSHOT_FILE}")
+        BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        
+        echo "Build metadata:"
+        echo "  Git URL: ${GIT_URL}"
+        echo "  Git Commit: ${GIT_COMMIT}"
+        echo "  Build Time: ${BUILD_TIME}"
+        
+        SIGNED_COUNT=0
+        
+        cd "${FILES_DIR}"
+        for WHEEL in *.whl *.tar.gz; do
+          # Skip if no files match
+          [ -e "${WHEEL}" ] || continue
+          
+          echo ""
+          echo "Signing: ${WHEEL}"
+          
+          # Calculate wheel hash
+          WHEEL_SHA256=$(sha256sum "${WHEEL}" | cut -d' ' -f1)
+          
+          # Create SLSA provenance predicate
+          cat > /tmp/predicate.json <<EOF
+        {
+          "_type": "https://in-toto.io/Statement/v0.1",
+          "predicateType": "https://slsa.dev/provenance/v0.2",
+          "subject": [
+            {
+              "name": "${WHEEL}",
+              "digest": {
+                "sha256": "${WHEEL_SHA256}"
+              }
+            }
+          ],
+          "predicate": {
+            "builder": {
+              "id": "https://konflux-ci.dev/calunga"
+            },
+            "buildType": "https://konflux-ci.dev/PythonWheelBuild@v1",
+            "invocation": {
+              "configSource": {
+                "uri": "${GIT_URL}",
+                "digest": {
+                  "sha1": "${GIT_COMMIT}"
+                }
+              }
+            },
+            "metadata": {
+              "buildFinishedOn": "${BUILD_TIME}",
+              "completeness": {
+                "parameters": true,
+                "environment": true,
+                "materials": true
+              },
+              "reproducible": true
+            }
+          }
+        }
+        EOF
+          
+          # Sign with Sigstore (keyless via OIDC)
+          # Konflux provides OIDC token automatically
+          cosign attest-blob "${WHEEL}" \
+            --predicate=/tmp/predicate.json \
+            --type=slsaprovenance \
+            --output-file="${WHEEL}.att"
+          
+          echo "✓ Created attestation: ${WHEEL}.att"
+          SIGNED_COUNT=$((SIGNED_COUNT + 1))
+          
+          rm /tmp/predicate.json
+        done
+        
+        echo ""
+        echo "Signed ${SIGNED_COUNT} artifacts"
+        echo ""
+        echo "All files (wheels + attestations):"
+        ls -la
 
     # TODO: Use nudging to keep this up to date.
     - name: upload

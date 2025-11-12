@@ -183,25 +183,6 @@ spec:
       runAfter:
         - reduce-snapshot
 
-    - name: sign-python-wheels
-      taskRef:
-        resolver: bundles
-        params:
-          - name: name
-            value: sign-python-wheels
-          - name: bundle
-            # value: quay.io/redhat-user-workloads/calunga-tenant/task-sign-python-wheels@sha256:XXXXX
-            value: quay.io/redhat-user-workloads/calunga-tenant/task-sign-python-wheels:latest # Temp testing with latest tag
-          - name: kind
-            value: task
-      params:
-        - name: SNAPSHOT_PATH
-          value: $(tasks.collect-data.results.snapshotSpec)
-        - name: SOURCE_ARTIFACT
-          value: $(tasks.reduce-snapshot.results.sourceDataArtifact)
-      runAfter:
-        - verify-enterprise-contract
-
     - name: push-py-pulp
       taskRef:
         resolver: bundles
@@ -228,4 +209,4 @@ spec:
         - name: sourceDataArtifact
           value: "$(tasks.reduce-snapshot.results.sourceDataArtifact)"
       runAfter:
-        - sign-python-wheels
+        - verify-enterprise-contract
