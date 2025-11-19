@@ -4,7 +4,7 @@ The repository provides a containerized solution for building Python wheels from
 distributions using [Fromager](https://github.com/python-wheel-build/fromager). This is designed to
 work within trusted build environments and can be used as part of larger CI/CD pipelines.
 
-## Components
+## Images
 
 ### Builder Image
 
@@ -19,3 +19,8 @@ The [builder](./builder) directory contains everything needed to build a contain
 
 The [utils](./utils) directory is the source for the calunga utils image. This image is used for
 various purposes, including releasing content to a pulp repository.
+
+## CI
+
+[Konflux](https://konflux-ci.dev/) is used as the CI system to build the different software
+artifacts produced by this repository. See the [.tekton](/.tekton) directory for more information.
