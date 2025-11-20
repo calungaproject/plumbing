@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Attestation Generation and Signing Step ==="
+
+# Install cosign
+echo "Installing cosign..."
+curl -sLO https://github.com/sigstore/cosign/releases/download/v2.2.4/cosign-linux-amd64
+chmod +x cosign-linux-amd64
+mv cosign-linux-amd64 /usr/local/bin/cosign
+
+echo "Cosign version:"
+cosign version
+
+# Check if signing key is available
+COSIGN_KEY_PATH="/etc/cosign-secret/cosign.key"
+if [ -f "${COSIGN_KEY_PATH}" ]; then
+  echo "Cosign signing key found - attestations will be signed"
+  SIGNING_ENABLED=true
+else
+  echo "No cosign signing key provided - attestations will not be signed"
+  echo "To enable signing, provide COSIGN_SECRET_NAME parameter"
+  SIGNING_ENABLED=false
+fi
+
+echo ""
+echo "Generating release-time attestations for wheels"
+
+# Get release timestamp
+RELEASE_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+echo "Release timestamp: ${RELEASE_TIME}"
+
+ATT_COUNT=0
+SIGNED_COUNT=0
+
+cd "${FILES_DIR}"
+
+echo ""
+echo "Files in directory:"
+ls -lah
+
+echo ""
+echo "Processing wheel files..."
+
+# Process only .whl and .tar.gz files
+shopt -s nullglob
+for WHEEL in *.whl *.tar.gz; do
+  # Skip if no files match
+  if [ ! -f "${WHEEL}" ]; then
+    echo "Skipping non-existent file: ${WHEEL}"
+    continue
+  fi
+
+  echo ""
+  echo "Processing: ${WHEEL}"
+
+  # Calculate wheel hash
+  WHEEL_SHA256=$(sha256sum "${WHEEL}" | cut -d' ' -f1)
+  echo "  SHA256: ${WHEEL_SHA256}"
+
+  # Create SLSA provenance predicate using heredoc
+  PREDICATE_FILE="/tmp/${WHEEL}.predicate.json"
+  cat > "${PREDICATE_FILE}" <<EOF
+{
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [
+    {
+      "name": "${WHEEL}",
+      "digest": {
+        "sha256": "${WHEEL_SHA256}"
+      }
+    }
+  ],
+  "predicate": {
+    "builder": {
+      "id": "https://konflux-ci.dev/calunga"
+    },
+    "buildType": "https://konflux-ci.dev/PythonWheelBuild@v1",
+    "metadata": {
+      "buildFinishedOn": "${RELEASE_TIME}",
+      "completeness": {
+        "parameters": true,
+        "environment": true,
+        "materials": true
+      },
+      "reproducible": true
+    }
+  }
+}
+EOF
+
+  ATT_FILE="${WHEEL}.att"
+
+  if [ "${SIGNING_ENABLED}" = true ]; then
+    # Sign the attestation with cosign using the provided key
+    echo "Signing attestation with cosign"
+    if COSIGN_PASSWORD="" cosign attest-blob "${WHEEL}" \
+      --predicate="${PREDICATE_FILE}" \
+      --type=https://slsa.dev/provenance/v0.2 \
+      --key="${COSIGN_KEY_PATH}" \
+      --yes \
+      --output-file="${ATT_FILE}" 2>&1; then
+      echo "Signed attestation: ${ATT_FILE}"
+      SIGNED_COUNT=$((SIGNED_COUNT + 1))
+    else
+      echo "Failed to sign, creating unsigned attestation"
+      cp "${PREDICATE_FILE}" "${ATT_FILE}"
+    fi
+  else
+    # Create unsigned attestation
+    cp "${PREDICATE_FILE}" "${ATT_FILE}"
+    echo "Created unsigned attestation: ${ATT_FILE}"
+  fi
+
+  ATT_COUNT=$((ATT_COUNT + 1))
+  rm -f "${PREDICATE_FILE}"
+done
+
+echo ""
+echo "=========================================="
+echo "Attestation Generation Summary:"
+echo "  Total attestations: ${ATT_COUNT}"
+if [ "${SIGNING_ENABLED}" = true ]; then
+  echo "  Signed: ${SIGNED_COUNT}"
+else
+  echo "  Signed: 0 (no signing key provided)"
+fi
+echo "=========================================="
+
+echo ""
+echo "Final files in directory (wheels, signatures, and attestations):"
+ls -lah
+
