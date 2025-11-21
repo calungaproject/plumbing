@@ -69,6 +69,13 @@ spec:
     - name: pulpRepository
       type: string
       default: mypypi
+    - name: cosignSecretName
+      type: string
+      description: >-
+        The name of the Kubernetes secret containing the cosign signing key.
+        The secret must have a 'cosign.key' data field. If not provided or empty,
+        attestations will be generated but not signed.
+      default: "cosign-signing-key"
     - name: config
       description: Name of the ConfigMap with config options, e.g. ociStorage
       type: string
@@ -206,6 +213,8 @@ spec:
           value: $(params.pulpSecretName)
         - name: PULP_REPOSITORY
           value: $(params.pulpRepository)
+        - name: COSIGN_SECRET_NAME
+          value: $(params.cosignSecretName)
         - name: sourceDataArtifact
           value: "$(tasks.reduce-snapshot.results.sourceDataArtifact)"
       runAfter:

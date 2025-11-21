@@ -5,7 +5,8 @@ ls -la .
 
 pulp --help
 
-for pkg in *; do
+# Only upload .whl and .tar.gz files. Skipping .att files for now.
+for pkg in *.whl *.tar.gz; do
     if [ -f "$pkg" ]; then
     echo "Uploading $pkg..."
     pulp --base-url "${PULP_BASE_URL}" --api-root "${PULP_API_ROOT}" --domain "${PULP_DOMAIN}" \

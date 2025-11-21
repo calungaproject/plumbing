@@ -36,10 +36,21 @@ spec:
       # need to specify a subfolder during the extract to avoid the error:
       # tar: .: Cannot change mode to rwxr-sr-x: Operation not permitted
       default: "/var/workdir/ta"
+    - name: COSIGN_SECRET_NAME
+      type: string
+      description: >-
+        The name of the secret containing the cosign signing key.
+        The secret must have a 'cosign.key' data field containing the private key.
+        If not provided, attestations will be generated but not signed.
+      default: ""
   volumes:
     - name: pulp-secret
       secret:
         secretName: $(params.PULP_SECRET_NAME)
+    - name: cosign-secret
+      secret:
+        secretName: $(params.COSIGN_SECRET_NAME)
+        optional: true
     - name: workdir
       emptyDir: {}
   stepTemplate:
@@ -98,8 +109,17 @@ spec:
 
         ls -la "${FILES_DIR}"
 
+    - name: generate-and-sign-attestations
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:53984eabcf56d230dfa4298392520c9d68d2c5a353e1c54550772cc4db8c9999
+      volumeMounts:
+        - name: cosign-secret
+          mountPath: "/etc/cosign-secret"
+          readOnly: true
+      command:
+        - generate-and-sign-attestations
+
     # TODO: Use nudging to keep this up to date.
     - name: upload
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:ce1e7cdf0c9281370c7fd6ed98944247ca744d8a6ca761968df6373639526776
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:53984eabcf56d230dfa4298392520c9d68d2c5a353e1c54550772cc4db8c9999
       command:
         - pulp-upload
