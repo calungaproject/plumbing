@@ -101,6 +101,41 @@ spec:
       args:
         - /var/workdir/output
         - /var/workdir/artifact
+    - name: clamav-scan
+      image: quay.io/konflux-ci/clamav:latest@sha256:afec2c51e3ccf844f0f4fed89dd9d02f7e27a968a69a13ceae0a4542e60eb85e
+      workingDir: /var/workdir
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "[$(date --utc -Ins)] Starting ClamAV scan for Python wheel artifacts"
+
+        # Update virus definitions
+        echo "Updating ClamAV virus definitions..."
+        freshclam --quiet
+
+        # Scan the artifact directory
+        echo "Scanning /var/workdir/artifact..."
+        if clamscan --recursive --infected --alert-broken /var/workdir/artifact; then
+          echo "ClamAV scan completed: No threats detected"
+        else
+          SCAN_EXIT=$?
+          if [ $SCAN_EXIT -eq 1 ]; then
+            echo "ERROR: ClamAV detected malware in wheel artifacts!"
+            exit 1
+          else
+            echo "ERROR: ClamAV scan failed with exit code $SCAN_EXIT"
+            exit $SCAN_EXIT
+          fi
+        fi
+
+        echo "[$(date --utc -Ins)] ClamAV scan completed successfully"
+      computeResources:
+        limits:
+          memory: 2Gi
+        requests:
+          cpu: "500m"
+          memory: 1Gi
     - name: create-oci-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
       workingDir: /var/workdir
