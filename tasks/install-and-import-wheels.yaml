@@ -1,0 +1,132 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: install-and-import-wheels
+spec:
+  description: >-
+    Extracts the built Python wheels from the SNAPSHOT, installs them
+    onto the specified TEST_IMAGE, and tries to import the packages.
+  params:
+    - description: The JSON string of the Snapshot under test
+      name: SNAPSHOT
+      type: string
+    - description: The image used for smoke testing the built wheels
+      name: TEST_IMAGE
+      type: string
+  volumes:
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    env:
+      - name: SNAPSHOT
+        value: $(params.SNAPSHOT)
+      - name: IMAGES_TXT
+        value: /var/workdir/images.txt
+      - name: FILES_DIR
+        value: /var/workdir/files
+    volumeMounts:
+      - name: workdir
+        mountPath: /var/workdir
+  steps:
+    - name: get-image-urls
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        jq -r '.components[].containerImage' <<< "${SNAPSHOT}" | tee "${IMAGES_TXT}"
+
+    - name: extract-wheels
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        AUTHFILE='/tmp/auth.json'
+        mkdir -p "${FILES_DIR}"
+
+        while read -r IMAGE; do
+          echo "Processing ${IMAGE}"
+          select-oci-auth "${IMAGE}" > "${AUTHFILE}"
+          retry oras pull --registry-config "${AUTHFILE}" "${IMAGE}" -o "${FILES_DIR}"
+        done < "${IMAGES_TXT}"
+
+        ls -la "${FILES_DIR}"
+
+    - name: install-and-import
+      image: $(params.TEST_IMAGE)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        dnf install -y python3.12 python3.12-pip
+
+        # Setup the Python script to verify import
+        cat <<EOF > /tmp/verify_import.py
+        import importlib
+        import importlib.metadata
+        import sys
+
+        wheel_filename = sys.argv[1]
+        dist_name = wheel_filename.split('-')[0].replace('_', '-').lower()
+
+        package_map = importlib.metadata.packages_distributions()
+        import_names = [
+            imp_pkg for imp_pkg, dists in package_map.items()
+            if dist_name in [d.lower() for d in dists]
+        ]
+        if not import_names:
+            print(f'ERROR: No import names found for distribution: {dist_name}')
+            sys.exit(1)
+
+        for import_name in import_names:
+            if import_name == 'tests' or import_name.startswith('_'):
+                print(f'Skipping import check for {import_name}')
+                continue
+            try:
+                print(f'Trying to import {import_name}...')
+                importlib.import_module(import_name)
+                print(f'Successfully imported {import_name}')
+            except ImportError as e:
+                print(f'ERROR: Failed to import {import_name}: {e}')
+                sys.exit(1)
+            except Exception as e:
+                print(f'ERROR: An unexpected error occurred during import: {e}')
+                sys.exit(1)
+        EOF
+
+        echo "Changing directory to ${FILES_DIR}"
+        cd "${FILES_DIR}"
+
+        shopt -s nullglob
+
+        whl_files=(*.whl)
+        if [ ${#whl_files[@]} -eq 0 ]; then
+            echo "ERROR: No .whl files found in ${FILES_DIR}"
+            exit 1
+        fi
+
+        for WHEEL in "${whl_files[@]}"; do
+            if [ -f "$WHEEL" ]; then
+                echo "=================================================="
+                echo "Testing $WHEEL..."
+
+                rm -rf /tmp/test-venv
+                echo "Setting up virtual environment..."
+                python3.12 -m venv /tmp/test-venv
+
+                echo "Installing wheel..."
+                if ! /tmp/test-venv/bin/pip install --no-index --find-links . "${WHEEL}"; then
+                    echo "ERROR: Installation failed for $WHEEL"
+                    exit 1
+                fi
+
+                echo "Verifying import..."
+                /tmp/test-venv/bin/python /tmp/verify_import.py "${WHEEL}"
+
+                echo "Test successful for $WHEEL"
+            fi
+        done
+
+        echo "=================================================="
+        echo "Successfully tested all wheels!"
