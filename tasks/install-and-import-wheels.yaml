@@ -73,7 +73,7 @@ spec:
         package_map = importlib.metadata.packages_distributions()
         import_names = [
             imp_pkg for imp_pkg, dists in package_map.items()
-            if dist_name in [d.lower() for d in dists]
+            if dist_name in [d.replace('_', '-').lower() for d in dists]
         ]
         if not import_names:
             print(f'ERROR: No import names found for distribution: {dist_name}')
