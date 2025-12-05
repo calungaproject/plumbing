@@ -193,7 +193,6 @@ COPY requirements.txt .
 RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
 COPY scripts/* /usr/local/bin/
-COPY ../tests/* /usr/local/bin/
 
  RUN \
     ln -s /venv/bin/fromager /usr/local/bin/fromager && \
