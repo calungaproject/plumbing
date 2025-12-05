@@ -1,0 +1,31 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: wheel-integration-test
+spec:
+  description: >-
+    Verifies that the built wheels can be installed and imported
+    on the target operating system.
+  params:
+    - description: The JSON string of the Snapshot under test
+      name: SNAPSHOT
+      type: string
+    - description: The image used for smoke testing the built wheels
+      name: TEST_IMAGE
+      type: string
+  tasks:
+    - name: install-and-import-wheels
+      taskRef:
+        resolver: git
+        params:
+        - name: url 
+          value: https://github.com/calungaproject/plumbing
+        - name: revision
+          value: main
+        - name: pathInRepo
+          value: tasks/install-and-import-wheels.yaml
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: TEST_IMAGE
+          value: $(params.TEST_IMAGE)
