@@ -1,0 +1,49 @@
+# This Containerfile is inspired by the Containerfile used by Hermeto:
+#   https://github.com/hermetoproject/hermeto/blob/main/Dockerfile
+
+FROM registry.access.redhat.com/ubi10/ubi:latest as ubi
+
+########################
+# PREPARE OUR BASE IMAGE
+########################
+FROM ubi as base
+RUN dnf -y install \
+    --setopt install_weak_deps=0 \
+    --nodocs \
+    python3 \
+    python3-devel \
+    libffi-devel \
+    rust \
+    cargo \
+    openssl-devel \
+    && dnf clean all
+
+###############
+# BUILD/INSTALL
+###############
+FROM base as builder
+WORKDIR /src
+
+COPY requirements.txt .
+RUN python3 -m venv /venv && \
+    /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
+
+##########################
+# ASSEMBLE THE FINAL IMAGE
+##########################
+FROM base
+LABEL maintainer="Red Hat"
+
+COPY --from=builder /venv /venv
+
+COPY scripts/* /usr/local/bin/
+
+RUN \
+    ln -s /venv/bin/fromager /usr/local/bin/fromager && \
+    ln -s /venv/bin/wheel /usr/local/bin/wheel
+
+# Force the stdout and stderr streams to be unbuffered.
+# https://docs.python.org/3/using/cmdline.html#envvar-PYTHONUNBUFFERED
+ENV PYTHONUNBUFFERED=1
+
+CMD ["fromager"]
