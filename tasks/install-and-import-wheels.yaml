@@ -59,7 +59,7 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        dnf install -y python3.12 python3.12-pip
+        dnf install -y python3.12
 
         # Setup the Python script to verify import
         cat <<EOF > /tmp/verify_import.py
