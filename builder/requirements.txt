@@ -109,9 +109,9 @@ filelock==3.18.0 \
     --hash=sha256:adbc88eabb99d2fec8c9c1b229b171f18afa655400173ddc653d5d01501fb9f2 \
     --hash=sha256:c401f4f8377c4464e6db25fff06205fd89bdd83b65eb0488ed1b160f780e21de
     # via virtualenv
-fromager==0.56.0 \
-    --hash=sha256:24470c17db5f89f59c8c821d37c4515b45213cc5551cdd842f2500547d91eb59 \
-    --hash=sha256:8805c1bb275824ebb38d9964b413d9f209de7411700777ff56e5cce5b7a9e48f
+fromager==0.74.1 \
+    --hash=sha256:9d271377671cea3731ceae045ed30758ffbe3512c8700fbdbb51cabf5df80da0 \
+    --hash=sha256:d39b356caa1b52fb80a4042edbb3edbac1dbc278f978c42dc3b2cc7ba6801420
     # via -r builder/requirements.in
 html5lib==1.1 \
     --hash=sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d \
