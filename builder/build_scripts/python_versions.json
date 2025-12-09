@@ -1,0 +1,94 @@
+{
+  "graalpy311-graalpy242_311_native": {
+    "x86_64": {
+      "version": "24.2.2",
+      "download_url": "https://github.com/oracle/graalpython/releases/download/graal-24.2.2/graalpy-24.2.2-linux-amd64.tar.gz",
+      "sha256": "604b7abf6c58038a30866e52da43818af63bcd97909af8b1a96523c7f0e01414"
+    },
+    "aarch64": {
+      "version": "24.2.2",
+      "download_url": "https://github.com/oracle/graalpython/releases/download/graal-24.2.2/graalpy-24.2.2-linux-aarch64.tar.gz",
+      "sha256": "c9be459ab9479892b88dd63f8f88cbc7b1067f4cb27ff17f4761b36de6bd73af"
+    }
+  },
+  "graalpy312-graalpy250_312_native": {
+    "x86_64": {
+      "version": "25.0.1",
+      "download_url": "https://github.com/oracle/graalpython/releases/download/graal-25.0.1/graalpy-25.0.1-linux-amd64.tar.gz",
+      "sha256": "b5baff786753ebb774300fcf68a9bca4d14cbb8099f055637bee11786abb2d57"
+    },
+    "aarch64": {
+      "version": "25.0.1",
+      "download_url": "https://github.com/oracle/graalpython/releases/download/graal-25.0.1/graalpy-25.0.1-linux-aarch64.tar.gz",
+      "sha256": "f3315d1a3f13e7fcd785d0ca9b954d251da5f5d0dedae094c28a0566a239e4fd"
+    }
+  },
+  "pp38-pypy38_pp73": {
+    "x86_64": {
+      "version": "7.3.11",
+      "download_url": "https://downloads.python.org/pypy/pypy3.8-v7.3.11-linux64.tar.bz2",
+      "sha256": "470330e58ac105c094041aa07bb05676b06292bc61409e26f5c5593ebb2292d9"
+    },
+    "aarch64": {
+      "version": "7.3.11",
+      "download_url": "https://downloads.python.org/pypy/pypy3.8-v7.3.11-aarch64.tar.bz2",
+      "sha256": "9a2fa0b8d92b7830aa31774a9a76129b0ff81afbd22cd5c41fbdd9119e859f55"
+    },
+    "i686": {
+      "version": "7.3.11",
+      "download_url": "https://downloads.python.org/pypy/pypy3.8-v7.3.11-linux32.tar.bz2",
+      "sha256": "a79b31fce8f5bc1f9940b6777134189a1d3d18bda4b1c830384cda90077c9176"
+    }
+  },
+  "pp39-pypy39_pp73": {
+    "x86_64": {
+      "version": "7.3.16",
+      "download_url": "https://downloads.python.org/pypy/pypy3.9-v7.3.16-linux64.tar.bz2",
+      "sha256": "16f9c5b808c848516e742986e826b833cdbeda09ad8764e8704595adbe791b23"
+    },
+    "aarch64": {
+      "version": "7.3.16",
+      "download_url": "https://downloads.python.org/pypy/pypy3.9-v7.3.16-aarch64.tar.bz2",
+      "sha256": "de3f2ed3581b30555ac0dd3e4df78a262ec736a36fb2e8f28259f8539b278ef4"
+    },
+    "i686": {
+      "version": "7.3.16",
+      "download_url": "https://downloads.python.org/pypy/pypy3.9-v7.3.16-linux32.tar.bz2",
+      "sha256": "583b6d6dd4e8c07cbc04da04a7ec2bdfa6674825289c2378c5e018d5abe779ea"
+    }
+  },
+  "pp310-pypy310_pp73": {
+    "x86_64": {
+      "version": "7.3.19",
+      "download_url": "https://downloads.python.org/pypy/pypy3.10-v7.3.19-linux64.tar.bz2",
+      "sha256": "c73ac2cc2380ac9227fd297482bf2a3e17a80618ba46db7544d535515321ec1e"
+    },
+    "aarch64": {
+      "version": "7.3.19",
+      "download_url": "https://downloads.python.org/pypy/pypy3.10-v7.3.19-aarch64.tar.bz2",
+      "sha256": "af27a589178f11198e2244ab65ca510630ba97c131d7ccc4021eb5bc58de7f57"
+    },
+    "i686": {
+      "version": "7.3.19",
+      "download_url": "https://downloads.python.org/pypy/pypy3.10-v7.3.19-linux32.tar.bz2",
+      "sha256": "e63a4fcad2641ee541e852918befb513abf04ce7070f743a50778cae9f9da80e"
+    }
+  },
+  "pp311-pypy311_pp73": {
+    "x86_64": {
+      "version": "7.3.20",
+      "download_url": "https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux64.tar.bz2",
+      "sha256": "1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e"
+    },
+    "aarch64": {
+      "version": "7.3.20",
+      "download_url": "https://downloads.python.org/pypy/pypy3.11-v7.3.20-aarch64.tar.bz2",
+      "sha256": "9347fe691a07fd9df17a1b186554fb9d9e6210178ffef19520a579ce1f9eb741"
+    },
+    "i686": {
+      "version": "7.3.20",
+      "download_url": "https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux32.tar.bz2",
+      "sha256": "d08ce15dd61e9ace5e010b047104f0137110a258184e448ea8239472f10cf99b"
+    }
+  }
+}
