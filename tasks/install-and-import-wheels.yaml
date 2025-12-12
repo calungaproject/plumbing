@@ -59,7 +59,15 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        dnf install -y python3.12
+        if command -v dnf >/dev/null 2>&1; then
+            dnf install -y python3.12
+        elif command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update && apt-get install -y python3.12 python3.12-venv
+        else
+            echo "ERROR: No supported package manager found"
+            exit 1
+        fi
 
         # Setup the Python script to verify import
         cat <<EOF > /tmp/verify_import.py
