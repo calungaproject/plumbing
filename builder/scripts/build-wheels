@@ -153,6 +153,16 @@ for PACKAGE in "${PACKAGES[@]}"; do
     # Save build sequence summary before clearing work-dir
     save_build_sequence_summary "$PACKAGE"
 
+    # check for manylinux wheels
+    log "Checking for manylinux wheels in need of auditwheel repair"
+
+    if [ -n "$(find wheels-repo/downloads -name '*linux_x86_64.whl' | head -1)" ]; then
+        log manylinux wheels have been found, auditwheel step required
+        auditwheel repair wheels-repo/downloads/*linux_x86_64.whl -w wheels-repo/downloads
+    else
+        log No manylinux wheels found, skipping auditwheel step
+    fi
+
     # Clear work-dir after processing package (but preserve sdists-repo and wheels-repo)
     log "Clearing work-dir after processing $PACKAGE (preserving sdists-repo and wheels-repo)"
     rm -rf work-dir
