@@ -76,9 +76,9 @@ hatchling==1.28.0 \
     # via
     #   hatch-vcs
     #   urllib3
-importlib-metadata==7.0.2 \
-    --hash=sha256:198f568f3230878cb1b44fbd7975f87906c22336dba2e4a7f05278c281fbd792 \
-    --hash=sha256:f4bc4c0c070c490abf4ce96d715f68e95923320370efb66143df00199bb6c100
+importlib-metadata==7.2.1 \
+    --hash=sha256:509ecb2ab77071db5137c655e24ceb3eee66e7bbc6574165d0d114d9fc4bbe68 \
+    --hash=sha256:ffef94b0b66046dd8ea2d619b701fe978d9264d38f3998bc4c27ec3b146a87c8
     # via setuptools-scm
 packaging==25.0 \
     --hash=sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484 \
