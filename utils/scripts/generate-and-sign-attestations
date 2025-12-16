@@ -91,7 +91,7 @@ for WHEEL in *.whl *.tar.gz; do
 }
 EOF
 
-  ATT_FILE="${WHEEL}.att"
+  ATT_FILE="${WHEEL}.attestation"
 
   if [ "${SIGNING_ENABLED}" = true ]; then
     # Sign the attestation with cosign using the provided key
@@ -132,4 +132,3 @@ echo "=========================================="
 echo ""
 echo "Final files in directory (wheels, signatures, and attestations):"
 ls -lah
-
