@@ -88,7 +88,7 @@ spec:
         - name: name
           value: get-config
         - name: bundle
-          value: quay.io/redhat-user-workloads/calunga-tenant/task-get-config@sha256:a3e080e2172306f5c53082aa171d936fec3d7f23b45fcbf410160aa1819c538a
+          value: quay.io/redhat-user-workloads/calunga-tenant/task-get-config@sha256:5c4e235239f2b791238a47fde049dabb71c33724c35419e939e0792b70728d80
         - name: kind
           value: task
         resolver: bundles
@@ -197,7 +197,7 @@ spec:
         - name: name
           value: push-py-pulp
         - name: bundle
-          value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:eda2f3069fb3267a4487772c9f59cf68f2ccbf287fbdb6d8412a1b64fbcf10be
+          value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:eb208481156cdeed0b9243c2fd4d9fe84726b322de81075204c95092d1505f71
         - name: kind
           value: task
       params:
