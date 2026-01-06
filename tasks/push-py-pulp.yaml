@@ -110,7 +110,7 @@ spec:
         ls -la "${FILES_DIR}"
 
     - name: generate-and-sign-attestations
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:6aaeaf2e62d657cf9ace5aadd4987cfe06b0a66b665f8035a5f71c4985426891
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:11e6baa0f75b5cef816a62d1d90239cbe15f5606c5b2db160626083cf8ca8fb4
       volumeMounts:
         - name: cosign-secret
           mountPath: "/etc/cosign-secret"
@@ -120,6 +120,6 @@ spec:
 
     # TODO: Use nudging to keep this up to date.
     - name: upload
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:6aaeaf2e62d657cf9ace5aadd4987cfe06b0a66b665f8035a5f71c4985426891
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:11e6baa0f75b5cef816a62d1d90239cbe15f5606c5b2db160626083cf8ca8fb4
       command:
         - pulp-upload
