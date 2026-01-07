@@ -189,9 +189,9 @@ setuptools-scm==8.3.1 \
     #   setuptools-rust
     #   tqdm
     #   urllib3
-trove-classifiers==2025.8.6.13 \
-    --hash=sha256:5a0abad839d2ed810f213ab133d555d267124ddea29f1d8a50d6eca12a50ae6e \
-    --hash=sha256:c4e7fc83012770d80b3ae95816111c32b085716374dccee0d3fbf5c235495f9f
+trove-classifiers==2025.12.1.14 \
+    --hash=sha256:a74f0400524fc83620a9be74a07074b5cbe7594fd4d97fd4c2bfde625fdc1633 \
+    --hash=sha256:a8206978ede95937b9959c3aff3eb258bbf7b07dff391ddd4ea7e61f316635ab
     # via hatchling
 types-psutil==7.2.1.20251231 \
     --hash=sha256:40735ca2fc818aed9dcbff7acb3317a774896615e3f4a7bd356afa224b9178e3 \
