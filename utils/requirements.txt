@@ -357,9 +357,9 @@ packaging==25.0 \
     # via
     #   pulp-cli
     #   twine
-pulp-cli==0.8.0 \
-    --hash=sha256:5162b912168fdabeea285ed16613ef6392908d8761758f12b59a0bdd1b8a784c \
-    --hash=sha256:ea8d5b993e2f9f362f741c64925d5329129bad6eb6a51ba25806ca1dc41971d9
+pulp-cli==0.37.0 \
+    --hash=sha256:28f0d4a85d4ed1caddd983fcb7296b2e9629190b45e2c8146cb812da1b49f731 \
+    --hash=sha256:cab80375fb48eb44d0064f818a3f2e89836597616755948d663ffdd5bc289a1f
     # via -r requirements.in
 pycparser==2.23 \
     --hash=sha256:78816d4f24add8f10a06d6f05b4d424ad9e96cfebf68a4ddc99c65c0720d00c2 \
