@@ -15,10 +15,10 @@ attestation_files=(*.attestation)
 
 if [ ${#attestation_files[@]} -gt 0 ]; then
     echo "Uploading packages with attestations..."
-    twine upload --repository-url "${REPOSITORY_URL}" --client-cert "${CLIENT_CERT_FILE}" --attestations *.whl *.tar.gz *.attestation
+    twine upload --non-interactive --repository-url "${REPOSITORY_URL}" --client-cert "${CLIENT_CERT_FILE}" --attestations *.whl *.tar.gz *.attestation
 else
     echo "Uploading packages..."
-    twine upload --repository-url "${REPOSITORY_URL}" --client-cert "${CLIENT_CERT_FILE}" *.whl *.tar.gz
+    twine upload --non-interactive --repository-url "${REPOSITORY_URL}" --client-cert "${CLIENT_CERT_FILE}" *.whl *.tar.gz
 fi
 
 rm -f "${CLIENT_CERT_FILE}"
