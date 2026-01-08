@@ -197,7 +197,7 @@ spec:
         - name: name
           value: push-py-pulp
         - name: bundle
-          value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:d160079c0dcc1ffdb101fc59f1f53bf392535bc8225b1569e6016624c20794ac
+          value: quay.io/redhat-user-workloads/calunga-tenant/task-push-py-pulp@sha256:61c02ad5bcf50cb57638adbdb768aeed4ae0a53f5bf46aa795efed75f613f2d8
         - name: kind
           value: task
       params:
