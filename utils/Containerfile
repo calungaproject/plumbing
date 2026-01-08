@@ -33,7 +33,6 @@ COPY --from=builder /venv /venv
 
 COPY scripts/* /usr/local/bin/
 
-RUN ln -s /venv/bin/pulp /usr/local/bin/pulp
 RUN ln -s /venv/bin/twine /usr/local/bin/twine
 
 # Force the stdout and stderr streams to be unbuffered.
