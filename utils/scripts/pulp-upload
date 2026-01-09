@@ -7,7 +7,7 @@ ls -la .
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_REPOSITORY}/"
 CLIENT_CERT_FILE="/tmp/client-cert.pem"
 # twine requires both cert/key in a single file
-cat /etc/pulp-secret/cert /etc/pulp-secret/key > "${CLIENT_CERT_FILE}"
+cat /etc/pulp-secret/key /etc/pulp-secret/cert > "${CLIENT_CERT_FILE}"
 chmod 600 "${CLIENT_CERT_FILE}"
 
 # Check if we have attestation files
