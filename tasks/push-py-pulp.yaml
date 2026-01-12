@@ -21,7 +21,7 @@ spec:
     - name: PULP_API_ROOT
       type: string
       description: The API root path of the Pulp server
-      default: "/api/pulp/"
+      default: "/api/"
     - name: PULP_DOMAIN
       type: string
       description: The domain to use for Pulp operations
