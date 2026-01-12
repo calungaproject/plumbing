@@ -62,7 +62,7 @@ spec:
       default: public-calunga
     - name: pulpApiRoot
       type: string
-      default: "/api/pulp/"
+      default: "/api/"
     - name: pulpSecretName
       type: string
       default: pulp-credentials
