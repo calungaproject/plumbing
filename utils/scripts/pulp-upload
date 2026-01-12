@@ -10,6 +10,10 @@ CLIENT_CERT_FILE="/tmp/client-cert.pem"
 cat /etc/pulp-secret/key /etc/pulp-secret/cert > "${CLIENT_CERT_FILE}"
 chmod 600 "${CLIENT_CERT_FILE}"
 
+# Twine requires credentials even with mTLS - use empty values to bypass its check
+export TWINE_USERNAME=""
+export TWINE_PASSWORD=""
+
 # Check if we have attestation files
 shopt -s nullglob
 attestation_files=(*.attestation)
