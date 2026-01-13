@@ -30,4 +30,4 @@ rm -f "${CLIENT_CERT_FILE}"
 
 echo ""
 echo "Upload complete!"
-echo "Index URL: https://console.redhat.com/api/pulp-content/public-calunga/mypypi/simple/"
+echo "Index URL: https://console.redhat.com/api/pulp-content/calunga-prod/main/simple/"

@@ -59,7 +59,7 @@ spec:
       default: https://mtls.internal.console.redhat.com
     - name: pulpDomain
       type: string
-      default: public-calunga
+      default: calunga-prod
     - name: pulpApiRoot
       type: string
       default: "/api/"
@@ -68,7 +68,7 @@ spec:
       default: pulp-credentials
     - name: pulpRepository
       type: string
-      default: mypypi
+      default: main
     - name: cosignSecretName
       type: string
       description: >-
