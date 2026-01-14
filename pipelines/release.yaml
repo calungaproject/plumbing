@@ -56,7 +56,7 @@ spec:
     # TODO: Some of these should probably come from the RP or RPA.
     - name: pulpBaseUrl
       type: string
-      default: https://mtls.internal.console.redhat.com
+      default: https://console.redhat.com
     - name: pulpDomain
       type: string
       default: calunga-prod
@@ -66,6 +66,9 @@ spec:
     - name: pulpSecretName
       type: string
       default: pulp-credentials
+    - name: serviceAccountSecretName
+      type: string
+      default: service-account-credentials
     - name: pulpRepository
       type: string
       default: main
@@ -211,6 +214,8 @@ spec:
           value: $(params.pulpDomain)
         - name: PULP_SECRET_NAME
           value: $(params.pulpSecretName)
+        - name: SERVICE_ACCOUNT_SECRET_NAME
+          value: $(params.serviceAccountSecretName)
         - name: PULP_REPOSITORY
           value: $(params.pulpRepository)
         - name: COSIGN_SECRET_NAME
