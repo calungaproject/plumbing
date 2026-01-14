@@ -25,5 +25,6 @@ fi
 rm -f "${CLIENT_CERT_FILE}"
 
 echo ""
+echo ""
 echo "Upload complete!"
 echo "Index URL: ${INDEX_URL}"
