@@ -15,6 +15,12 @@ spec:
         The name of the secret containing the Pulp credentials. It must have the cert and key data
         attributes.
       default: pulp-credentials
+    - name: SERVICE_ACCOUNT_SECRET_NAME
+      tpye: string
+      description: >-
+        The name of the secret containing the terms-based registry service account credentials.
+        It must have the username and password data attributes.
+      default: service-account-credentials
     - name: PULP_BASE_URL
       type: string
       description: The base URL of the Pulp server
@@ -47,6 +53,9 @@ spec:
     - name: pulp-secret
       secret:
         secretName: $(params.PULP_SECRET_NAME)
+    - name: service-account-secret
+      secret:
+        secretName: $(params.SERVICE_ACCOUNT_SECRET_NAME)
     - name: cosign-secret
       secret:
         secretName: $(params.COSIGN_SECRET_NAME)
@@ -74,6 +83,9 @@ spec:
     volumeMounts:
       - name: pulp-secret
         mountPath: "/etc/pulp-secret"
+        readOnly: true
+      - name: service-account-secret
+        mouthPath: "/etc/service-account-secret"
         readOnly: true
       - name: workdir
         mountPath: "/var/workdir"
