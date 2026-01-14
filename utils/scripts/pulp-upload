@@ -5,14 +5,10 @@ cd "${FILES_DIR}"
 ls -la .
 
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
-#CLIENT_CERT_FILE="/tmp/client-cert.pem"
-# twine requires both cert/key in a single file
-#cat /etc/pulp-secret/key /etc/pulp-secret/cert > "${CLIENT_CERT_FILE}"
-#chmod 600 "${CLIENT_CERT_FILE}"
+INDEX_URL="${PULP_BASE_URL}${PULP_API_ROOT}pulp-content/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
 
-# Twine requires credentials even with mTLS - use empty values to bypass its check
-export TWINE_USERNAME=$(cat /etc/service-account-secret/username)
-export TWINE_PASSWORD=$(cat /etc/service-account-secret/password)
+export TWINE_USERNAME=$(< /etc/service-account-secret/username)
+export TWINE_PASSWORD=$(< /etc/service-account-secret/password)
 
 # Check if we have attestation files
 shopt -s nullglob
@@ -30,4 +26,4 @@ rm -f "${CLIENT_CERT_FILE}"
 
 echo ""
 echo "Upload complete!"
-echo "Index URL: https://console.redhat.com/api/pulp-content/calunga-prod/main/simple/"
+echo "Index URL: ${INDEX_URL}"

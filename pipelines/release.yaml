@@ -63,9 +63,6 @@ spec:
     - name: pulpApiRoot
       type: string
       default: "/api/"
-    - name: pulpSecretName
-      type: string
-      default: pulp-credentials
     - name: serviceAccountSecretName
       type: string
       default: service-account-credentials
@@ -212,8 +209,6 @@ spec:
           value: $(params.pulpApiRoot)
         - name: PULP_DOMAIN
           value: $(params.pulpDomain)
-        - name: PULP_SECRET_NAME
-          value: $(params.pulpSecretName)
         - name: SERVICE_ACCOUNT_SECRET_NAME
           value: $(params.serviceAccountSecretName)
         - name: PULP_REPOSITORY

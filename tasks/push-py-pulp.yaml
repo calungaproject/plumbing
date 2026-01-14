@@ -9,14 +9,8 @@ spec:
     - name: SNAPSHOT_PATH
       type: string
       description: Path to the snapshot spec file containing image information
-    - name: PULP_SECRET_NAME
-      type: string
-      description: >-
-        The name of the secret containing the Pulp credentials. It must have the cert and key data
-        attributes.
-      default: pulp-credentials
     - name: SERVICE_ACCOUNT_SECRET_NAME
-      tpye: string
+      type: string
       description: >-
         The name of the secret containing the terms-based registry service account credentials.
         It must have the username and password data attributes.
@@ -50,9 +44,6 @@ spec:
         If not provided, attestations will be generated but not signed.
       default: ""
   volumes:
-    - name: pulp-secret
-      secret:
-        secretName: $(params.PULP_SECRET_NAME)
     - name: service-account-secret
       secret:
         secretName: $(params.SERVICE_ACCOUNT_SECRET_NAME)
@@ -81,9 +72,6 @@ spec:
       - name: TRUSTED_ARTIFACTS_EXTRACT_DIR
         value: $(params.TRUSTED_ARTIFACTS_EXTRACT_DIR)
     volumeMounts:
-      - name: pulp-secret
-        mountPath: "/etc/pulp-secret"
-        readOnly: true
       - name: service-account-secret
         mouthPath: "/etc/service-account-secret"
         readOnly: true
