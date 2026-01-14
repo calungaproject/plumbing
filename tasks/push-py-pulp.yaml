@@ -73,7 +73,7 @@ spec:
         value: $(params.TRUSTED_ARTIFACTS_EXTRACT_DIR)
     volumeMounts:
       - name: service-account-secret
-        mouthPath: "/etc/service-account-secret"
+        mountPath: "/etc/service-account-secret"
         readOnly: true
       - name: workdir
         mountPath: "/var/workdir"
