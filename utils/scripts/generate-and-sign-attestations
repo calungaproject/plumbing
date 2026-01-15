@@ -14,13 +14,10 @@ cosign version
 
 # Check if signing key is available
 COSIGN_KEY_PATH="/etc/cosign-secret/cosign.key"
-if [ -f "${COSIGN_KEY_PATH}" ]; then
-  echo "Cosign signing key found - attestations will be signed"
-  SIGNING_ENABLED=true
-else
-  echo "No cosign signing key provided - attestations will not be signed"
-  echo "To enable signing, provide COSIGN_SECRET_NAME parameter"
-  SIGNING_ENABLED=false
+if [ ! -f "${COSIGN_KEY_PATH}" ]; then
+  echo "ERROR: Cosign signing key not found at ${COSIGN_KEY_PATH}"
+  echo "Signing key is required. Provide COSIGN_SECRET_NAME parameter."
+  exit 1
 fi
 
 echo ""
@@ -93,25 +90,26 @@ EOF
 
   ATT_FILE="${WHEEL}.attestation"
 
-  if [ "${SIGNING_ENABLED}" = true ]; then
-    # Sign the attestation with cosign using the provided key
-    echo "Signing attestation with cosign"
-    if COSIGN_PASSWORD="" cosign attest-blob "${WHEEL}" \
-      --predicate="${PREDICATE_FILE}" \
-      --type=https://slsa.dev/provenance/v0.2 \
-      --key="${COSIGN_KEY_PATH}" \
-      --yes \
-      --output-file="${ATT_FILE}" 2>&1; then
-      echo "Signed attestation: ${ATT_FILE}"
-      SIGNED_COUNT=$((SIGNED_COUNT + 1))
-    else
-      echo "Failed to sign, creating unsigned attestation"
-      cp "${PREDICATE_FILE}" "${ATT_FILE}"
-    fi
+  DSSE_FILE="/tmp/${WHEEL}.dsse.json"
+
+  # Sign the attestation with cosign using the provided key
+  echo "Signing attestation with cosign"
+  if COSIGN_PASSWORD="" cosign attest-blob "${WHEEL}" \
+    --predicate="${PREDICATE_FILE}" \
+    --type=https://slsa.dev/provenance/v0.2 \
+    --key="${COSIGN_KEY_PATH}" \
+    --yes \
+    --output-file="${DSSE_FILE}" 2>&1; then
+    echo "Signed DSSE attestation created"
+    
+    # Convert DSSE to PEP 740 format for Pulp compatibility
+    echo "Converting to PEP 740 format..."
+    convert-dsse-to-pep740.py "${DSSE_FILE}" "${ATT_FILE}"
+    SIGNED_COUNT=$((SIGNED_COUNT + 1))
+    rm -f "${DSSE_FILE}"
   else
-    # Create unsigned attestation
-    cp "${PREDICATE_FILE}" "${ATT_FILE}"
-    echo "Created unsigned attestation: ${ATT_FILE}"
+    echo "ERROR: Failed to sign attestation for ${WHEEL}"
+    exit 1
   fi
 
   ATT_COUNT=$((ATT_COUNT + 1))
@@ -122,11 +120,7 @@ echo ""
 echo "=========================================="
 echo "Attestation Generation Summary:"
 echo "  Total attestations: ${ATT_COUNT}"
-if [ "${SIGNING_ENABLED}" = true ]; then
-  echo "  Signed: ${SIGNED_COUNT}"
-else
-  echo "  Signed: 0 (no signing key provided)"
-fi
+echo "  Signed (PEP 740): ${SIGNED_COUNT}"
 echo "=========================================="
 
 echo ""
