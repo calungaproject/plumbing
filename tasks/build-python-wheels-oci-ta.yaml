@@ -93,12 +93,12 @@ spec:
         - name: SERVICE_ACCOUNT_USERNAME
           valueFrom:
             secretKeyRef:
-              name: ${(params.SERVICE_ACCOUNT_SECRET_NAME}
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
               key: username
         - name: SERVICE_ACCOUNT_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: ${(params.SERVICE_ACCOUNT_SECRET_NAME}
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
               key: password
       volumeMounts:
         - mountPath: /mnt/trusted-ca
