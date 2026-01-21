@@ -98,13 +98,11 @@ fi
 
 log "Setting up pip.conf"
 PIP_CONF="/src/venv/pip.conf"
-SERVICE_ACCOUNT_USERNAME=$(< /etc/service-account-secret/username)
-SERVICE_ACCOUNT_PASSWORD=$(< /etc/service-account-secret/password)
 touch $PIP_CONF
-echo "[global]\n" >> $PIP_CONF
-echo "index-url = https://" >> $PIP_CONF
-echo "${SERVICE_ACCOUNT_USERNAME}:${SERVICE_ACCOUNT_PASSWORD}" >> $PIP_CONF
-echo "@${WHEEL_SERVER_URL}" >> $PIP_CONF
+cat > $PIP_CONF <<- EOM
+[global]
+index-url = https://${SERVICE_ACCOUNT_USERNAME}:${SERVICE_ACCOUNT_PASSWORD}@${WHEEL_SERVER_URL}
+EOM
 
 log "Preparing build environment"
 rm -rf output
