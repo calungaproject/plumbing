@@ -96,11 +96,10 @@ if [ -f "$ca_bundle" ]; then
     update-ca-trust
 fi
 
-log "Setting up pip.conf"
-PIP_CONF="/src/venv/pip.conf"
-cat > $PIP_CONF <<- EOM
-[global]
-index-url = https://${SERVICE_ACCOUNT_USERNAME}:${SERVICE_ACCOUNT_PASSWORD}@${WHEEL_SERVER_URL}
+log "Setting up netrc"
+NETRC="~/.netrc"
+cat > $NETRC <<- EOM
+machine console.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
 EOM
 
 log "Preparing build environment"
