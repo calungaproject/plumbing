@@ -87,9 +87,16 @@ rm -rf "${DESTINATION}/{*,.*}" && mkdir -p "${DESTINATION}"
 
 # TODO: The "downloads" name in the path is a misnomer. Those are actually built wheels.
 WHEELS_DIR="${SOURCE}/wheels-repo/downloads"
-# Copy all built wheels
-if [ -d "${WHEELS_DIR}" ]; then
-    find "${WHEELS_DIR}" -name '*.whl' -type f -exec cp {} "${DESTINATION}/" \;
+PREBUILT_DIR="${SOURCE}/wheels-repo/prebuilt"
+# Copy all built wheels, ignoring prebuilt wheels
+if [ -d "${WHEELS_DIR}" ] && [ -d "${PREBUILT_DIR}" ]; then
+    for file in "${WHEELS_DIR}/*.whl"; do
+        FILENAME="{$file##*/}"
+        # check to see if wheel is also in prebuilt dir, ignore if so
+        if [ ! -f "${PREBUILT_DIR}/${FILENAME}" ]; then
+            cp $file "${DESTINATION}/"
+        fi
+    done
 fi
 
 SDISTS_DIR="${SOURCE}/sdists-repo/builds"
