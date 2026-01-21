@@ -5,7 +5,6 @@ cd "${FILES_DIR}"
 ls -la .
 
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
-INDEX_URL="${PULP_BASE_URL}${PULP_API_ROOT}pulp-content/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
 
 export TWINE_USERNAME=$(< /etc/service-account-secret/username)
 export TWINE_PASSWORD=$(< /etc/service-account-secret/password)
@@ -23,4 +22,4 @@ else
 fi
 
 echo "Upload complete!"
-echo "Index URL: ${INDEX_URL}"
+echo "Index URL: ${REPOSITORY_URL}"
