@@ -98,6 +98,7 @@ fi
 
 log "Setting up netrc"
 NETRC="~/.netrc"
+touch $NETRC
 cat > $NETRC <<- EOM
 machine console.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
 EOM
