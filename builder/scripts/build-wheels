@@ -98,7 +98,6 @@ fi
 
 log "Setting up pip.conf"
 PIP_CONF="/src/venv/pip.conf"
-touch $PIP_CONF
 cat > $PIP_CONF <<- EOM
 [global]
 index-url = https://${SERVICE_ACCOUNT_USERNAME}:${SERVICE_ACCOUNT_PASSWORD}@${WHEEL_SERVER_URL}
