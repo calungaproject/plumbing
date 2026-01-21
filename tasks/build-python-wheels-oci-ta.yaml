@@ -65,9 +65,6 @@ spec:
         optional: true
     - name: workdir
       emptyDir: {}
-    - name: service-account-secret
-      secret:
-        secretName: $(params.SERVICE_ACCOUNT_SECRET_NAME)
   stepTemplate:
     computeResources:
       limits:
@@ -92,12 +89,20 @@ spec:
     - name: build-wheels
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:f80a32e95466ee92d98a69763a85bc5e8b0bdcbd75b8e74dad3f772498890a3a
       workingDir: /var/workdir
+      env:
+        - name: SERVICE_ACCOUNT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: ${(params.SERVICE_ACCOUNT_SECRET_NAME}
+              key: username
+        - name: SERVICE_ACCOUNT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ${(params.SERVICE_ACCOUNT_SECRET_NAME}
+              key: password
       volumeMounts:
         - mountPath: /mnt/trusted-ca
           name: trusted-ca
-          readOnly: true
-        - name: service-account-secret
-          mountPath: "/etc/service-account-secret"
           readOnly: true
       command:
         - build-wheels
