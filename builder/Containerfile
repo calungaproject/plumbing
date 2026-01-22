@@ -194,7 +194,7 @@ RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
 COPY scripts/* /usr/local/bin/
 
- RUN \
+RUN \
     ln -s /src/venv/bin/fromager /usr/local/bin/fromager && \
     ln -s /src/venv/bin/wheel /usr/local/bin/wheel
 

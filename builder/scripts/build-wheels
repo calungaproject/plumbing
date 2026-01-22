@@ -97,8 +97,7 @@ if [ -f "$ca_bundle" ]; then
 fi
 
 log "Setting up netrc"
-NETRC="~/.netrc"
-touch $NETRC
+NETRC=~/.netrc
 cat > $NETRC <<- EOM
 machine console.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
 EOM
