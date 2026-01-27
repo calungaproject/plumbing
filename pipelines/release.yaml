@@ -72,10 +72,9 @@ spec:
     - name: cosignSecretName
       type: string
       description: >-
-        The name of the Kubernetes secret containing the cosign signing key.
-        The secret must have a 'cosign.key' data field. If not provided or empty,
-        attestations will be generated but not signed.
-      default: "cosign-signing-key"
+        The name of the Kubernetes secret containing the official Konflux signing key.
+        The secret must have a 'cosign.key' data field containing the private key.
+      default: "redhat-release3"
     - name: config
       description: Name of the ConfigMap with config options, e.g. ociStorage
       type: string
