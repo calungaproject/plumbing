@@ -59,7 +59,7 @@ spec:
       default: https://packages.redhat.com
     - name: pulpDomain
       type: string
-      default: calunga-prod
+      default: trusted-libraries
     - name: pulpApiRoot
       type: string
       default: "/api/"
