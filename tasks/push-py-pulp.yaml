@@ -39,10 +39,9 @@ spec:
     - name: COSIGN_SECRET_NAME
       type: string
       description: >-
-        The name of the secret containing the cosign signing key.
+        The name of the secret containing the official Konflux signing key.
         The secret must have a 'cosign.key' data field containing the private key.
-        If not provided, attestations will be generated but not signed.
-      default: ""
+      default: "redhat-release3"
   volumes:
     - name: service-account-secret
       secret:
@@ -50,7 +49,6 @@ spec:
     - name: cosign-secret
       secret:
         secretName: $(params.COSIGN_SECRET_NAME)
-        optional: true
     - name: workdir
       emptyDir: {}
   stepTemplate:
