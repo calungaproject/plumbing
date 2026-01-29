@@ -47,7 +47,7 @@ spec:
       description: >-
         The name of the secret containing the terms-based registry service account credentials.
         It must have the username and password data attributes.
-      default: service-account-credentials
+      default: builder-service-account
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
