@@ -1,0 +1,74 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: upload-py-pulp
+spec:
+  description: |
+    Upload Python packages (with attestations) to a Pulp repository.
+  params:
+    - name: SERVICE_ACCOUNT_SECRET_NAME
+      type: string
+      description: >-
+        The name of the secret containing the terms-based registry service account credentials.
+        It must have the username and password data attributes.
+      default: service-account-credentials
+    - name: PULP_BASE_URL
+      type: string
+      description: The base URL of the Pulp server
+    - name: PULP_API_ROOT
+      type: string
+      description: The API root path of the Pulp server
+      default: "/api/"
+    - name: PULP_DOMAIN
+      type: string
+      description: The domain to use for Pulp operations
+    - name: PULP_REPOSITORY
+      type: string
+      description: The Pulp repository to upload to
+    - name: sourceDataArtifact
+      type: string
+      description: Trusted Artifact containing the signed wheels and attestations
+    - name: dataDir
+      type: string
+      description: The location where data will be stored
+      default: /var/workdir
+    - name: filesDir
+      type: string
+      description: The relative path within dataDir where wheel files are located
+      default: files
+  volumes:
+    - name: service-account-secret
+      secret:
+        secretName: $(params.SERVICE_ACCOUNT_SECRET_NAME)
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    env:
+      - name: PULP_BASE_URL
+        value: $(params.PULP_BASE_URL)
+      - name: PULP_API_ROOT
+        value: $(params.PULP_API_ROOT)
+      - name: PULP_DOMAIN
+        value: $(params.PULP_DOMAIN)
+      - name: PULP_REPOSITORY
+        value: $(params.PULP_REPOSITORY)
+      - name: FILES_DIR
+        value: $(params.dataDir)/$(params.filesDir)
+    volumeMounts:
+      - name: service-account-secret
+        mountPath: "/etc/service-account-secret"
+        readOnly: true
+      - name: workdir
+        mountPath: /var/workdir
+    workingDir: /var/workdir
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/redhat-appstudio/build-trusted-artifacts:e02102ede09aa07187cba066ad547a54724e5cf4
+      args:
+        - use
+        - $(params.sourceDataArtifact)=$(params.dataDir)
+    - name: upload
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:fd4f21622982bfa5c64dd58973de8e18e056c11fc15f87ad2fae0721511c7910
+      command:
+        - pulp-upload
+
