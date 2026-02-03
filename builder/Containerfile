@@ -38,7 +38,7 @@ COPY build_scripts/install-entrypoint.sh \
 
 RUN /opt/_internal/build_scripts/install-entrypoint.sh
 COPY manylinux-entrypoint /usr/local/bin/manylinux-entrypoint
-# ENTRYPOINT ["manylinux-entrypoint"]
+ENTRYPOINT ["manylinux-entrypoint"]
 
 COPY build_scripts/install-runtime-packages.sh /opt/_internal/build_scripts/
 RUN manylinux-entrypoint /opt/_internal/build_scripts/install-runtime-packages.sh
@@ -193,7 +193,10 @@ WORKDIR /src
 RUN dnf -y install \
     rust \
     cargo \
-    libffi-devel
+    libffi-devel \
+    libjpeg \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 COPY requirements.txt .
 RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
