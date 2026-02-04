@@ -195,6 +195,7 @@ RUN dnf -y install \
     cargo \
     libffi-devel \
     libjpeg \
+    libyaml-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
