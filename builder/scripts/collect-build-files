@@ -99,7 +99,9 @@ if [ -d "${WHEELS_DIR}" ] && [ -d "${PREBUILT_DIR}" ]; then
         FILENAME="{$file##*/}"
         # check to see if wheel is also in prebuilt dir, ignore if so
         if [ ! -f "${PREBUILT_DIR}/${FILENAME}" ]; then
-            if [ ! "curl --netrc -I  https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${file}"]; then
+            log "Looking for existing package in pulp ${file}"
+            if [ ! "curl --netrc -I  https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${file}" ]; then
+                log "Did not find ${file} in pulp. Collecting new file."
                 cp $file "${DESTINATION}/"
             fi
         fi
