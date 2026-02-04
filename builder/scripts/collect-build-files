@@ -80,6 +80,11 @@ log() {
     echo "[$(date --utc -Ins)] $1" >&2
 }
 
+log "Setting up netrc"
+NETRC=~/.netrc
+cat > $NETRC <<- EOM
+machine packages.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
+EOM
 log "Collecting build files..."
 
 # Ensure output directory is clear
@@ -94,7 +99,9 @@ if [ -d "${WHEELS_DIR}" ] && [ -d "${PREBUILT_DIR}" ]; then
         FILENAME="{$file##*/}"
         # check to see if wheel is also in prebuilt dir, ignore if so
         if [ ! -f "${PREBUILT_DIR}/${FILENAME}" ]; then
-            cp $file "${DESTINATION}/"
+            if [ ! "curl --netrc -I  https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${file}"]; then
+                cp $file "${DESTINATION}/"
+            fi
         fi
     done
 fi
