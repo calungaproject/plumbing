@@ -196,6 +196,8 @@ RUN dnf -y install \
     libffi-devel \
     libjpeg \
     libyaml-devel \
+    libxml2 \
+    libxslt \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
