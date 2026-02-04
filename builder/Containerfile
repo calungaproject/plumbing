@@ -194,10 +194,10 @@ RUN dnf -y install \
     rust \
     cargo \
     libffi-devel \
-    libjpeg \
+    libjpeg-turbo-devel \
     libyaml-devel \
-    libxml2 \
-    libxslt \
+    libxml2-devel \
+    libxslt-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
