@@ -93,19 +93,34 @@ rm -rf "${DESTINATION}/{*,.*}" && mkdir -p "${DESTINATION}"
 # TODO: The "downloads" name in the path is a misnomer. Those are actually built wheels.
 WHEELS_DIR="${SOURCE}/wheels-repo/downloads"
 PREBUILT_DIR="${SOURCE}/wheels-repo/prebuilt"
-# Copy all built wheels, ignoring prebuilt wheels
-if [ -d "${WHEELS_DIR}" ] && [ -d "${PREBUILT_DIR}" ]; then
-    for file in "${WHEELS_DIR}/*.whl"; do
-        FILENAME="{$file##*/}"
-        # check to see if wheel is also in prebuilt dir, ignore if so
-        if [ ! -f "${PREBUILT_DIR}/${FILENAME}" ]; then
-            log "Looking for existing package in pulp ${file}"
-            if [ ! "curl --netrc -I  https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${file}" ]; then
-                log "Did not find ${file} in pulp. Collecting new file."
-                cp $file "${DESTINATION}/"
-            fi
+
+# Copy all built wheels, ignoring prebuilt wheels and wheels already in Pulp
+if [ -d "${WHEELS_DIR}" ]; then
+    # Enable nullglob so the loop doesn't run if no .whl files exist
+    shopt -s nullglob
+    
+    for file in "${WHEELS_DIR}"/*.whl; do
+        FILENAME="${file##*/}"
+        
+        # 1. Check if wheel is in prebuilt directory, skip if so
+        if [[ -f "${PREBUILT_DIR}/${FILENAME}" ]]; then
+            log "Skipping ${FILENAME} - found in prebuilt directory"
+            continue
         fi
+        
+        # 2. Check if wheel already exists in Pulp
+        log "Checking if ${FILENAME} exists in Pulp..."
+        RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
+        if echo "$RESPONSE" | grep -q '"count":[1-9]'; then
+            log "Skipping ${FILENAME} - already exists in Pulp"
+            continue
+        fi
+        
+        log "Collecting ${FILENAME}"
+        cp "$file" "${DESTINATION}/"
     done
+    
+    shopt -u nullglob
 fi
 
 SDISTS_DIR="${SOURCE}/sdists-repo/builds"
