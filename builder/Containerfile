@@ -199,6 +199,8 @@ RUN dnf -y install \
     libxml2-devel \
     libxslt-devel \
     openssl-devel \
+    openblas-devel \
+    perl-IPC-Cmd \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
