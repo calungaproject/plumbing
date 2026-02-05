@@ -80,11 +80,11 @@ log() {
     echo "[$(date --utc -Ins)] $1" >&2
 }
 
-log "Setting up netrc"
-NETRC=~/.netrc
-cat > $NETRC <<- EOM
-machine packages.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
-EOM
+#log "Setting up netrc"
+#NETRC=~/.netrc
+#cat > $NETRC <<- EOM
+#machine packages.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
+#EOM
 log "Collecting build files..."
 
 # Ensure output directory is clear
@@ -109,12 +109,12 @@ if [ -d "${WHEELS_DIR}" ]; then
         fi
         
         # 2. Check if wheel already exists in Pulp
-        log "Checking if ${FILENAME} exists in Pulp..."
-        RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
-        if echo "$RESPONSE" | grep -q '"count":[1-9]'; then
-            log "Skipping ${FILENAME} - already exists in Pulp"
-            continue
-        fi
+        #log "Checking if ${FILENAME} exists in Pulp..."
+        #RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
+        #if echo "$RESPONSE" | grep -q '"count":[1-9]'; then
+        #    log "Skipping ${FILENAME} - already exists in Pulp"
+        #    continue
+        #fi
         
         log "Collecting ${FILENAME}"
         cp "$file" "${DESTINATION}/"
