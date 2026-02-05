@@ -198,6 +198,7 @@ RUN dnf -y install \
     libyaml-devel \
     libxml2-devel \
     libxslt-devel \
+    openssl-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
