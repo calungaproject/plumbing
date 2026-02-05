@@ -93,6 +93,7 @@ rm -rf "${DESTINATION}/{*,.*}" && mkdir -p "${DESTINATION}"
 # TODO: The "downloads" name in the path is a misnomer. Those are actually built wheels.
 WHEELS_DIR="${SOURCE}/wheels-repo/downloads"
 PREBUILT_DIR="${SOURCE}/wheels-repo/prebuilt"
+PULP_API_URL="https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages"
 
 # Copy all built wheels, ignoring prebuilt wheels and wheels already in Pulp
 if [ -d "${WHEELS_DIR}" ]; then
@@ -110,7 +111,7 @@ if [ -d "${WHEELS_DIR}" ]; then
         
         # 2. Check if wheel already exists in Pulp
         log "Checking if ${FILENAME} exists in Pulp..."
-        RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
+        RESPONSE=$(curl --netrc --fail --silent "${PULP_API_URL}/?filename=${FILENAME}")
         if echo "$RESPONSE" | grep -q '"count":[1-9]'; then
             log "Skipping ${FILENAME} - already exists in Pulp"
             continue
