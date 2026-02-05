@@ -98,9 +98,17 @@ fi
 
 log "Setting up netrc"
 NETRC=~/.netrc
-cat > $NETRC <<- EOM
+
+# Only write netrc if both SERVICE_ACCOUNT_USERNAME and SERVICE_ACCOUNT_PASSWORD are set.
+if [ -n "${SERVICE_ACCOUNT_USERNAME:-}" ] && [ -n "${SERVICE_ACCOUNT_PASSWORD:-}" ]; then
+    cat > "$NETRC" <<- EOM
 machine packages.redhat.com login ${SERVICE_ACCOUNT_USERNAME} password ${SERVICE_ACCOUNT_PASSWORD}
 EOM
+    chmod 0600 "$NETRC"
+    log "Wrote netrc for packages.redhat.com"
+else
+    log "SERVICE_ACCOUNT_USERNAME and/or SERVICE_ACCOUNT_PASSWORD not set - skipping netrc setup"
+fi
 
 log "Preparing build environment"
 rm -rf output
