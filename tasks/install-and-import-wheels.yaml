@@ -70,7 +70,7 @@ spec:
         fi
 
         # Setup the Python script to verify import
-        cat <<EOF > /tmp/verify_import.py
+        cat <<'EOF' > /tmp/verify_import.py
         import importlib
         import importlib.metadata
         import sys
