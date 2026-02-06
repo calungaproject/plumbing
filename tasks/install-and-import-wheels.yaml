@@ -76,7 +76,6 @@ spec:
         import sys
         from pathlib import Path
 
-        # Extract distribution name from the filename
         wheel_filename = Path(sys.argv[1]).name
         dist_name = wheel_filename.split('-')[0].replace('_', '-').lower()
 
@@ -87,48 +86,70 @@ spec:
             sys.exit(1)
 
         import_names = set()
-
-        # Try to use top_level.txt if it exists
         tl_content = dist.read_text('top_level.txt')
         roots = set(tl_content.splitlines()) if tl_content else set()
+        files_list = dist.files or []
 
-        # Fallback to file list if top_level.txt is missing
-        if not roots and dist.files:
-            for p in dist.files:
+        if not roots and files_list:
+            # Fallback: Derive roots from file list if top_level.txt is missing
+            for p in files_list:
                 root = p.parts[0]
-                # Skip metadata, hidden files, and files like 'setup.py' if they leaked in
+                # Filter metadata and explicitly private roots
                 if not (root.endswith(('.dist-info', '.egg-info')) or root.startswith('.')):
-                    # If it's a standalone .py file at root, use the stem; else use the folder name
-                    import_names.add(Path(root).stem if root.endswith('.py') else root)
+                    # Check root privacy (handling both module.py and package/)
+                    name = Path(root).stem if root.endswith('.py') else root
+                    if not name.startswith('_'):
+                        import_names.add(name)
         else:
-            # We have roots (from top_level.txt), now check for Namespace Packages
             for root in roots:
-                # Normalize slashes for comparison
-                files_list = dist.files or []
-                has_init = any(
-                    str(p).replace('\\', '/').endswith(f"{root}/__init__.py")
-                    for p in files_list
-                )
+                # 1. Global Guard: If the root itself is private, skip it entirely.
+                if root.startswith('_'):
+                    continue
+
+                # 2. Check if the root is a standard package (has __init__.py)
+                has_init = any(str(p).replace('\\', '/').endswith(f"{root}/__init__.py") for p in files_list)
 
                 if not has_init and files_list:
-                    # It's a directory without an __init__.py.
-                    # Only add sub-items if they contain actual importable code.
-                    sub_packages = set()
+                    # 3. It's a namespace. Find public importable paths.
+                    possible_targets = set()
                     for p in files_list:
-                        # Only subdirectories of root are valid sub-packages
-                        if len(p.parts) >= 3 and p.parts[0] == root:
-                            sub_dir = p.parts[1]
-                            # Use endswith to handle versioned .so files
-                            if p.name == "__init__.py" or str(p).endswith(('.py', '.so', '.pyd')):
-                                sub_packages.add(f"{root}.{sub_dir}")
+                        # Must be inside this root and be actual code
+                        if p.parts[0] == root and str(p).endswith(('.py', '.so', '.pyd')):
 
-                    if sub_packages:
-                        import_names.update(sub_packages)
+                            # Determine the "Effective Name" for privacy checking
+                            if p.name == '__init__.py':
+                                # For 'pkg/_internal/__init__.py', the package name is '_internal' (parent dir)
+                                # We know len(p.parts) >= 2 here because parts[0] is root
+                                effective_name = p.parts[-2]
+                            else:
+                                # For 'pkg/_utils.py', the module name is '_utils'
+                                effective_name = p.stem
+
+                            # Skip if the effective name is private
+                            if effective_name.startswith('_'):
+                                continue
+
+                            # Construct path
+                            parts = list(p.parts[:-1])
+                            if p.name != "__init__.py":
+                                parts.append(p.stem)
+
+                            if parts:
+                                possible_targets.add(".".join(parts))
+
+                    if possible_targets:
+                        # 4. Prefer shortest paths (top-most public packages)
+                        for target in sorted(possible_targets, key=len):
+                            if not any(target.startswith(existing + ".") for existing in import_names):
+                                import_names.add(target)
                         continue
 
+                    # 5. Safety Net: Empty namespace or all children were private.
+                    continue
+
+                # If it had an __init__ (standard package), just add the root.
                 import_names.add(root)
 
-        # Final Filter: Exclude known non-importable patterns like .libs
         final_names = {n for n in import_names if not n.endswith('.libs')}
 
         if not final_names:
