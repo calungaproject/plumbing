@@ -95,7 +95,6 @@ spec:
         # Fallback to file list if top_level.txt is missing
         if not roots and dist.files:
             for p in dist.files:
-                # p.parts[0] is the top-level directory/file in the wheel
                 root = p.parts[0]
                 # Skip metadata, hidden files, and files like 'setup.py' if they leaked in
                 if not (root.endswith(('.dist-info', '.egg-info')) or root.startswith('.')):
@@ -104,39 +103,48 @@ spec:
         else:
             # We have roots (from top_level.txt), now check for Namespace Packages
             for root in roots:
-                # A namespace package has no __init__.py in its root directory
-                # We normalize slashes to '/' to handle cross-platform metadata differences
+                # Normalize slashes for comparison
+                files_list = dist.files or []
                 has_init = any(
                     str(p).replace('\\', '/').endswith(f"{root}/__init__.py")
-                    for p in (dist.files or [])
+                    for p in files_list
                 )
 
-                if not has_init and dist.files:
-                    # It's likely a namespace. Find sub-packages (e.g., 'root/subpackage/__init__.py')
-                    sub_packages = {
-                        f"{root}.{p.parts[1]}" for p in dist.files
-                        if len(p.parts) >= 2 and p.parts[0] == root and p.name == "__init__.py"
-                    }
+                if not has_init and files_list:
+                    # It's a directory without an __init__.py.
+                    # Only add sub-items if they contain actual importable code.
+                    sub_packages = set()
+                    for p in files_list:
+                        # Only subdirectories of root are valid sub-packages
+                        if len(p.parts) >= 3 and p.parts[0] == root:
+                            sub_dir = p.parts[1]
+                            # Use endswith to handle versioned .so files
+                            if p.name == "__init__.py" or str(p).endswith(('.py', '.so', '.pyd')):
+                                sub_packages.add(f"{root}.{sub_dir}")
+
                     if sub_packages:
                         import_names.update(sub_packages)
-                        continue # Skip adding the bare root if we found specific sub-packages
+                        continue
 
                 import_names.add(root)
 
-        if not import_names:
+        # Final Filter: Exclude known non-importable patterns like .libs
+        final_names = {n for n in import_names if not n.endswith('.libs')}
+
+        if not final_names:
             print(f'ERROR: No import names could be resolved for: {dist_name}')
             sys.exit(1)
 
-        for import_name in import_names:
-            if import_name == 'tests' or import_name.startswith('_'):
-                print(f'Skipping import check for {import_name}')
+        for name in sorted(final_names):
+            if name == 'tests' or name.startswith('_'):
+                print(f'Skipping internal/test module: {name}')
                 continue
             try:
-                print(f'Trying to import {import_name}...')
-                importlib.import_module(import_name)
-                print(f'Successfully imported {import_name}')
+                print(f'Trying to import {name}...')
+                importlib.import_module(name)
+                print(f'Successfully imported {name}')
             except ImportError as e:
-                print(f'ERROR: Failed to import {import_name}: {e}')
+                print(f'ERROR: Failed to import {name}: {e}')
                 sys.exit(1)
             except Exception as e:
                 print(f'ERROR: An unexpected error occurred during import: {e}')
