@@ -74,17 +74,57 @@ spec:
         import importlib
         import importlib.metadata
         import sys
+        from pathlib import Path
 
-        wheel_filename = sys.argv[1]
+        # Extract distribution name from the filename
+        wheel_filename = Path(sys.argv[1]).name
         dist_name = wheel_filename.split('-')[0].replace('_', '-').lower()
 
-        package_map = importlib.metadata.packages_distributions()
-        import_names = [
-            imp_pkg for imp_pkg, dists in package_map.items()
-            if dist_name in [d.replace('_', '-').lower() for d in dists]
-        ]
+        try:
+            dist = importlib.metadata.distribution(dist_name)
+        except importlib.metadata.PackageNotFoundError:
+            print(f'ERROR: Distribution "{dist_name}" not found in environment.')
+            sys.exit(1)
+
+        import_names = set()
+
+        # Try to use top_level.txt if it exists
+        tl_content = dist.read_text('top_level.txt')
+        roots = set(tl_content.splitlines()) if tl_content else set()
+
+        # Fallback to file list if top_level.txt is missing
+        if not roots and dist.files:
+            for p in dist.files:
+                # p.parts[0] is the top-level directory/file in the wheel
+                root = p.parts[0]
+                # Skip metadata, hidden files, and files like 'setup.py' if they leaked in
+                if not (root.endswith(('.dist-info', '.egg-info')) or root.startswith('.')):
+                    # If it's a standalone .py file at root, use the stem; else use the folder name
+                    import_names.add(Path(root).stem if root.endswith('.py') else root)
+        else:
+            # We have roots (from top_level.txt), now check for Namespace Packages
+            for root in roots:
+                # A namespace package has no __init__.py in its root directory
+                # We normalize slashes to '/' to handle cross-platform metadata differences
+                has_init = any(
+                    str(p).replace('\\', '/').endswith(f"{root}/__init__.py")
+                    for p in (dist.files or [])
+                )
+
+                if not has_init and dist.files:
+                    # It's likely a namespace. Find sub-packages (e.g., 'root/subpackage/__init__.py')
+                    sub_packages = {
+                        f"{root}.{p.parts[1]}" for p in dist.files
+                        if len(p.parts) >= 2 and p.parts[0] == root and p.name == "__init__.py"
+                    }
+                    if sub_packages:
+                        import_names.update(sub_packages)
+                        continue # Skip adding the bare root if we found specific sub-packages
+
+                import_names.add(root)
+
         if not import_names:
-            print(f'ERROR: No import names found for distribution: {dist_name}')
+            print(f'ERROR: No import names could be resolved for: {dist_name}')
             sys.exit(1)
 
         for import_name in import_names:
