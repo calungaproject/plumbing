@@ -206,11 +206,14 @@ RUN dnf -y install \
 COPY requirements.txt .
 RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
+RUN venv/bin/python -m pip install git+https://github.com/calungaproject/wheel-patcher.git
 COPY scripts/* /usr/local/bin/
 
 RUN \
     ln -s /src/venv/bin/fromager /usr/local/bin/fromager && \
-    ln -s /src/venv/bin/wheel /usr/local/bin/wheel
+    ln -s /src/venv/bin/wheel /usr/local/bin/wheel && \
+    ln -s /src/venv/bin/syft /usr/local/bin/syft && \
+    ln -s /src/venv/bin/wheel-patcher /usr/local/bin/wheel-patcher
 
 ENV PYTHONUNBUFFERED=1
 CMD ["bash"]
