@@ -113,17 +113,6 @@ spec:
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:759861f128734090662b268ab219c88f055723fbb436cb4efa82b26437d17375
       workingDir: /var/workdir
-      env:
-        - name: SERVICE_ACCOUNT_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: username
-        - name: SERVICE_ACCOUNT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: password
       command:
         - collect-build-files
       args:
