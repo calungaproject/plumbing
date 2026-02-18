@@ -49,7 +49,7 @@ for WHEEL in "${WHEELS[@]}"; do
     log "Generating SBOM: ${SBOM_FILENAME}"
     syft scan "file:${WHEEL}" -o spdx-json="$SBOM_PATH"
 
-    # Use --output to a temp file on the SAME filesystem as the wheel to avoid
+    # Use --output to a temp file on the same filesystem as the wheel to avoid
     # "Invalid cross-device link" errors (os.rename can't cross mount points).
     PATCHED_WHEEL="${WHEEL}.patched"
     log "Injecting SBOM into ${WHEEL_NAME}"
