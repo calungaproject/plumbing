@@ -118,6 +118,13 @@ spec:
       args:
         - /var/workdir/output
         - /var/workdir/artifact
+    - name: inject-sbom-into-wheels
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:759861f128734090662b268ab219c88f055723fbb436cb4efa82b26437d17375
+      workingDir: /var/workdir
+      command:
+        - inject-sbom
+      args:
+        - /var/workdir/artifact
     - name: create-oci-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
       workingDir: /var/workdir

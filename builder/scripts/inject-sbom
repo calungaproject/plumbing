@@ -1,0 +1,62 @@
+#!/bin/bash
+set -euo pipefail
+
+# Inject SPDX SBOM files into Python wheels using Syft and wheel-patcher.
+# For each .whl file:
+#   1. Runs Syft to generate an SPDX JSON SBOM from the wheel contents
+#   2. Uses wheel-patcher to inject the SBOM into the wheel's .dist-info/ directory
+#   3. The wheel's RECORD file is updated by wheel-patcher
+
+ARTIFACT_DIR="${1:?Error: ARTIFACT_DIR argument is required}"
+
+if [[ ! -d "$ARTIFACT_DIR" ]]; then
+    echo "Error: Directory ${ARTIFACT_DIR} does not exist" >&2
+    exit 1
+fi
+
+if [ "${DEBUG:-}" = "1" ]; then
+    set -x
+fi
+
+# Logging function with timestamp
+log() {
+    echo "[$(date --utc -Ins)] $1" >&2
+}
+
+log "Injecting SPDX SBOMs into wheels in ${ARTIFACT_DIR}"
+
+shopt -s nullglob
+
+WHEELS=("${ARTIFACT_DIR}"/*.whl)
+
+if [[ ${#WHEELS[@]} -eq 0 ]]; then
+    log "No .whl files found in ${ARTIFACT_DIR}, nothing to do"
+    exit 0
+fi
+
+SBOM_COUNT=0
+
+for WHEEL in "${WHEELS[@]}"; do
+    WHEEL_NAME="$(basename "$WHEEL")"
+    log "Processing ${WHEEL_NAME}"
+
+    # Derive SBOM filename from wheel name:
+    # example) requests-2.32.4-py3-none-any.whl -> requests-2.32.4.spdx.json
+    PKG_NAME_VER=$(echo "$WHEEL_NAME" | sed 's/-\(py[23]\|cp[0-9]*\).*//')
+    SBOM_FILENAME="${PKG_NAME_VER}.spdx.json"
+    SBOM_PATH="/tmp/${SBOM_FILENAME}"
+
+    log "Generating SBOM: ${SBOM_FILENAME}"
+    syft scan "file:${WHEEL}" -o spdx-json="$SBOM_PATH"
+
+    log "Injecting SBOM into ${WHEEL_NAME}"
+    wheel-patcher add "$WHEEL" "$SBOM_PATH" \
+        --dest ".dist-info/${SBOM_FILENAME}" \
+        --in-place
+
+    rm -f "$SBOM_PATH"
+    SBOM_COUNT=$((SBOM_COUNT + 1))
+    log "Done: ${WHEEL_NAME}"
+done
+
+log "Injected SBOMs into ${SBOM_COUNT} wheel(s)"
