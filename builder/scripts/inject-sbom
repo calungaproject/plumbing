@@ -49,8 +49,11 @@ for WHEEL in "${WHEELS[@]}"; do
     log "Generating SBOM: ${SBOM_FILENAME}"
     syft scan "file:${WHEEL}" -o spdx-json="$SBOM_PATH"
 
+    # Set TMPDIR to the artifact directory so wheel-patcher's internal temp files
+    # stay on the same filesystem. wheel-patcher uses os.rename() which fails
+    # across mount points (Errno 18: Invalid cross-device link).
     log "Injecting SBOM into ${WHEEL_NAME}"
-    wheel-patcher add "$WHEEL" "$SBOM_PATH" \
+    TMPDIR="${ARTIFACT_DIR}" wheel-patcher add "$WHEEL" "$SBOM_PATH" \
         --dest ".dist-info/${SBOM_FILENAME}" \
         --in-place
 
