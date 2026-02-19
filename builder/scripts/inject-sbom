@@ -63,6 +63,8 @@ for WHEEL in "${WHEELS[@]}"; do
         --dest "${DIST_INFO_DIR}/${SBOM_FILENAME}" \
         --in-place
 
+    chmod 644 "$WHEEL"
+
     rm -f "$SBOM_PATH"
     SBOM_COUNT=$((SBOM_COUNT + 1))
     log "Done: ${WHEEL_NAME}"
