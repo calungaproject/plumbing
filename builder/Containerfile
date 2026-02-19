@@ -206,7 +206,7 @@ RUN dnf -y install \
 COPY requirements.txt .
 RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
-RUN venv/bin/python -m pip install git+https://github.com/calungaproject/wheel-patcher.git
+RUN venv/bin/python -m pip install git+https://github.com/ronnll/wheel-patcher.git
 COPY scripts/* /usr/local/bin/
 
 RUN \

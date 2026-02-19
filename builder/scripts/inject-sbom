@@ -40,11 +40,17 @@ for WHEEL in "${WHEELS[@]}"; do
     WHEEL_NAME="$(basename "$WHEEL")"
     log "Processing ${WHEEL_NAME}"
 
-    # Derive SBOM filename from wheel name:
-    # example) requests-2.32.4-py3-none-any.whl -> requests-2.32.4.spdx.json
+    # Derive package name and version from wheel filename.
+    # example) requests-2.32.4-py3-none-any.whl -> name=requests, ver=2.32.4
     PKG_NAME_VER=$(echo "$WHEEL_NAME" | sed 's/-\(py[23]\|cp[0-9]*\).*//')
     SBOM_FILENAME="${PKG_NAME_VER}.spdx.json"
     SBOM_PATH="/tmp/${SBOM_FILENAME}"
+
+    # Build the explicit dist-info directory name to avoid wheel-patcher's
+    # auto-resolution picking the wrong one when wheels bundle other packages
+    # (e.g. setuptools bundles importlib_metadata which has its own .dist-info).
+    # Wheel spec: dist-info dir uses underscores for dashes in the name.
+    DIST_INFO_DIR="$(echo "$PKG_NAME_VER" | tr '-' '_').dist-info"
 
     log "Generating SBOM: ${SBOM_FILENAME}"
     syft scan "file:${WHEEL}" -o spdx-json="$SBOM_PATH"
@@ -54,7 +60,7 @@ for WHEEL in "${WHEELS[@]}"; do
     # across mount points (Errno 18: Invalid cross-device link).
     log "Injecting SBOM into ${WHEEL_NAME}"
     TMPDIR="${ARTIFACT_DIR}" wheel-patcher add "$WHEEL" "$SBOM_PATH" \
-        --dest ".dist-info/${SBOM_FILENAME}" \
+        --dest "${DIST_INFO_DIR}/${SBOM_FILENAME}" \
         --in-place
 
     rm -f "$SBOM_PATH"
