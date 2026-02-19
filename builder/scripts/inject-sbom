@@ -40,17 +40,22 @@ for WHEEL in "${WHEELS[@]}"; do
     WHEEL_NAME="$(basename "$WHEEL")"
     log "Processing ${WHEEL_NAME}"
 
-    # Derive package name and version from wheel filename.
-    # example) requests-2.32.4-py3-none-any.whl -> name=requests, ver=2.32.4
+    # Derive SBOM filename from wheel name.
+    # example) requests-2.32.4-py3-none-any.whl -> requests-2.32.4.spdx.json
     PKG_NAME_VER=$(echo "$WHEEL_NAME" | sed 's/-\(py[23]\|cp[0-9]*\).*//')
     SBOM_FILENAME="${PKG_NAME_VER}.spdx.json"
     SBOM_PATH="/tmp/${SBOM_FILENAME}"
 
-    # Build the explicit dist-info directory name to avoid wheel-patcher's
-    # auto-resolution picking the wrong one when wheels bundle other packages
-    # (e.g. setuptools bundles importlib_metadata which has its own .dist-info).
-    # Wheel spec: dist-info dir uses underscores for dashes in the name.
-    DIST_INFO_DIR="$(echo "$PKG_NAME_VER" | tr '-' '_').dist-info"
+    # Read the actual top-level .dist-info directory name from inside the wheel.
+    # We can't compute it from the filename because build tags, normalization
+    # rules, and bundled packages make it unreliable.
+    # Only match top-level entries (no / before .dist-info) to skip bundled
+    # packages like importlib_metadata inside setuptools.
+    DIST_INFO_DIR=$(unzip -Z1 "$WHEEL" | grep -E '^[^/]+\.dist-info/' | head -1 | cut -d/ -f1)
+    if [[ -z "$DIST_INFO_DIR" ]]; then
+        log "ERROR: No .dist-info directory found in ${WHEEL_NAME}"
+        exit 1
+    fi
 
     log "Generating SBOM: ${SBOM_FILENAME}"
     syft scan "file:${WHEEL}" -o spdx-json="$SBOM_PATH"
