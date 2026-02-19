@@ -38,6 +38,10 @@ SBOM_COUNT=0
 
 for WHEEL in "${WHEELS[@]}"; do
     WHEEL_NAME="$(basename "$WHEEL")"
+    if [ $(wheel-patcher list "$WHEEL" | grep spdx) ]; then
+        log "Skipping SBOM generation for ${WHEEL_NAME} since it already has an SBOM"
+        continue
+    fi
     log "Processing ${WHEEL_NAME}"
 
     # Derive SBOM filename from wheel name.
