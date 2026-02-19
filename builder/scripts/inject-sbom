@@ -55,7 +55,8 @@ for WHEEL in "${WHEELS[@]}"; do
     log "Injecting SBOM into ${WHEEL_NAME}"
     TMPDIR="${ARTIFACT_DIR}" wheel-patcher add "$WHEEL" "$SBOM_PATH" \
         --dest ".dist-info/${SBOM_FILENAME}" \
-        --in-place
+        --output "$PATCHED_WHEEL"
+    mv -f "$PATCHED_WHEEL" "$WHEEL"
 
     rm -f "$SBOM_PATH"
     SBOM_COUNT=$((SBOM_COUNT + 1))
