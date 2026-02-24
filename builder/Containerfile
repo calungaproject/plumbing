@@ -10,6 +10,8 @@ ARG MANYLINUX_DISABLE_CLANG=0
 ARG MANYLINUX_DISABLE_CLANG_FOR_CPYTHON=0
 ARG MANYLINUX_CLANG_VERSION=21.1.5.0
 ARG MANYLINUX_COSIGN_VERSION=3.0.2
+ARG SYFT_VERSION=1.42.1
+ARG SYFT_SHA256=989ded4e772810f93de6ccdc4512f79a6dabb5fb2dd2a9ffc72a80c955e6125a
 
 
 FROM $BASEIMAGE AS runtime_base_packages
@@ -207,12 +209,21 @@ COPY requirements.txt .
 RUN cpython3.12 -m venv venv
 RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
 RUN venv/bin/python -m pip install git+https://github.com/ronnll/wheel-patcher.git
+
+# Install syft binary directly from GitHub releases (the anchore-syft PyPI package is no longer maintained)
+ARG SYFT_VERSION
+ARG SYFT_SHA256
+RUN curl -sSfL -o /tmp/syft.tar.gz \
+        https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz \
+    && echo "${SYFT_SHA256}  /tmp/syft.tar.gz" | sha256sum -c \
+    && tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft \
+    && rm /tmp/syft.tar.gz
+
 COPY scripts/* /usr/local/bin/
 
 RUN \
     ln -s /src/venv/bin/fromager /usr/local/bin/fromager && \
     ln -s /src/venv/bin/wheel /usr/local/bin/wheel && \
-    ln -s /src/venv/bin/syft /usr/local/bin/syft && \
     ln -s /src/venv/bin/wheel-patcher /usr/local/bin/wheel-patcher
 
 ENV PYTHONUNBUFFERED=1
