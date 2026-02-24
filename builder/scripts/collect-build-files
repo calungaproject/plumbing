@@ -101,7 +101,7 @@ if [ -d "${WHEELS_DIR}" ]; then
     
     for file in "${WHEELS_DIR}"/*.whl; do
         FILENAME="${file##*/}"
-        
+
         # 1. Check if wheel is in prebuilt directory, skip if so
         if [[ -f "${PREBUILT_DIR}/${FILENAME}" ]]; then
             log "Skipping ${FILENAME} - found in prebuilt directory"
@@ -115,9 +115,18 @@ if [ -d "${WHEELS_DIR}" ]; then
         #    log "Skipping ${FILENAME} - already exists in Pulp"
         #    continue
         #fi
-        
-        log "Collecting ${FILENAME}"
-        cp "$file" "${DESTINATION}/"
+
+        # check wheel type, copy valid wheels
+        case $FILENAME in
+            # pure-python or manylinux
+            *none-any.whl|*manylinux*)
+                log "Collecting ${FILENAME}"
+                cp "$file" "${DESTINATION}/"
+                ;;
+            *)
+                log "Skipping collection of ${FILENAME}"
+                ;;
+        esac;
     done
     
     shopt -u nullglob
