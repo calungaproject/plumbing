@@ -110,7 +110,7 @@ if [ -d "${WHEELS_DIR}" ]; then
         
         # 2. Check if wheel already exists in Pulp
         #log "Checking if ${FILENAME} exists in Pulp..."
-        #RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
+        #RESPONSE=$(curl --netrc --fail --silent "https://packages.redhat.com/api/pulp/public-trusted-libraries/api/v3/content/python/packages/?filename=${FILENAME}")
         #if echo "$RESPONSE" | grep -q '"count":[1-9]'; then
         #    log "Skipping ${FILENAME} - already exists in Pulp"
         #    continue
