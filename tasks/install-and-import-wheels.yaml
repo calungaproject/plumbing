@@ -95,12 +95,22 @@ spec:
 
         # Check file list ONLY if top_level.txt was missing/empty
         if not import_names and dist.files:
+            # Collect only actual Python packages (dirs with __init__.py)
+            # and top-level .py modules, skipping data files like .rst, .txt, etc.
             for p in dist.files:
                 root = p.parts[0]
                 # Filter out metadata directories and hidden files
-                if not (root.endswith(('.dist-info', '.egg-info')) or root.startswith('.')):
-                    name = Path(root).stem if root.endswith('.py') else root
-                    import_names.add(name)
+                if root.endswith(('.dist-info', '.egg-info')) or root.startswith('.'):
+                    continue
+                # A directory containing __init__.py is a Python package
+                if len(p.parts) > 1 and p.parts[-1] == '__init__.py':
+                    import_names.add(root)
+                # A top-level .py file is a module
+                elif len(p.parts) == 1 and root.endswith('.py'):
+                    import_names.add(Path(root).stem)
+                # A top-level .so/.pyd is an extension module
+                elif len(p.parts) == 1 and ('.so' in root or root.endswith('.pyd')):
+                    import_names.add(root.split('.')[0])
 
         if not import_names:
             print(f'ERROR: Could not determine any import names for {dist_name}')
