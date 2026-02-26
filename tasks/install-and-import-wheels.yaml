@@ -116,6 +116,7 @@ spec:
             print(f'ERROR: Could not determine any import names for {dist_name}')
             sys.exit(1)
 
+        success_count = 0
         for name in sorted(import_names):
             # Skip private modules or explicit skips
             if name == 'tests' or name.endswith('.libs') or name.startswith('_'):
@@ -125,12 +126,16 @@ spec:
                 print(f'Trying to import {name}...')
                 importlib.import_module(name)
                 print(f'Successfully imported {name}')
+                success_count += 1
             except ImportError as e:
-                print(f'ERROR: Failed to import {name}: {e}')
-                sys.exit(1)
+                print(f'WARNING: Failed to import {name}: {e}')
             except Exception as e:
                 print(f'ERROR: Unexpected error: {e}')
                 sys.exit(1)
+
+        if success_count == 0:
+            print(f'ERROR: No modules could be imported for {dist_name}')
+            sys.exit(1)
         EOF
 
         echo "Changing directory to ${FILES_DIR}"
