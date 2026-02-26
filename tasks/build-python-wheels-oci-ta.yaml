@@ -42,6 +42,12 @@ spec:
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
       default: ""
+    - name: PULP_API_BASE_URL
+      description: The base URL for your PULP API
+      default: ""
+    - name: PULP_REPO_ID
+      description: The ID for your PULP Repository
+      default: ""
     - name: SERVICE_ACCOUNT_SECRET_NAME
       type: string
       description: >-
@@ -117,6 +123,8 @@ spec:
       args:
         - /var/workdir/output
         - /var/workdir/artifact
+        - $(params.PULP_API_BASE_URL)
+        - $(params.PULP_REPO_ID)
     - name: inject-sbom-into-wheels
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:e4b077d17da00af6b37804e26161596530c02f4c91a748de2fa18b2ffafa0c1f
       workingDir: /var/workdir
