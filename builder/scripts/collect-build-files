@@ -10,7 +10,7 @@ show_help() {
 Collect build files produced by Fromager into a single directory.
 
 USAGE:
-    $0 [OPTIONS] SOURCE DESTINATION
+    $0 [OPTIONS] SOURCE DESTINATION PULP_API_BASE_URL PULP_REPO_ID
 
 ARGUMENTS:
     SOURCE                  The high-level Fromager output directory containing wheels, sdists, build
