@@ -195,6 +195,7 @@ WORKDIR /src
 RUN dnf -y install \
     rust \
     cargo \
+    jq \
     libffi-devel \
     libjpeg-turbo-devel \
     libyaml-devel \
