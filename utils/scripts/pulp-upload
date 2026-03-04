@@ -12,14 +12,16 @@ export TWINE_PASSWORD=$(< /etc/service-account-secret/password)
 shopt -s nullglob
 
 for file in *.whl *.tar.gz; do
-    echo "Trying to upload $file..."
-    if ! twine upload --non-interactive --verbose --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
-        echo "Failed to upload $file with attestation."
-        if ! twine upload --non-interactive --verbose --repository-url "${REPOSITORY_URL}" $file; then
-            echo "Failed to upload $file without attestation."
-            echo "Skipping this file due to failures."
-        fi
+    if [[ ! -f "${file}.attestation" ]]; then
+        echo "Skipping $file - attestation file missing"
+        continue
     fi
+
+    if ! twine upload --non-interactive --verbose --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
+        echo "Failed to upload $file with attestation, skipping."
+        continue
+    fi
+    echo "Uploaded $file with attestation."
 done
 
 echo "Upload complete!"
