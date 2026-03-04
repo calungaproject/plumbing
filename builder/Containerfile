@@ -196,7 +196,7 @@ RUN dnf -y install \
     rust \
     cargo \
     jq \
-    curl \
+    libcurl-devel \
     libffi-devel \
     libjpeg-turbo-devel \
     libyaml-devel \
