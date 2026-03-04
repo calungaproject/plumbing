@@ -3,6 +3,8 @@ set -euo pipefail
 
 SOURCE=""
 DESTINATION=""
+PULP_API_BASE_URL=""
+PULP_REPO_ID=""
 
 # Help function
 show_help() {
