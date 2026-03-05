@@ -125,8 +125,8 @@ if [ -d "${WHEELS_DIR}" ]; then
         # 2. Check if wheel already exists in Pulp
         log "Checking if ${FILENAME} exists in Pulp..."
         WHEEL_EXISTS=$( curl --fail --silent --retry 3 --max-time 30  -G \
-            "${PULP_API_BASE_URL}content/python/packages/" -d "filename=${FILENAME}" \
-            -d "repository_version=${REPO_VERSION}" | jq -e '.results | length != 0' )
+            "${PULP_API_BASE_URL}content/python/packages/" --data-urlencode "filename=${FILENAME}" \
+            --data-urlencode "repository_version=${REPO_VERSION}" | jq '.results | length != 0' )
 
         if $WHEEL_EXISTS; then
             log "Skipping ${FILENAME} - already exists in Pulp"
