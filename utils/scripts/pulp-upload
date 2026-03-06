@@ -4,16 +4,41 @@ set -euo pipefail
 cd "${FILES_DIR}"
 ls -la .
 
+# Check if required environment variables are set
+if [[ -z "$TWINE_USERNAME" || -z "$TWINE_PASSWORD" ]]; then
+    echo 'Error: TWINE_USERNAME and TWINE_PASSWORD are both required.' >&2
+    exit 1
+fi
+if [[ -z "$PULP_BASE_URL" || -z "$PULP_API_ROOT" || -z "$PULP_DOMAIN" \
+    || -z "$PULP_REPOSITORY" || -z "$PULP_REPO_ID" ]]; then
+    echo 'Error: PULP configuration is required.' >&2
+    exit 1
+fi
+
+# used for twine upload
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
 
-export TWINE_USERNAME=$(< /etc/service-account-secret/username)
-export TWINE_PASSWORD=$(< /etc/service-account-secret/password)
+# used for getting most recent repo id and checking for duplicates
+PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
 
 shopt -s nullglob
+
+# get most recent repository_version
+REPO_VERSION=$( curl --fail --silent --retry 3 --max-time 30 \
+    "${PULP_QUERY_BASE}repositories/python/python/${PULP_REPO_ID}/" | jq -r .latest_version_href )
 
 for file in *.whl *.tar.gz; do
     if [[ ! -f "${file}.attestation" ]]; then
         echo "Skipping $file - attestation file missing"
+        continue
+    fi
+
+    echo "Checking if ${file} exists in Pulp..."
+    WHEEL_EXISTS=$( curl --fail --silent --retry 3 --max-time 30  -G \
+        "${PULP_QUERY_BASE}content/python/packages/" --data-urlencode "filename=${file}" \
+        --data-urlencode "repository_version=${REPO_VERSION}" | jq '.results | length != 0' )
+    if $WHEEL_EXISTS; then
+        echo "Skipping ${file} - already exists in Pulp"
         continue
     fi
 

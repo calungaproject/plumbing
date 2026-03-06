@@ -27,6 +27,8 @@ spec:
       description: The domain to use for Pulp operations
     - name: PULP_REPOSITORY
       type: string
+    - name: PULP_REPOSITORY_ID
+      type: string
     - name: sourceDataArtifact
       type: string
       description: Trusted Artifact to use to obtain the Snapshot
@@ -44,9 +46,6 @@ spec:
         If not provided, attestations will be generated but not signed.
       default: ""
   volumes:
-    - name: service-account-secret
-      secret:
-        secretName: $(params.SERVICE_ACCOUNT_SECRET_NAME)
     - name: cosign-secret
       secret:
         secretName: $(params.COSIGN_SECRET_NAME)
@@ -65,6 +64,8 @@ spec:
         value: $(params.PULP_DOMAIN)
       - name: PULP_REPOSITORY
         value: $(params.PULP_REPOSITORY)
+      - name: PULP_REPOSITORY_ID
+        value: $(params.PULP_REPOSITORY_ID)
       - name: IMAGES_TXT
         value: /var/workdir/images.txt
       - name: FILES_DIR
@@ -72,9 +73,6 @@ spec:
       - name: TRUSTED_ARTIFACTS_EXTRACT_DIR
         value: $(params.TRUSTED_ARTIFACTS_EXTRACT_DIR)
     volumeMounts:
-      - name: service-account-secret
-        mountPath: "/etc/service-account-secret"
-        readOnly: true
       - name: workdir
         mountPath: "/var/workdir"
     workingDir: "/var/workdir"
@@ -123,3 +121,14 @@ spec:
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:459c8428dd9f9bd1a8f66f0e822e75d599ae40b40c3f3e1f278b8d6c2296bb53
       command:
         - pulp-upload
+      env:
+        - name: TWINE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
+              key: username
+        - name: TWINE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
+              key: password

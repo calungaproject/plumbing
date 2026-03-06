@@ -63,12 +63,15 @@ spec:
     - name: pulpApiRoot
       type: string
       default: "/api/"
-    - name: serviceAccountSecretName
-      type: string
-      default: service-account-credentials
     - name: pulpRepository
       type: string
       default: main
+    - name: pulpRepositoryID
+      type: string
+      default: 019aa284-e214-77e7-862c-48d5905cccc6
+    - name: serviceAccountSecretName
+      type: string
+      default: service-account-credentials
     - name: cosignSecretName
       type: string
       description: >-
@@ -213,6 +216,8 @@ spec:
           value: $(params.serviceAccountSecretName)
         - name: PULP_REPOSITORY
           value: $(params.pulpRepository)
+        - name: PULP_REPOSITORY_ID
+          value: $(params.pulpRepositoryID)
         - name: COSIGN_SECRET_NAME
           value: $(params.cosignSecretName)
         - name: sourceDataArtifact
