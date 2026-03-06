@@ -3,8 +3,6 @@ set -euo pipefail
 
 SOURCE=""
 DESTINATION=""
-PULP_API_BASE_URL=""
-PULP_REPO_ID=""
 
 # Help function
 show_help() {
@@ -12,22 +10,19 @@ show_help() {
 Collect build files produced by Fromager into a single directory.
 
 USAGE:
-    $0 [OPTIONS] SOURCE DESTINATION PULP_API_BASE_URL PULP_REPO_ID
+    $0 [OPTIONS] SOURCE DESTINATION
 
 ARGUMENTS:
     SOURCE                  The high-level Fromager output directory containing wheels, sdists, build
                             sequence summary, and other files.
     DESTINATION             The destination directory to copy the Fromager output to. Directory is
                             created if it does not exist, or cleared otherwise.
-    PULP_API_BASE_URL       Base URL for your PULP API.
-    PULP_REPO_ID            The ID of your PULP Repository
 
 OPTIONS:
     --help                          Show this help message
 
 EXAMPLES:
-    $0 /tmp/build-output /tmp/artifact https://foo.com/api/pulp/public-domain/api/v3/ 0123abcd-e1gh-ab12-ff3f-48d5805cgcc6
-
+    $0 /tmp/build-output /tmp/artifact
 ENVIRONMENT:
     DEBUG=1                        Enable debug mode with verbose output
 
@@ -56,12 +51,6 @@ while [[ $# -gt 0 ]]; do
             elif [[ -z "$DESTINATION" ]]; then
                 DESTINATION="$1"
                 shift
-            elif [[ -z "$PULP_API_BASE_URL" ]]; then
-                PULP_API_BASE_URL="$1"
-                shift
-            elif [[ -z "$PULP_REPO_ID" ]]; then
-                PULP_REPO_ID="$1"
-                shift
             else
                 echo 'Error: Unexpected number of parameters.' >&2
                 exit 1
@@ -73,11 +62,6 @@ done
 # Check if required positional argument is provided
 if [[ -z "$SOURCE" || -z "$DESTINATION" ]]; then
     echo 'Error: SOURCE and DESTINATION are both required.' >&2
-    exit 1
-fi
-
-if [[ -z "$PULP_API_BASE_URL" || -z "$PULP_REPO_ID" ]]; then
-    echo 'Error: PULP_API_BASE_URL and PULP_REPO_ID are both required.' >&2
     exit 1
 fi
 
@@ -102,11 +86,6 @@ rm -rf "${DESTINATION}/{*,.*}" && mkdir -p "${DESTINATION}"
 
 # TODO: The "downloads" name in the path is a misnomer. Those are actually built wheels.
 WHEELS_DIR="${SOURCE}/wheels-repo/downloads"
-PREBUILT_DIR="${SOURCE}/wheels-repo/prebuilt"
-
-# get most recent repository_version
-REPO_VERSION=$( curl --fail --silent --retry 3 --max-time 30 \
-    "${PULP_API_BASE_URL}repositories/python/python/${PULP_REPO_ID}/" | jq -r .latest_version_href )
 
 # Copy all built wheels, ignoring prebuilt wheels and wheels already in Pulp
 if [ -d "${WHEELS_DIR}" ]; then
@@ -116,24 +95,7 @@ if [ -d "${WHEELS_DIR}" ]; then
     for file in "${WHEELS_DIR}"/*.whl; do
         FILENAME="${file##*/}"
 
-        # 1. Check if wheel is in prebuilt directory, skip if so
-        if [[ -f "${PREBUILT_DIR}/${FILENAME}" ]]; then
-            log "Skipping ${FILENAME} - found in prebuilt directory"
-            continue
-        fi
-        
-        # 2. Check if wheel already exists in Pulp
-        log "Checking if ${FILENAME} exists in Pulp..."
-        WHEEL_EXISTS=$( curl --fail --silent --retry 3 --max-time 30  -G \
-            "${PULP_API_BASE_URL}content/python/packages/" --data-urlencode "filename=${FILENAME}" \
-            --data-urlencode "repository_version=${REPO_VERSION}" | jq '.results | length != 0' )
-
-        if $WHEEL_EXISTS; then
-            log "Skipping ${FILENAME} - already exists in Pulp"
-            continue
-        fi
-
-        # 3. check wheel type, only collect valid wheels
+        # check wheel type, only collect valid wheels
         case $FILENAME in
             # pure-python or manylinux
             *none-any.whl|*manylinux*)

@@ -42,18 +42,6 @@ spec:
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
       default: ""
-    - name: PULP_API_BASE_URL
-      description: The base URL for your PULP API
-      default: ""
-    - name: PULP_REPO_ID
-      description: The ID for your PULP Repository
-      default: ""
-    - name: SERVICE_ACCOUNT_SECRET_NAME
-      type: string
-      description: >-
-        The name of the secret containing the terms-based registry service account credentials.
-        It must have the username and password data attributes.
-      default: builder-service-account
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -95,17 +83,6 @@ spec:
     - name: build-wheels
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:837b56e051a5d35d6707f84f967d5adaf03ee7f1b53d91443d4e05b9a9610326
       workingDir: /var/workdir
-      env:
-        - name: SERVICE_ACCOUNT_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: username
-        - name: SERVICE_ACCOUNT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: password
       volumeMounts:
         - mountPath: /mnt/trusted-ca
           name: trusted-ca
@@ -123,8 +100,6 @@ spec:
       args:
         - /var/workdir/output
         - /var/workdir/artifact
-        - $(params.PULP_API_BASE_URL)
-        - $(params.PULP_REPO_ID)
     - name: inject-sbom-into-wheels
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:837b56e051a5d35d6707f84f967d5adaf03ee7f1b53d91443d4e05b9a9610326
       workingDir: /var/workdir
