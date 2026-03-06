@@ -11,6 +11,7 @@ RUN dnf -y install \
     --setopt install_weak_deps=0 \
     --nodocs \
     python3 \
+    jq \
     && dnf clean all
 
 ###############
