@@ -4,16 +4,30 @@ set -euo pipefail
 cd "${FILES_DIR}"
 ls -la .
 
+# used for twine upload
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_REPOSITORY}/simple/"
 
-export TWINE_USERNAME=$(< /etc/service-account-secret/username)
-export TWINE_PASSWORD=$(< /etc/service-account-secret/password)
+# base query for curling pulp api for a public- domain
+PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
+
+# get most recent repository version for PULP_REPOSITORY
+PULP_REPOSITORY_VERSION=$( curl --fail --silent --retry 3 --max-time 30 "${PULP_QUERY_BASE}repositories/python/python/" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
 
 shopt -s nullglob
 
 for file in *.whl *.tar.gz; do
     if [[ ! -f "${file}.attestation" ]]; then
         echo "Skipping $file - attestation file missing"
+        continue
+    fi
+
+    echo "Checking if ${file} exists in Pulp..."
+    WHEEL_EXISTS=$( curl --fail --silent --retry 3 --max-time 30  -G \
+        "${PULP_QUERY_BASE}content/python/packages/" --data-urlencode "filename=${file}" \
+        --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" | jq '.results | length != 0' )
+    if $WHEEL_EXISTS; then
+        echo "Skipping ${file} - already exists in Pulp"
         continue
     fi
 
