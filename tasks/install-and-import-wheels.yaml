@@ -117,8 +117,8 @@ spec:
             sys.exit(1)
 
         for name in sorted(import_names):
-            # Skip private modules or explicit skips
-            if name == 'tests' or name.endswith('.libs') or name.startswith('_'):
+            # Skip private modules, test plugins, or explicit skips
+            if name == 'tests' or name.endswith('.libs') or name.startswith(('_', 'pytest_')):
                 continue
 
             try:
