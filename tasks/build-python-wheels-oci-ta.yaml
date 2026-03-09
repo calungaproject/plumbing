@@ -81,7 +81,7 @@ spec:
           readOnly: true
           subPath: ca-bundle.crt
     - name: build-wheels
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:837b56e051a5d35d6707f84f967d5adaf03ee7f1b53d91443d4e05b9a9610326
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:ace4da942154d9ee2e53fe126de9b029b4ca65243335b365b2e9e7c24d3faf00
       workingDir: /var/workdir
       volumeMounts:
         - mountPath: /mnt/trusted-ca
@@ -94,14 +94,14 @@ spec:
         - --cache-wheel-server-url
         - $(params.WHEEL_SERVER_URL)
     - name: collect-build-files
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:837b56e051a5d35d6707f84f967d5adaf03ee7f1b53d91443d4e05b9a9610326
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:ace4da942154d9ee2e53fe126de9b029b4ca65243335b365b2e9e7c24d3faf00
       command:
         - collect-build-files
       args:
         - /var/workdir/output
         - /var/workdir/artifact
     - name: inject-sbom-into-wheels
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:837b56e051a5d35d6707f84f967d5adaf03ee7f1b53d91443d4e05b9a9610326
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:ace4da942154d9ee2e53fe126de9b029b4ca65243335b365b2e9e7c24d3faf00
       workingDir: /var/workdir
       command:
         - inject-sbom
