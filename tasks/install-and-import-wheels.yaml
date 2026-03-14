@@ -59,13 +59,15 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        if command -v dnf >/dev/null 2>&1; then
+        if command -v python3.12 >/dev/null 2>&1; then
+            echo "python3.12 is already available, skipping installation"
+        elif command -v dnf >/dev/null 2>&1; then
             dnf install -y python3.12
         elif command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
             apt-get update && apt-get install -y python3.12 python3.12-venv
         else
-            echo "ERROR: No supported package manager found"
+            echo "ERROR: No supported package manager found and python3.12 is not installed"
             exit 1
         fi
 
