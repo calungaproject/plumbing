@@ -22,6 +22,22 @@ NC='\033[0m' # No Color
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+SKIP_BUILD=0 # Default to building the image
+
+# Help function
+show_help() {
+    cat << EOF
+Run build-wheels script test suite.
+
+USAGE:
+    $0 [OPTIONS]
+
+OPTIONS:
+    --skip-build                    Don't build image, pull the one from IMAGE_PULLSPEC
+    --help                          Show this help message
+EOF
+    exit 0
+}
 
 # Cleanup function
 cleanup() {
@@ -116,7 +132,7 @@ assert_file_exists() {
     fi
 }
 
-# Setup function - build container image
+# Setup function - build or pull container image
 setup() {
     log_info "Setting up test environment..."
 
@@ -129,14 +145,25 @@ setup() {
     # Create test output directory
     mkdir -p "$TEST_OUTPUT_DIR"
 
-    # Build the container image using builder Containerfile
-    log_info "Building container image: $CONTAINER_IMAGE"
-
-    if podman build -t "$CONTAINER_IMAGE" -f "$BUILDER_DIR/Containerfile" "$BUILDER_DIR"; then
-        log_info "Container image built successfully"
+    if [ "$SKIP_BUILD" -eq 1 ]; then
+        log_info "Skipping build. Pulling container image: $IMAGE_PULLSPEC"
+        if podman pull "$IMAGE_PULLSPEC"; then
+            CONTAINER_IMAGE="$IMAGE_PULLSPEC"
+            log_info "Container image pulled successfully"
+        else
+            log_error "Failed to pull container image: $IMAGE_PULLSPEC"
+            exit 1
+        fi
     else
-        log_error "Failed to build container image"
-        exit 1
+        # Build the container image using builder Containerfile
+        log_info "Building container image: $CONTAINER_IMAGE"
+
+        if podman build -t "$CONTAINER_IMAGE" -f "$BUILDER_DIR/Containerfile" "$BUILDER_DIR"; then
+            log_info "Container image built successfully"
+        else
+            log_error "Failed to build container image"
+            exit 1
+        fi
     fi
 }
 
@@ -285,6 +312,28 @@ test_build_sequence_summaries() {
 
 # Main execution
 main() {
+    # Parse command line arguments
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            --help)
+                show_help
+                ;;
+            --skip-build)
+                SKIP_BUILD=1
+                shift ;;
+            -*)
+                echo "Error: Unknown option $1" >&2
+                echo "Use --help for usage information" >&2
+                exit 1
+                ;;
+            *)
+                echo "Error: Invalid argument $1" >&2
+                echo "Use --help for usage information" >&2
+                exit 1
+                ;;
+        esac
+    done
+
     echo "======================================="
     echo "  Build-wheels Script Test Suite"
     echo "======================================="
