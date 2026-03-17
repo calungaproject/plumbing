@@ -17,5 +17,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
       
-    - name: Run test suite
+    - name: Check for changes in builder/
+      uses: dorny/paths-filter@v4
+      id: filter
+      with:
+        filters: |
+          builder_changed:
+            - 'builder/**'
+
+    - name: Run test suite (with build)
+      if: steps.filter.outputs.builder_changed == 'true'
       run: ./tests/test-build-wheels.sh
+
+    - name: Run test suite (skip build, pull image)
+      if: steps.filter.outputs.builder_changed == 'false'
+      run: ./tests/test-build-wheels.sh --skip-build
