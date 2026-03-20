@@ -1,5 +1,5 @@
 # default to latest supported policy, x86_64
-ARG BASEIMAGE=amd64/almalinux:8
+ARG BASEIMAGE=registry.access.redhat.com/ubi8/ubi@sha256:28a85f76ad1ea0a46a81a934b02fff48d75541f77777be403d48b6bb99a363ad
 ARG POLICY=manylinux_2_28
 ARG PLATFORM=x86_64
 ARG DEVTOOLSET_ROOTPATH=/opt/rh/gcc-toolset-14/root
@@ -147,6 +147,69 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-zstd.sh
 
 
+FROM build_base AS build_rust
+COPY build_scripts/build-rust.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export RUST_VERSION=1.94.0 && \
+    export RUST_HASH=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 && \
+    export RUST_DOWNLOAD_URL=https://static.rust-lang.org/rustup/dist && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
+
+
+FROM build_base AS build_libjpeg_turbo
+COPY build_scripts/build-libjpeg-turbo.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBJPEG_TURBO_VERSION=3.1.3 && \
+    export LIBJPEG_TURBO_HASH=075920b826834ac4ddf97661cc73491047855859affd671d52079c6867c1c6c0 && \
+    export LIBJPEG_TURBO_DOWNLOAD_URL=https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libjpeg-turbo.sh
+
+
+FROM build_base AS build_libyaml
+COPY build_scripts/build-libyaml.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBYAML_VERSION=0.2.5 && \
+    export LIBYAML_HASH=c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4 && \
+    export LIBYAML_DOWNLOAD_URL=https://pyyaml.org/download/libyaml && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libyaml.sh
+
+
+FROM build_base AS build_libxml2
+COPY build_scripts/build-libxml2.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBXML2_VERSION=2.15.1 && \
+    export LIBXML2_HASH=c008bac08fd5c7b4a87f7b8a71f283fa581d80d80ff8d2efd3b26224c39bc54c && \
+    export LIBXML2_DOWNLOAD_URL=https://download.gnome.org/sources/libxml2 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libxml2.sh
+
+
+FROM build_base AS build_libxslt
+COPY --from=build_libxml2 /manylinux-buildfs /
+COPY build_scripts/build-libxslt.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBXSLT_VERSION=1.1.45 && \
+    export LIBXSLT_HASH=9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e && \
+    export LIBXSLT_DOWNLOAD_URL=https://download.gnome.org/sources/libxslt && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libxslt.sh
+
+
+FROM build_base AS build_libffi
+COPY build_scripts/build-libffi.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBFFI_VERSION=3.5.2 && \
+    export LIBFFI_HASH=f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc && \
+    export LIBFFI_DOWNLOAD_URL=https://github.com/libffi/libffi/releases/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libffi.sh
+
+
+FROM build_base AS build_openblas
+COPY build_scripts/build-openblas.sh /opt/_internal/build_scripts/
+RUN export OPENBLAS_VERSION=0.3.31 && \
+    export OPENBLAS_HASH=6dd2a63ac9d32643b7cc636eab57bf4e57d0ed1fff926dfbc5d3d97f2d2be3a6 && \
+    export OPENBLAS_DOWNLOAD_URL=https://github.com/OpenMathLib/OpenBLAS/releases/download && \
+    /opt/_internal/build_scripts/build-openblas.sh
+
+
 FROM --platform=${BUILDPLATFORM} ghcr.io/sigstore/cosign/cosign:v${MANYLINUX_COSIGN_VERSION} AS cosign-bin
 
 
@@ -167,6 +230,12 @@ COPY build_scripts/build-cpython.sh /opt/_internal/build_scripts/
 
 
 FROM build_cpython AS build_cpython312
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_libyaml /manylinux-buildfs /
+COPY --from=build_libxml2 /manylinux-buildfs /
+COPY --from=build_libxslt /manylinux-buildfs /
+COPY --from=build_libffi /manylinux-buildfs /
+COPY --from=build_openblas /manylinux-buildfs /
 ARG MANYLINUX_DISABLE_CLANG_FOR_CPYTHON
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-cpython.sh thomas@python.org https://accounts.google.com 3.12.12
@@ -178,6 +247,35 @@ COPY --from=build_mpdecimal /manylinux-rootfs /
 COPY --from=build_zstd /manylinux-rootfs /
 COPY --from=build_sqlite3 /manylinux-rootfs /
 COPY --from=build_git /manylinux-rootfs /
+COPY --from=build_rust /manylinux-rootfs /
+COPY --from=build_libjpeg_turbo /manylinux-rootfs /
+COPY --from=build_libyaml /manylinux-rootfs /
+COPY --from=build_libxml2 /manylinux-rootfs /
+COPY --from=build_libxslt /manylinux-rootfs /
+COPY --from=build_libffi /manylinux-rootfs /
+COPY --from=build_openblas /manylinux-rootfs /
+RUN echo "/opt/_internal/libjpeg-turbo-3.1/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    echo "/opt/_internal/libyaml-0.2/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    echo "/opt/_internal/libxml2-2.15/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    echo "/opt/_internal/libxslt-1.1/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    echo "/opt/_internal/libffi-3/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    echo "/opt/_internal/openblas-0/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+    if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
+
+# Copy build-time files (headers, pkgconfig) needed for building wheels
+COPY --from=build_libjpeg_turbo /manylinux-buildfs/opt /opt
+COPY --from=build_libyaml /manylinux-buildfs/opt /opt
+COPY --from=build_libxml2 /manylinux-buildfs/opt /opt
+COPY --from=build_libxslt /manylinux-buildfs/opt /opt
+COPY --from=build_libffi /manylinux-buildfs/opt /opt
+COPY --from=build_openblas /manylinux-buildfs/opt /opt
+# Copy pkgconfig symlinks
+COPY --from=build_libjpeg_turbo /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=build_libyaml /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=build_libxml2 /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=build_libxslt /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=build_libffi /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=build_openblas /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
 COPY build_scripts /opt/_internal/build_scripts/
 RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
     mkdir -p /opt/_internal && \
@@ -191,18 +289,14 @@ COPY tests /opt/_internal/tests/
 ENV SSL_CERT_FILE=/opt/_internal/certs.pem
 
 WORKDIR /src
-# we should likely build these from source in the future
+# perl-IPC-Cmd is a build tool (not bundled in wheels)
+# openssl-devel used during configure but we build OpenSSL from source
+# cmake needed for CMake-based builds (libjpeg-turbo, libtiff, openblas)
 RUN dnf -y install \
-    rust \
-    cargo \
-    libffi-devel \
-    libjpeg-turbo-devel \
-    libyaml-devel \
-    libxml2-devel \
-    libxslt-devel \
+    --setopt install_weak_deps=0 \
     openssl-devel \
-    openblas-devel \
     perl-IPC-Cmd \
+    cmake \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .

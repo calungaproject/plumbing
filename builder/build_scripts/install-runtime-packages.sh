@@ -33,8 +33,15 @@ source "${MY_DIR}/build_utils.sh"
 
 
 # MANYLINUX_DEPS: Install development packages (except for libgcc which is provided by gcc install)
+# Note: UBI images have a limited package set. Some X11 libraries may not be available.
 if [ "${OS_ID_LIKE}" == "rhel" ]; then
-	MANYLINUX_DEPS=(glibc-devel libstdc++-devel glib2-devel libX11-devel libXext-devel libXrender-devel mesa-libGL-devel libICE-devel libSM-devel zlib-devel expat-devel)
+	MANYLINUX_DEPS=(glibc-devel libstdc++-devel glib2-devel zlib-devel expat-devel)
+	# Try to install X11 libraries if available (not in UBI minimal images)
+	for pkg in libX11-devel libXext-devel libXrender-devel mesa-libGL-devel libICE-devel libSM-devel; do
+		if dnf list available "$pkg" &>/dev/null; then
+			MANYLINUX_DEPS+=("$pkg")
+		fi
+	done
 elif [ "${OS_ID_LIKE}" == "debian" ]; then
   MANYLINUX_DEPS=(libc6-dev libglib2.0-dev libx11-dev libxext-dev libxrender-dev libgl1-mesa-dev libice-dev libsm-dev zlib1g-dev libexpat1-dev)
 elif [ "${OS_ID_LIKE}" == "alpine" ]; then
@@ -71,7 +78,11 @@ else
 	exit 1
 fi
 
-BASE_TOOLS=(autoconf automake bison bzip2 ca-certificates curl diffutils file make patch unzip)
+BASE_TOOLS=(autoconf automake bzip2 ca-certificates curl diffutils file make patch unzip)
+# Add bison if available (not in UBI minimal images)
+if dnf list available bison &>/dev/null; then
+	BASE_TOOLS+=(bison)
+fi
 if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ]; then
 	BASE_TOOLS+=(hardlink hostname which)
 	# See https://unix.stackexchange.com/questions/41784/can-yum-express-a-preference-for-x86-64-over-i386-packages
@@ -115,18 +126,31 @@ if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ]; then
 	fi
 	fixup-mirrors
 elif [ "${OS_ID_LIKE}" == "rhel" ]; then
-	BASE_TOOLS+=(glibc-locale-source glibc-langpack-en gnupg2 gzip hardlink hostname libcurl libnsl libxcrypt which)
+	BASE_TOOLS+=(glibc-locale-source glibc-langpack-en gnupg2 gzip hardlink hostname libcurl libxcrypt which)
+	# libnsl not available in UBI8, add if present
+	if dnf list available libnsl &>/dev/null; then
+		BASE_TOOLS+=(libnsl)
+	fi
 	echo "tsflags=nodocs" >> /etc/dnf/dnf.conf
 	dnf -y upgrade
-	EPEL=epel-release
-	if [ "${AUDITWHEEL_ARCH}" == "i686" ] || [ "${AUDITWHEEL_ARCH}" == "riscv64" ]; then
-		EPEL=
+	# UBI images don't include EPEL by default and don't need it
+	# For non-UBI RHEL images, we would install epel-release
+	EPEL=
+	if [ "${AUDITWHEEL_ARCH}" != "i686" ] && [ "${AUDITWHEEL_ARCH}" != "riscv64" ]; then
+		# Check if this is a non-UBI RHEL system that has access to EPEL
+		if dnf list available epel-release &>/dev/null; then
+			EPEL=epel-release
+		fi
 	fi
 	dnf -y install dnf-plugins-core ${EPEL}
 	if [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ]; then
-		dnf config-manager --set-enabled powertools
+		# UBI8 already has ubi-8-codeready-builder-rpms enabled by default
+		# Just verify it's enabled, don't error if already enabled
+		dnf config-manager --set-enabled ubi-8-codeready-builder-rpms 2>/dev/null || \
+			dnf config-manager --set-enabled codeready-builder-for-rhel-8-*-rpms 2>/dev/null || \
+			dnf config-manager --set-enabled powertools 2>/dev/null || true
 	else
-		dnf config-manager --set-enabled crb
+		dnf config-manager --set-enabled crb 2>/dev/null || true
 	fi
 	if [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ] || [ "${AUDITWHEEL_POLICY}" == "manylinux_2_34" ]; then
 		TOOLCHAIN_DEPS=(gcc-toolset-14-binutils gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ gcc-toolset-14-gcc-gfortran gcc-toolset-14-libatomic-devel)
@@ -146,7 +170,10 @@ else
 	exit 1
 fi
 if [ "${AUDITWHEEL_ARCH}" == "x86_64" ]; then
-	TOOLCHAIN_DEPS+=(yasm)
+	# yasm not available in UBI8, add if present (we can build without it if needed)
+	if dnf list available yasm &>/dev/null; then
+		TOOLCHAIN_DEPS+=(yasm)
+	fi
 fi
 
 manylinux_pkg_install "${BASE_TOOLS[@]}" "${TOOLCHAIN_DEPS[@]}" "${MANYLINUX_DEPS[@]}" "${RUNTIME_DEPS[@]}"
