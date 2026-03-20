@@ -127,6 +127,20 @@ pipx install --pip-args='--no-input' nox
 nox --version
 tar --version | grep "GNU tar"
 
+# verify source-built libraries are discoverable via pkg-config and ldconfig
+for lib in libjpeg libturbojpeg yaml-0.1 libxml-2.0 libxslt libexslt libffi openblas; do
+	if ! pkg-config --exists "$lib"; then
+		echo "pkg-config cannot find $lib"
+		exit 1
+	fi
+done
+for so in libjpeg.so.62 libyaml-0.so libxml2.so libxslt.so libffi.so libopenblas.so; do
+	if ! ldconfig -p | grep -q "$so"; then
+		echo "ldconfig cannot find $so"
+		exit 1
+	fi
+done
+
 # check libcrypt.so.1 can be loaded by some system packages,
 # as LD_LIBRARY_PATH might not be enough.
 # c.f. https://github.com/pypa/manylinux/issues/1022
