@@ -241,6 +241,15 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-cpython.sh thomas@python.org https://accounts.google.com 3.12.12
 
 
+FROM scratch AS merged_buildfs
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_libyaml /manylinux-buildfs /
+COPY --from=build_libxml2 /manylinux-buildfs /
+COPY --from=build_libxslt /manylinux-buildfs /
+COPY --from=build_libffi /manylinux-buildfs /
+COPY --from=build_openblas /manylinux-buildfs /
+
+
 FROM runtime_base
 COPY --from=build_tcl_tk /manylinux-rootfs /
 COPY --from=build_mpdecimal /manylinux-rootfs /
@@ -258,19 +267,8 @@ RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf
     if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
 
 # Copy build-time files (headers, pkgconfig) needed for building wheels
-COPY --from=build_libjpeg_turbo /manylinux-buildfs/opt /opt
-COPY --from=build_libyaml /manylinux-buildfs/opt /opt
-COPY --from=build_libxml2 /manylinux-buildfs/opt /opt
-COPY --from=build_libxslt /manylinux-buildfs/opt /opt
-COPY --from=build_libffi /manylinux-buildfs/opt /opt
-COPY --from=build_openblas /manylinux-buildfs/opt /opt
-# Copy pkgconfig symlinks
-COPY --from=build_libjpeg_turbo /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
-COPY --from=build_libyaml /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
-COPY --from=build_libxml2 /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
-COPY --from=build_libxslt /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
-COPY --from=build_libffi /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
-COPY --from=build_openblas /manylinux-buildfs/usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+COPY --from=merged_buildfs /opt /opt
+COPY --from=merged_buildfs /usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
 COPY build_scripts /opt/_internal/build_scripts/
 RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
     mkdir -p /opt/_internal && \
