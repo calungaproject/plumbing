@@ -91,7 +91,7 @@ function manylinux_pkg_install {
 	if [ "${PACKAGE_MANAGER}" = "yum" ]; then
 		yum -y install "$@"
 	elif [ "${PACKAGE_MANAGER}" = "dnf" ]; then
-		dnf -y install --allowerasing "$@"
+		dnf -y install --setopt install_weak_deps=0 --allowerasing "$@"
 	elif  [ "${PACKAGE_MANAGER}" = "apt" ]; then
 		DEBIAN_FRONTEND=noninteractive apt-get update -qq
 		DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends "$@"

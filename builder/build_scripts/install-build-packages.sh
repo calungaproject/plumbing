@@ -15,14 +15,36 @@ source "${MY_DIR}/build_utils.sh"
 # make sure the corresponding library is added to RUNTIME_DEPS if applicable
 
 if [ "${OS_ID_LIKE}" = "rhel" ]; then
-	COMPILE_DEPS=(bzip2-devel ncurses-devel readline-devel gdbm-devel xz-devel openssl openssl-devel curl-devel uuid-devel libffi-devel kernel-headers perl-IPC-Cmd)
+	# Base dependencies that should be available in all RHEL-like distributions
+	# cmake is needed for libjpeg-turbo, libtiff, and other CMake-based builds
+	COMPILE_DEPS=(bzip2-devel ncurses-devel gdbm-devel xz-devel openssl openssl-devel libffi-devel kernel-headers perl-IPC-Cmd cmake)
+
+	# Optional dependencies (not available in minimal UBI images)
+	# We build curl and Tcl/Tk from source, so curl-devel and tk-devel are optional
+	for optional_pkg in readline-devel curl-devel uuid-devel; do
+		if dnf list available "$optional_pkg" &>/dev/null; then
+			COMPILE_DEPS+=("$optional_pkg")
+		fi
+	done
+
 	if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ]; then
 		COMPILE_DEPS+=(libXft-devel)
-		COMPILE_DEPS+=(keyutils-libs-devel krb5-devel libcom_err-devel libidn-devel)  # we rebuild curl
+		# Optional for manylinux2014 - we rebuild curl
+		for optional_pkg in keyutils-libs-devel krb5-devel libcom_err-devel libidn-devel; do
+			if dnf list available "$optional_pkg" &>/dev/null; then
+				COMPILE_DEPS+=("$optional_pkg")
+			fi
+		done
 	elif [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ]; then
-		COMPILE_DEPS+=(tk-devel)
+		# tk-devel optional - we build Tcl/Tk from source
+		if dnf list available tk-devel &>/dev/null; then
+			COMPILE_DEPS+=(tk-devel)
+		fi
 	else
-		COMPILE_DEPS+=(tk-devel)
+		# tk-devel optional - we build Tcl/Tk from source
+		if dnf list available tk-devel &>/dev/null; then
+			COMPILE_DEPS+=(tk-devel)
+		fi
 	fi
 elif [ "${OS_ID_LIKE}" == "debian" ]; then
 	COMPILE_DEPS=(libbz2-dev libncurses-dev libreadline-dev tk-dev libgdbm-dev libdb-dev liblzma-dev openssl libssl-dev libcurl4-openssl-dev uuid-dev libffi-dev linux-headers-generic)
