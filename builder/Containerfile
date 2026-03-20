@@ -254,12 +254,7 @@ COPY --from=build_libxml2 /manylinux-rootfs /
 COPY --from=build_libxslt /manylinux-rootfs /
 COPY --from=build_libffi /manylinux-rootfs /
 COPY --from=build_openblas /manylinux-rootfs /
-RUN echo "/opt/_internal/libjpeg-turbo-3.1/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    echo "/opt/_internal/libyaml-0.2/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    echo "/opt/_internal/libxml2-2.15/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    echo "/opt/_internal/libxslt-1.1/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    echo "/opt/_internal/libffi-3/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    echo "/opt/_internal/openblas-0/lib" >> /etc/ld.so.conf.d/00-manylinux.conf && \
+RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
     if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
 
 # Copy build-time files (headers, pkgconfig) needed for building wheels
