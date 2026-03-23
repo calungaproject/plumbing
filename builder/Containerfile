@@ -266,6 +266,18 @@ RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf
 # Copy build-time files (headers, pkgconfig) needed for building wheels
 COPY --from=merged_buildfs /opt /opt
 COPY --from=merged_buildfs /usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
+# Create symlinks in standard paths so build systems that don't use pkg-config
+# (e.g. PyYAML's setup.py) can find our source-built headers and libraries
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include; do \
+        [ -d "$dir" ] && for item in "$dir"/*; do \
+            ln -sf "$item" /usr/local/include/; \
+        done; \
+    done && \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib; do \
+        [ -d "$dir" ] && for lib in "$dir"/lib*.so; do \
+            [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
+        done; \
+    done
 COPY build_scripts /opt/_internal/build_scripts/
 RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
     mkdir -p /opt/_internal && \
