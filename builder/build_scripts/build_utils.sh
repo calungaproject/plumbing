@@ -10,31 +10,9 @@ MANYLINUX_CFLAGS="-g -O2 -Wall -fdebug-prefix-map=/=. -fstack-protector-strong -
 MANYLINUX_CXXFLAGS="-g -O2 -Wall -fdebug-prefix-map=/=. -fstack-protector-strong -Wformat -Werror=format-security"
 MANYLINUX_LDFLAGS="-Wl,-Bsymbolic-functions -Wl,-z,relro -Wl,-z,now"
 
-if [ "${AUDITWHEEL_POLICY:0:10}" == "musllinux_" ]; then
-	export BASE_POLICY=musllinux
-	PACKAGE_MANAGER=apk
-else
-	export BASE_POLICY=manylinux
-	if command -v dnf >/dev/null 2>&1; then
-		PACKAGE_MANAGER=dnf
-	elif command -v yum >/dev/null 2>&1; then
-		PACKAGE_MANAGER=yum
-	elif command -v apt-get >/dev/null 2>&1; then
-		PACKAGE_MANAGER=apt
-	else
-		echo "unsupported image"
-		exit 1
-	fi
-fi
-
-# shellcheck source=/dev/null
-OS_ID_LIKE=$(. /etc/os-release; echo "${ID} ${ID_LIKE:-}")
-case "${OS_ID_LIKE}" in
-	*rhel*) OS_ID_LIKE=rhel;;
-	*debian) OS_ID_LIKE=debian;;
-	*alpine*) OS_ID_LIKE=alpine;;
-	*) echo "unsupported image"; exit 1;;
-esac
+export BASE_POLICY=manylinux
+PACKAGE_MANAGER=dnf
+OS_ID_LIKE=rhel
 
 function check_var {
 	if [ -z "$1" ]; then
@@ -88,53 +66,14 @@ function clean_pyc {
 }
 
 function manylinux_pkg_install {
-	if [ "${PACKAGE_MANAGER}" = "yum" ]; then
-		yum -y install "$@"
-	elif [ "${PACKAGE_MANAGER}" = "dnf" ]; then
-		dnf -y install --setopt install_weak_deps=0 --allowerasing "$@"
-	elif  [ "${PACKAGE_MANAGER}" = "apt" ]; then
-		DEBIAN_FRONTEND=noninteractive apt-get update -qq
-		DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends "$@"
-	elif [ "${PACKAGE_MANAGER}" = "apk" ]; then
-		apk add --no-cache "$@"
-	else
-		return 1
-	fi
+	dnf -y install --setopt install_weak_deps=0 --allowerasing "$@"
 }
 
 function manylinux_pkg_remove {
-	if [ "${PACKAGE_MANAGER}" = "yum" ]; then
-		yum erase -y "$@"
-	elif [ "${PACKAGE_MANAGER}" = "dnf" ];then
-		dnf erase -y "$@"
-	elif [ "${PACKAGE_MANAGER}" = "apt" ];then
-		DEBIAN_FRONTEND=noninteractive apt-get remove -y "$@"
-	elif [ "${PACKAGE_MANAGER}" = "apk" ]; then
-		apk del "$@"
-	else
-		return 1
-	fi
+	dnf erase -y "$@"
 }
 
 function manylinux_pkg_clean {
-	if [ "${PACKAGE_MANAGER}" = "yum" ]; then
-		yum clean all
-		rm -rf /var/cache/yum
-		if [ -f /var/log/anaconda/journal.log ]; then
-			rm /var/log/anaconda/journal.log
-		fi
-		if [ -d /var/lib/yum/history ]; then
-			rm -rf /var/lib/yum/history
-		fi
-	elif [ "${PACKAGE_MANAGER}" = "dnf" ]; then
-		dnf clean all
-		rm -rf /var/cache/dnf
-	elif  [ "${PACKAGE_MANAGER}" = "apt" ]; then
-		DEBIAN_FRONTEND=noninteractive apt-get clean -qq
-		rm -rf /var/lib/apt/lists/*
-	elif [ "${PACKAGE_MANAGER}" = "apk" ]; then
-		:
-	else
-		return 1
-	fi
+	dnf clean all
+	rm -rf /var/cache/dnf
 }

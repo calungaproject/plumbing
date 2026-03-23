@@ -34,141 +34,39 @@ source "${MY_DIR}/build_utils.sh"
 
 # MANYLINUX_DEPS: Install development packages (except for libgcc which is provided by gcc install)
 # Note: UBI images have a limited package set. Some X11 libraries may not be available.
-if [ "${OS_ID_LIKE}" == "rhel" ]; then
-	MANYLINUX_DEPS=(glibc-devel libstdc++-devel glib2-devel zlib-devel expat-devel)
-	# Try to install X11 libraries if available (not in UBI minimal images)
-	for pkg in libX11-devel libXext-devel libXrender-devel mesa-libGL-devel libICE-devel libSM-devel; do
-		if dnf list available "$pkg" &>/dev/null; then
-			MANYLINUX_DEPS+=("$pkg")
-		fi
-	done
-elif [ "${OS_ID_LIKE}" == "debian" ]; then
-  MANYLINUX_DEPS=(libc6-dev libglib2.0-dev libx11-dev libxext-dev libxrender-dev libgl1-mesa-dev libice-dev libsm-dev zlib1g-dev libexpat1-dev)
-elif [ "${OS_ID_LIKE}" == "alpine" ]; then
-	MANYLINUX_DEPS=(musl-dev libstdc++ glib-dev libx11-dev libxext-dev libxrender-dev mesa-dev libice-dev libsm-dev zlib-dev expat-dev)
-else
-	echo "Unsupported policy: '${AUDITWHEEL_POLICY}'"
-	exit 1
-fi
+MANYLINUX_DEPS=(glibc-devel libstdc++-devel glib2-devel zlib-devel expat-devel)
+# Try to install X11 libraries if available (not in UBI minimal images)
+for pkg in libX11-devel libXext-devel libXrender-devel mesa-libGL-devel libICE-devel libSM-devel; do
+	if dnf list available "$pkg" &>/dev/null; then
+		MANYLINUX_DEPS+=("$pkg")
+	fi
+done
 
 # RUNTIME_DEPS: Runtime dependencies. c.f. install-build-packages.sh
-if [ "${OS_ID_LIKE}" == "rhel" ]; then
-	RUNTIME_DEPS=(zlib bzip2 expat ncurses readline gdbm xz openssl libcurl uuid libffi)
-	if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ]; then
-		RUNTIME_DEPS+=(libXft)
-		RUNTIME_DEPS+=(keyutils-libs libkadm5 libcom_err libidn)  # we rebuild curl
-	elif [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ]; then
-		RUNTIME_DEPS+=(tk)
-	else
-		RUNTIME_DEPS+=(tk)
-		# for graalpy
-		RUNTIME_DEPS+=(libxcrypt-compat)
-	fi
-elif [ "${OS_ID_LIKE}" == "debian" ]; then
-  RUNTIME_DEPS=(zlib1g libbz2-1.0 libexpat1 libncurses6 libreadline8 tk libgdbm6 libdb5.3 liblzma5 libcurl4 uuid)
-  if [ "${AUDITWHEEL_POLICY}" == "manylinux_2_31" ]; then
-  	RUNTIME_DEPS+=(libffi7 libssl1.1)
-  else
-  	RUNTIME_DEPS+=(libffi8 libssl3)
-  fi
-elif [ "${OS_ID_LIKE}" == "alpine" ]; then
-	RUNTIME_DEPS=(zlib bzip2 expat ncurses-libs readline tk gdbm xz openssl libcurl libuuid libffi)
-else
-	echo "Unsupported policy: '${AUDITWHEEL_POLICY}'"
-	exit 1
-fi
+RUNTIME_DEPS=(zlib bzip2 expat ncurses readline gdbm xz openssl libcurl uuid libffi tk)
 
 BASE_TOOLS=(autoconf automake bzip2 ca-certificates curl diffutils file make patch unzip)
 # Add bison if available (not in UBI minimal images)
 if dnf list available bison &>/dev/null; then
 	BASE_TOOLS+=(bison)
 fi
-if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ]; then
-	BASE_TOOLS+=(hardlink hostname which)
-	# See https://unix.stackexchange.com/questions/41784/can-yum-express-a-preference-for-x86-64-over-i386-packages
-	echo "multilib_policy=best" >> /etc/yum.conf
-	# Error out if requested packages do not exist
-	echo "skip_missing_names_on_install=False" >> /etc/yum.conf
-	# Make sure that locale will not be removed
-	sed -i '/^override_install_langs=/d' /etc/yum.conf
-
-	# we don't need those in the first place & updates are taking a lot of space on aarch64
-	# the intent is in the upstream image creation but it got messed up at some point
-	# https://github.com/CentOS/sig-cloud-instance-build/blob/98aa8c6f0290feeb94d86b52c561d70eabc7d942/docker/centos-7-x86_64.ks#L43
-	if rpm -q kernel-modules; then
-		rpm -e kernel-modules
-	fi
-	if rpm -q kernel-core; then
-		rpm -e --noscripts kernel-core
-	fi
-	if rpm -q bind-license; then
-		yum -y erase bind-license qemu-guest-agent
-	fi
-	fixup-mirrors
-	yum -y update
-	fixup-mirrors
-	yum -y install yum-utils curl
-	yum-config-manager --enable extras
-	TOOLCHAIN_DEPS=(devtoolset-10-binutils devtoolset-10-gcc devtoolset-10-gcc-c++ devtoolset-10-gcc-gfortran devtoolset-10-libatomic-devel)
-	if [ "${AUDITWHEEL_ARCH}" == "x86_64" ]; then
-		# Software collection (for devtoolset-10)
-		yum -y install centos-release-scl-rh
-		if ! rpm -q epel-release-7-14.noarch; then
-			# EPEL support (for yasm)
-			yum -y install https://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm
-		fi
-	elif [ "${AUDITWHEEL_ARCH}" == "aarch64" ] || [ "${AUDITWHEEL_ARCH}" == "ppc64le" ] || [ "${AUDITWHEEL_ARCH}" == "s390x" ]; then
-		# Software collection (for devtoolset-10)
-		yum -y install centos-release-scl-rh
-	elif [ "${AUDITWHEEL_ARCH}" == "i686" ]; then
-		# Install mayeut/devtoolset-10 repo to get devtoolset-10
-		curl -fsSLo /etc/yum.repos.d/mayeut-devtoolset-10.repo https://copr.fedorainfracloud.org/coprs/mayeut/devtoolset-10/repo/custom-1/mayeut-devtoolset-10-custom-1.repo
-	fi
-	fixup-mirrors
-elif [ "${OS_ID_LIKE}" == "rhel" ]; then
-	BASE_TOOLS+=(glibc-locale-source glibc-langpack-en gnupg2 gzip hardlink hostname libcurl libxcrypt which)
-	# libnsl not available in UBI8, add if present
-	if dnf list available libnsl &>/dev/null; then
-		BASE_TOOLS+=(libnsl)
-	fi
-	echo "tsflags=nodocs" >> /etc/dnf/dnf.conf
-	dnf -y upgrade
-	# UBI images don't include EPEL by default and don't need it
-	# For non-UBI RHEL images, we would install epel-release
-	EPEL=
-	if [ "${AUDITWHEEL_ARCH}" != "i686" ] && [ "${AUDITWHEEL_ARCH}" != "riscv64" ]; then
-		# Check if this is a non-UBI RHEL system that has access to EPEL
-		if dnf list available epel-release &>/dev/null; then
-			EPEL=epel-release
-		fi
-	fi
-	dnf -y install dnf-plugins-core ${EPEL}
-	if [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ]; then
-		# UBI8 already has ubi-8-codeready-builder-rpms enabled by default
-		# Just verify it's enabled, don't error if already enabled
-		dnf config-manager --set-enabled ubi-8-codeready-builder-rpms 2>/dev/null || \
-			dnf config-manager --set-enabled codeready-builder-for-rhel-8-*-rpms 2>/dev/null || \
-			dnf config-manager --set-enabled powertools 2>/dev/null || true
-	else
-		dnf config-manager --set-enabled crb 2>/dev/null || true
-	fi
-	if [ "${AUDITWHEEL_POLICY}" == "manylinux_2_28" ] || [ "${AUDITWHEEL_POLICY}" == "manylinux_2_34" ]; then
-		TOOLCHAIN_DEPS=(gcc-toolset-14-binutils gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ gcc-toolset-14-gcc-gfortran gcc-toolset-14-libatomic-devel)
-	else
-		# TODO enable gcc-toolset-15 once available (probably in 10.1)
-		# TOOLCHAIN_DEPS=(gcc-toolset-15-binutils gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ gcc-toolset-15-gcc-gfortran gcc-toolset-15-libatomic-devel)
-		TOOLCHAIN_DEPS=(binutils gcc gcc-c++ gcc-gfortran libatomic)
-	fi
-elif [ "${OS_ID_LIKE}" == "debian" ]; then
-	TOOLCHAIN_DEPS+=(binutils gcc g++ gfortran libatomic1)
-	BASE_TOOLS+=(gpg gpg-agent hardlink hostname locales xz-utils)
-elif [ "${OS_ID_LIKE}" == "alpine" ]; then
-	TOOLCHAIN_DEPS=(binutils gcc g++ gfortran libatomic)
-	BASE_TOOLS+=(gnupg util-linux shadow tar)
-else
-	echo "Unsupported policy: '${AUDITWHEEL_POLICY}'"
-	exit 1
+BASE_TOOLS+=(glibc-locale-source glibc-langpack-en gnupg2 gzip hardlink hostname libcurl libxcrypt which)
+# libnsl not available in UBI8, add if present
+if dnf list available libnsl &>/dev/null; then
+	BASE_TOOLS+=(libnsl)
 fi
+echo "tsflags=nodocs" >> /etc/dnf/dnf.conf
+dnf -y upgrade
+EPEL=
+if dnf list available epel-release &>/dev/null; then
+	EPEL=epel-release
+fi
+dnf -y install dnf-plugins-core ${EPEL}
+# UBI8 already has ubi-8-codeready-builder-rpms enabled by default
+dnf config-manager --set-enabled ubi-8-codeready-builder-rpms 2>/dev/null || \
+	dnf config-manager --set-enabled codeready-builder-for-rhel-8-*-rpms 2>/dev/null || \
+	dnf config-manager --set-enabled powertools 2>/dev/null || true
+TOOLCHAIN_DEPS=(gcc-toolset-14-binutils gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ gcc-toolset-14-gcc-gfortran gcc-toolset-14-libatomic-devel)
 if [ "${AUDITWHEEL_ARCH}" == "x86_64" ]; then
 	# yasm not available in UBI8, add if present (we can build without it if needed)
 	if dnf list available yasm &>/dev/null; then
@@ -184,18 +82,12 @@ manylinux_pkg_install "${BASE_TOOLS[@]}" "${TOOLCHAIN_DEPS[@]}" "${MANYLINUX_DEP
 # centralized in this script to avoid code duplication
 LC_ALL=C "${MY_DIR}/update-system-packages.sh"
 
-if [ "${BASE_POLICY}" == "manylinux" ]; then
-	# we'll be removing libcrypt.so.1 later on
-	# this is needed to ensure the new one will be found
-	# as LD_LIBRARY_PATH does not seem enough.
-	# c.f. https://github.com/pypa/manylinux/issues/1022
-	echo "/usr/local/lib" > /etc/ld.so.conf.d/00-manylinux.conf
-	ldconfig
-else
-	# set the default shell to bash
-	chsh -s /bin/bash root
-	useradd -D -s /bin/bash
-fi
+# we'll be removing libcrypt.so.1 later on
+# this is needed to ensure the new one will be found
+# as LD_LIBRARY_PATH does not seem enough.
+# c.f. https://github.com/pypa/manylinux/issues/1022
+echo "/usr/local/lib" > /etc/ld.so.conf.d/00-manylinux.conf
+ldconfig
 
 if [ "${OS_ID_LIKE}-${AUDITWHEEL_ARCH}" == "rhel-i686" ] && [ -f /usr/bin/i686-redhat-linux-gnu-pkg-config ] && [ ! -f /usr/bin/i386-redhat-linux-gnu-pkg-config ]; then
 	ln -s i686-redhat-linux-gnu-pkg-config /usr/bin/i386-redhat-linux-gnu-pkg-config

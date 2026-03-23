@@ -29,10 +29,7 @@ ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH_ARG}
 ENV PATH=${PREPEND_PATH}${PATH}
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
-# first copy the fixup mirrors script, keep the script around
-COPY build_scripts/fixup-mirrors.sh /usr/local/sbin/fixup-mirrors
-
-# setup entrypoint, this will wrap commands with `linux32` with i686 images
+# setup entrypoint
 COPY build_scripts/install-entrypoint.sh \
      build_scripts/update-system-packages.sh \
      build_scripts/build_utils.sh \
@@ -218,7 +215,7 @@ COPY --from=build_tcl_tk /manylinux-buildfs /
 COPY --from=build_mpdecimal /manylinux-buildfs /
 COPY --from=build_zstd /manylinux-buildfs /
 COPY --from=build_sqlite3 /manylinux-buildfs /
-RUN if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
+RUN ldconfig
 COPY build_scripts/build-openssl.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export OPENSSL_ROOT=openssl-3.5.4 && \
@@ -264,7 +261,7 @@ COPY --from=build_libxslt /manylinux-rootfs /
 COPY --from=build_libffi /manylinux-rootfs /
 COPY --from=build_openblas /manylinux-rootfs /
 RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
-    if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
+    ldconfig
 
 # Copy build-time files (headers, pkgconfig) needed for building wheels
 COPY --from=merged_buildfs /opt /opt
