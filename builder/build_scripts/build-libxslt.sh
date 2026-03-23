@@ -30,7 +30,7 @@ sed -i "s|^Libs:|Libs: -Wl,--enable-new-dtags,-rpath=\${libdir} |g" libxslt.pc.i
 sed -i "s|^Libs:|Libs: -Wl,--enable-new-dtags,-rpath=\${libdir} |g" libexslt.pc.in
 
 # Ensure dynamic linker can find libxml2
-if command -v apk >/dev/null 2>&1; then ldconfig /; else ldconfig; fi
+ldconfig
 
 # Find libxml2 location
 LIBXML2_PREFIX=$(find /opt/_internal -maxdepth 1 -type d -name 'libxml2-*' | head -1)

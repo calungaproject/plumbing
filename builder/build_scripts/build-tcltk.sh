@@ -19,13 +19,9 @@ check_var "${TCL_DOWNLOAD_URL}"
 check_var "${TK_ROOT}"
 check_var "${TK_HASH}"
 
-if [ "${AUDITWHEEL_POLICY}" == "manylinux2014" ] ; then
-	yum erase -y tcl tk
-else
-	mkdir -p /manylinux-rootfs
-	mkdir -p /manylinux-buildfs
-	exit 0
-fi
+mkdir -p /manylinux-rootfs
+mkdir -p /manylinux-buildfs
+exit 0
 
 fetch_source "${TCL_ROOT}-src.tar.gz" "${TCL_DOWNLOAD_URL}"
 check_sha256sum "${TCL_ROOT}-src.tar.gz" "${TCL_HASH}"
