@@ -4,7 +4,7 @@ set -euo pipefail
 # Inject SPDX SBOM files into Python wheels using Syft and wheel-patcher.
 # For each .whl file:
 #   1. Runs Syft to generate an SPDX JSON SBOM from the wheel contents
-#   2. Uses wheel-patcher to inject the SBOM into the wheel's .dist-info/ directory
+#   2. Uses wheel-patcher to inject the SBOM into the wheel's .dist-info/sboms/ directory
 #   3. The wheel's RECORD file is updated by wheel-patcher
 
 ARTIFACT_DIR="${1:?Error: ARTIFACT_DIR argument is required}"
@@ -69,7 +69,7 @@ for WHEEL in "${WHEELS[@]}"; do
     # across mount points (Errno 18: Invalid cross-device link).
     log "Injecting SBOM into ${WHEEL_NAME}"
     TMPDIR="${ARTIFACT_DIR}" wheel-patcher add "$WHEEL" "$SBOM_PATH" \
-        --dest "${DIST_INFO_DIR}/${SBOM_FILENAME}" \
+        --dest "${DIST_INFO_DIR}/sboms/${SBOM_FILENAME}" \
         --in-place
 
     chmod 644 "$WHEEL"
