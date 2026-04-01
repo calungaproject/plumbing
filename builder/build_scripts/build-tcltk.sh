@@ -19,6 +19,10 @@ check_var "${TCL_DOWNLOAD_URL}"
 check_var "${TK_ROOT}"
 check_var "${TK_HASH}"
 
+# On manylinux_2_28 (RHEL 8+), the system already provides Tcl/Tk 8.6 which is
+# sufficient. Building from source was only needed for manylinux2014 (CentOS 7)
+# which shipped the older Tcl/Tk 8.5. Since we only target manylinux_2_28, we
+# skip the source build and use the system packages.
 mkdir -p /manylinux-rootfs
 mkdir -p /manylinux-buildfs
 exit 0
