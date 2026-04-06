@@ -527,9 +527,9 @@ uv==0.10.11 \
     --hash=sha256:d8b81e5c8110b2eb3ea0221c0edf7ad8744f6f9aa3e8dc0c10e1b8b9ac4c3b8a \
     --hash=sha256:ee2e362025f8877db447b5f2e97a087fcab7eedc0ad513c12579d9bf12f37d2d
     # via fromager
-uvicorn==0.42.0 \
-    --hash=sha256:96c30f5c7abe6f74ae8900a70e92b85ad6613b745d4879eb9b16ccad15645359 \
-    --hash=sha256:9b1f190ce15a2dd22e7758651d9b6d12df09a13d51ba5bf4fc33c383a48e1775
+uvicorn==0.44.0 \
+    --hash=sha256:6c942071b68f07e178264b9152f1f16dfac5da85880c4ce06366a96d70d4f31e \
+    --hash=sha256:ce937c99a2cc70279556967274414c087888e8cec9f9c94644dfca11bd3ced89
     # via fromager
 wheel==0.46.3 \
     --hash=sha256:4b399d56c9d9338230118d705d9737a2a468ccca63d5e813e2a4fc7815d8bc4d \
