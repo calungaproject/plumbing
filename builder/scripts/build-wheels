@@ -121,8 +121,8 @@ for PACKAGE in "${PACKAGES[@]}"; do
     log "Processing package: ${PACKAGE}"
 
     log "Resolving dependencies and creating build order"
-    # Create bootstrap to resolve dependencies
     fromager_args=(
+        --settings-file /usr/local/share/fromager/overrides/settings.yaml
         bootstrap
         "${PACKAGE}"
     )
@@ -136,9 +136,8 @@ for PACKAGE in "${PACKAGES[@]}"; do
     fromager "${fromager_args[@]}"
 
     log "Building wheels from build order"
-
-    # Build wheels using the generated build order
     fromager_build_args=(
+        --settings-file /usr/local/share/fromager/overrides/settings.yaml
         build-sequence
         work-dir/build-order.json
     )
