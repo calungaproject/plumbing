@@ -25,8 +25,8 @@ tar xf "${LIBTIFF_ROOT}.tar.xz"
 pushd "${LIBTIFF_ROOT}"
 
 # Build with CMake
-mkdir build
-cd build
+mkdir -p _build
+cd _build
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -60,9 +60,9 @@ cp -rlf /manylinux-rootfs/* /manylinux-buildfs/
 
 # Create symlinks for pkgconfig
 mkdir -p /manylinux-buildfs/usr/local/lib/pkgconfig/
-for pc in "${PREFIX}"/lib/pkgconfig/*.pc; do
-    if [ -f "/manylinux-buildfs${pc}" ]; then
-        ln -s "${pc}" /manylinux-buildfs/usr/local/lib/pkgconfig/$(basename "$pc")
+for pc in /manylinux-buildfs"${PREFIX}"/lib/pkgconfig/*.pc; do
+    if [ -f "$pc" ]; then
+        ln -s "${PREFIX}/lib/pkgconfig/$(basename "$pc")" /manylinux-buildfs/usr/local/lib/pkgconfig/$(basename "$pc")
     fi
 done
 
