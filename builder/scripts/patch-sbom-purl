@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Patch Fromager SPDX SBOMs inside wheels with a PURL identifier"""
+import argparse
+import base64
+import hashlib
+import json
+import sys
+import zipfile
+from pathlib import Path
+from urllib.parse import quote
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Add file_name qualifier to PURLs in Fromager SBOMs inside a wheel"
+    )
+    parser.add_argument("wheel", type=Path, help="Path to the wheel file to patch")
+    return parser.parse_args()
+
+
+def add_filename_to_purl(sbom_data, filename):
+    """Append file_name=<filename> to every PURL ref in the SBOM JSON."""
+    sbom = json.loads(sbom_data)
+    encoded_name = quote(filename, safe="")
+    for pkg in sbom.get("packages", []):
+        for ref in pkg.get("externalRefs", []):
+            if ref.get("referenceType") == "purl":
+                purl = ref["referenceLocator"]
+                if "file_name=" not in purl:
+                    separator = "&" if "?" in purl else "?"
+                    ref["referenceLocator"] = f"{purl}{separator}file_name={encoded_name}"
+    return json.dumps(sbom, indent=2).encode()
+
+
+def update_record(record_data, patched_files):
+    """Recalculate hashes in the RECORD file for any patched SBOM entries."""
+    lines = record_data.decode().splitlines()
+    new_lines = []
+    for line in lines:
+        for patched_name, patched_data in patched_files.items():
+            if line.startswith(patched_name + ","):
+                digest = base64.urlsafe_b64encode(
+                    hashlib.sha256(patched_data).digest()
+                ).rstrip(b"=").decode()
+                line = f"{patched_name},sha256={digest},{len(patched_data)}"
+                break
+        new_lines.append(line)
+    return ("\n".join(new_lines) + "\n").encode()
+
+
+def main():
+    args = parse_args()
+    whl_path = args.wheel
+
+    # First pass to discover SBOM and RECORD entries
+    with zipfile.ZipFile(whl_path) as zf:
+        all_names = zf.namelist()
+        sbom_entries = {
+            n for n in all_names
+            if ".dist-info/sboms/" in n and n.endswith(".json") and not n.endswith("/")
+        }
+        record_entry = next(
+            (n for n in all_names if n.endswith(".dist-info/RECORD")), None
+        )
+
+    if not sbom_entries:
+        print(f"  No Fromager SBOM found in {whl_path.name}")
+        return
+
+    patched_files = {}
+    tmp = whl_path.with_suffix(".tmp")
+    record_info = None
+
+    # RECORD must be written after patching since it contains hashes of the modified SBOMs
+    with (
+        zipfile.ZipFile(whl_path) as zf_in,
+        zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf_out,
+    ):
+        for item in zf_in.infolist():
+            if item.filename == record_entry:
+                record_info = item
+                continue
+            data = zf_in.read(item.filename)
+            if item.filename in sbom_entries:
+                data = add_filename_to_purl(data, whl_path.name)
+                patched_files[item.filename] = data
+            zf_out.writestr(item, data)
+
+        if record_info:
+            record_data = zf_in.read(record_info.filename)
+            if patched_files:
+                record_data = update_record(record_data, patched_files)
+            zf_out.writestr(record_info, record_data)
+
+    tmp.replace(whl_path)
+    print(f"  Patched {whl_path.name} SBOM: added file_name to PURL")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"  ERROR patching: {e}", file=sys.stderr)
+        sys.exit(1)

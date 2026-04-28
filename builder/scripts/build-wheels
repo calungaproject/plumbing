@@ -158,9 +158,37 @@ for PACKAGE in "${PACKAGES[@]}"; do
     if [ -n "$(find wheels-repo/downloads -name '*linux_x86_64.whl' | head -1)" ]; then
         log manylinux wheels have been found, auditwheel step required
         auditwheel repair wheels-repo/downloads/*linux_x86_64.whl -w wheels-repo/downloads
+
+        # auditwheel >= 6.5 embeds CycloneDX SBOMs in repaired wheels by default.
+        # Remove only auditwheel's SBOMs (*.cdx.json) and leave Fromager's intact.
+        log "Removing auditwheel-generated SBOMs from repaired manylinux wheels"
+        for whl in wheels-repo/downloads/*manylinux*.whl; do
+            [ -f "$whl" ] || continue
+            zip -d "$whl" '*.dist-info/sboms/*.cdx.json' 2>/dev/null || true
+            # Update RECORD so the wheel stays valid
+            record_path=$(unzip -Z1 "$whl" | grep '\.dist-info/RECORD$' || true)
+            if [ -n "$record_path" ]; then
+                tmpdir=$(mktemp -d)
+                unzip -o "$whl" "$record_path" -d "$tmpdir"
+                sed -i '/\.cdx\.json/d' "$tmpdir/$record_path"
+                (cd "$tmpdir" && zip "$OLDPWD/$whl" "$record_path")
+                rm -rf "$tmpdir"
+            fi
+        done
     else
         log No manylinux wheels found, skipping auditwheel step
     fi
+
+    # Patch Fromager SBOMs with PURL identifying the wheel and its origin index.
+    # Must run after auditwheel repair since the final filename isn't known until then.
+    log "Patching Fromager SBOMs with PURL"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Only patch pure-python and manylinux wheels (skip original linux_x86_64
+    # wheels since auditwheel already produced their manylinux replacements).
+    for whl in wheels-repo/downloads/*none-any.whl wheels-repo/downloads/*manylinux*.whl; do
+        [ -f "$whl" ] || continue
+        "$SCRIPT_DIR/patch-sbom-purl" "$whl"
+    done
 
     # Clear work-dir after processing package (but preserve sdists-repo and wheels-repo)
     log "Clearing work-dir after processing $PACKAGE (preserving sdists-repo and wheels-repo)"
