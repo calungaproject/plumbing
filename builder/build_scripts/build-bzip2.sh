@@ -36,12 +36,15 @@ mkdir -p /manylinux-rootfs"${PREFIX}"/include
 mkdir -p /manylinux-rootfs"${PREFIX}"/bin
 
 cp -a libbz2.so* /manylinux-rootfs"${PREFIX}"/lib/
+ln -sf libbz2.so.${BZIP2_VERSION} /manylinux-rootfs"${PREFIX}"/lib/libbz2.so
 cp bzlib.h /manylinux-rootfs"${PREFIX}"/include/
 
 # Build and install utilities
 make clean > /dev/null
 make CC="${CC:-gcc}" CFLAGS="${MANYLINUX_CFLAGS}" > /dev/null
-cp bzip2 bunzip2 bzcat /manylinux-rootfs"${PREFIX}"/bin/
+cp bzip2 /manylinux-rootfs"${PREFIX}"/bin/
+ln -f /manylinux-rootfs"${PREFIX}"/bin/bzip2 /manylinux-rootfs"${PREFIX}"/bin/bunzip2
+ln -f /manylinux-rootfs"${PREFIX}"/bin/bzip2 /manylinux-rootfs"${PREFIX}"/bin/bzcat
 
 popd
 rm -rf "${BZIP2_ROOT}" "${BZIP2_ROOT}.tar.gz"

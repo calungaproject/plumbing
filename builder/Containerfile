@@ -205,6 +205,44 @@ RUN export OPENBLAS_VERSION=0.3.31 && \
     /opt/_internal/build_scripts/build-openblas.sh
 
 
+FROM build_base AS build_zlib
+COPY build_scripts/build-zlib.sh /opt/_internal/build_scripts/
+RUN export ZLIB_VERSION=1.3.1 && \
+    export ZLIB_HASH=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 && \
+    export ZLIB_DOWNLOAD_URL=https://github.com/madler/zlib/releases/download/v1.3.1 && \
+    /opt/_internal/build_scripts/build-zlib.sh
+
+
+FROM build_base AS build_bzip2
+COPY build_scripts/build-bzip2.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export BZIP2_VERSION=1.0.8 && \
+    export BZIP2_HASH=ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 && \
+    export BZIP2_DOWNLOAD_URL=https://sourceware.org/pub/bzip2 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-bzip2.sh
+
+
+FROM build_base AS build_libpng
+COPY --from=build_zlib /manylinux-buildfs /
+COPY build_scripts/build-libpng.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBPNG_VERSION=1.6.44 && \
+    export LIBPNG_HASH=60c4da1d5b7f0aa8d158da48e8f8afa9773c1c8baa5d21974df61f1886b8ce8e && \
+    export LIBPNG_DOWNLOAD_URL=https://download.sourceforge.net/libpng && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libpng.sh
+
+
+FROM build_base AS build_libtiff
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY build_scripts/build-libtiff.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBTIFF_VERSION=4.6.0 && \
+    export LIBTIFF_HASH=e178649607d1e22b51cf361dd20a3753f244f022eefab1f2f218fc62ebaf87d2 && \
+    export LIBTIFF_DOWNLOAD_URL=https://download.osgeo.org/libtiff && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libtiff.sh
+
+
 FROM --platform=${BUILDPLATFORM} ghcr.io/sigstore/cosign/cosign:v${MANYLINUX_COSIGN_VERSION} AS cosign-bin
 
 
@@ -225,6 +263,10 @@ COPY build_scripts/build-cpython.sh /opt/_internal/build_scripts/
 
 
 FROM build_cpython AS build_cpython312
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -237,6 +279,10 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 
 
 FROM scratch AS merged_buildfs
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -252,6 +298,10 @@ COPY --from=build_zstd /manylinux-rootfs /
 COPY --from=build_sqlite3 /manylinux-rootfs /
 COPY --from=build_git /manylinux-rootfs /
 COPY --from=build_rust /manylinux-rootfs /
+COPY --from=build_zlib /manylinux-rootfs /
+COPY --from=build_bzip2 /manylinux-rootfs /
+COPY --from=build_libpng /manylinux-rootfs /
+COPY --from=build_libtiff /manylinux-rootfs /
 COPY --from=build_libjpeg_turbo /manylinux-rootfs /
 COPY --from=build_libyaml /manylinux-rootfs /
 COPY --from=build_libxml2 /manylinux-rootfs /
@@ -266,13 +316,15 @@ COPY --from=merged_buildfs /opt /opt
 COPY --from=merged_buildfs /usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include; do \
-        [ -d "$dir" ] && for item in "$dir"/*; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include; do \
+        [ -d "$dir" ] || continue; \
+        for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib; do \
-        [ -d "$dir" ] && for lib in "$dir"/lib*.so; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib; do \
+        [ -d "$dir" ] || continue; \
+        for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
         done; \
     done

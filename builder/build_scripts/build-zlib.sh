@@ -25,7 +25,7 @@ tar xfz "${ZLIB_ROOT}.tar.gz"
 pushd "${ZLIB_ROOT}"
 
 # Configure and build
-CFLAGS="${MANYLINUX_CFLAGS}" \
+CFLAGS="${MANYLINUX_CFLAGS} -fPIC" \
 LDFLAGS="${MANYLINUX_LDFLAGS}" \
 ./configure --prefix="${PREFIX}" > /dev/null
 
@@ -48,7 +48,7 @@ cp -rlf /manylinux-rootfs/* /manylinux-buildfs/
 
 # Create symlink for pkgconfig
 mkdir -p /manylinux-buildfs/usr/local/lib/pkgconfig/
-if [ -f "${PREFIX}/lib/pkgconfig/zlib.pc" ]; then
+if [ -f /manylinux-buildfs"${PREFIX}"/lib/pkgconfig/zlib.pc ]; then
     ln -s "${PREFIX}/lib/pkgconfig/zlib.pc" /manylinux-buildfs/usr/local/lib/pkgconfig/zlib.pc
 fi
 
