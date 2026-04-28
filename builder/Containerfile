@@ -309,6 +309,8 @@ RUN dnf -y install \
     --setopt install_weak_deps=0 \
     perl-IPC-Cmd \
     cmake \
+    zip \
+    unzip \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 COPY requirements.txt .
@@ -319,6 +321,7 @@ COPY scripts/* /usr/local/bin/
 COPY overrides/settings.yaml /usr/local/share/fromager/overrides/settings.yaml
 
 RUN \
+    ln -s /src/venv/bin/python /usr/local/bin/python3 && \
     ln -s /src/venv/bin/fromager /usr/local/bin/fromager && \
     ln -s /src/venv/bin/wheel /usr/local/bin/wheel
 
