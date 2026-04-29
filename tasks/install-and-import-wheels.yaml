@@ -71,68 +71,251 @@ spec:
             exit 1
         fi
 
-        # Setup the Python script to verify import
         cat <<'EOF' > /tmp/verify_import.py
         import importlib
-        import importlib.metadata
+        import json
         import sys
-        from pathlib import Path
+        import zipfile
+        from collections import defaultdict
+        from pathlib import Path, PurePosixPath
 
-        # Get the Distribution Name correctly
-        wheel_path = Path(sys.argv[1])
-        dist_name = wheel_path.name.split('-')[0].replace('_', '-').lower()
 
-        try:
-            dist = importlib.metadata.distribution(dist_name)
-        except importlib.metadata.PackageNotFoundError:
-            print(f'ERROR: Distribution "{dist_name}" not found')
-            sys.exit(1)
+        def inspect_wheel(wheel_path):
+            """Open a .whl as a zip and extract metadata for classification and import detection."""
+            with zipfile.ZipFile(wheel_path) as zf:
+                entries = zf.namelist()
 
-        import_names = set()
+                dist_info_dir = None
+                for entry in entries:
+                    parts = PurePosixPath(entry).parts
+                    if parts and parts[0].endswith('.dist-info'):
+                        dist_info_dir = parts[0]
+                        break
 
-        # Check top_level.txt
-        tl_content = dist.read_text('top_level.txt')
-        if tl_content:
-            import_names = {line.strip() for line in tl_content.splitlines() if line.strip()}
+                top_level_txt = None
+                if dist_info_dir:
+                    tl_path = f"{dist_info_dir}/top_level.txt"
+                    if tl_path in entries:
+                        top_level_txt = zf.read(tl_path).decode('utf-8', errors='replace')
 
-        # Check file list ONLY if top_level.txt was missing/empty
-        if not import_names and dist.files:
-            # Collect only actual Python packages (dirs with __init__.py)
-            # and top-level .py modules, skipping data files like .rst, .txt, etc.
-            for p in dist.files:
-                root = p.parts[0]
-                # Filter out metadata directories and hidden files
-                if root.endswith(('.dist-info', '.egg-info')) or root.startswith('.'):
+                content_entries = []
+                for entry in entries:
+                    parts = PurePosixPath(entry).parts
+                    if not parts:
+                        continue
+                    if parts[0].endswith(('.dist-info', '.data')):
+                        continue
+                    if entry.endswith('/'):
+                        continue
+                    content_entries.append(entry)
+
+                source_exts = {'.py', '.so', '.pyd'}
+                has_source = any(
+                    PurePosixPath(e).suffix in source_exts or '.cpython-' in PurePosixPath(e).name
+                    for e in content_entries
+                )
+
+            return {
+                'dist_info_dir': dist_info_dir,
+                'content_entries': content_entries,
+                'top_level_txt': top_level_txt,
+                'has_source': has_source,
+            }
+
+
+        def parse_dist_info(dist_info_dir):
+            """Extract (dist_name, version) from a .dist-info directory name."""
+            base = dist_info_dir.removesuffix('.dist-info')
+            parts = base.split('-', 1)
+            if len(parts) == 2:
+                return parts[0].replace('_', '-').lower(), parts[1]
+            return base.replace('_', '-').lower(), 'unknown'
+
+
+        def classify_wheel(inspection):
+            """Return 'empty', 'data-only', or 'importable' based on wheel contents."""
+            if not inspection['content_entries']:
+                return 'empty'
+            if not inspection['has_source']:
+                return 'data-only'
+            return 'importable'
+
+
+        def detect_import_names(inspection):
+            """Determine importable module names from wheel zip entries.
+
+            Scans for regular packages (__init__.py), namespace packages,
+            top-level modules, and extension modules. Uses top_level.txt as
+            a supplementary hint only, validated against actual wheel contents.
+            """
+            content_entries = inspection['content_entries']
+
+            top_level_dirs = defaultdict(list)
+            top_level_files = []
+
+            for entry in content_entries:
+                parts = PurePosixPath(entry).parts
+                if not parts:
                     continue
-                # A directory containing __init__.py is a Python package
-                if len(p.parts) > 1 and p.parts[-1] == '__init__.py':
-                    import_names.add(root)
-                # A top-level .py file is a module
-                elif len(p.parts) == 1 and root.endswith('.py'):
-                    import_names.add(Path(root).stem)
-                # A top-level .so/.pyd is an extension module
-                elif len(p.parts) == 1 and ('.so' in root or root.endswith('.pyd')):
-                    import_names.add(root.split('.')[0])
+                if len(parts) == 1:
+                    top_level_files.append(parts[0])
+                else:
+                    top_level_dirs[parts[0]].append(entry)
 
-        if not import_names:
-            print(f'ERROR: Could not determine any import names for {dist_name}')
-            sys.exit(1)
+            import_names = set()
+            namespace_imports = set()
 
-        for name in sorted(import_names):
-            # Skip private modules, test plugins, or explicit skips
-            if name == 'tests' or name.endswith('.libs') or name.startswith(('_', 'pytest_')):
-                continue
+            for dir_name, files in top_level_dirs.items():
+                has_init = any(
+                    PurePosixPath(f).parts == (dir_name, '__init__.py')
+                    for f in files
+                )
+                if has_init:
+                    import_names.add(dir_name)
 
+            for dir_name, files in top_level_dirs.items():
+                if dir_name in import_names:
+                    continue
+                has_py = any(
+                    PurePosixPath(f).suffix in ('.py', '.so', '.pyd')
+                    or '.cpython-' in PurePosixPath(f).name
+                    for f in files
+                )
+                if has_py:
+                    for f in files:
+                        fp = PurePosixPath(f)
+                        if fp.name == '__init__.py' and len(fp.parts) >= 2:
+                            dotted = '.'.join(fp.parts[:-1])
+                            namespace_imports.add(dotted)
+                    if not any(ni.startswith(dir_name + '.') for ni in namespace_imports):
+                        import_names.add(dir_name)
+
+            filtered_ns = set()
+            for ni in sorted(namespace_imports, key=lambda x: x.count('.')):
+                parts = ni.split('.')
+                if not any('.'.join(parts[:i]) in filtered_ns for i in range(1, len(parts))):
+                    filtered_ns.add(ni)
+            namespace_imports = filtered_ns
+
+            for f in top_level_files:
+                if f.endswith('.py'):
+                    import_names.add(Path(f).stem)
+
+            for f in top_level_files:
+                if f.endswith('.so') or f.endswith('.pyd') or '.cpython-' in f:
+                    import_names.add(f.split('.')[0])
+
+            import_names.update(namespace_imports)
+
+            import_names = {
+                name for name in import_names
+                if not name.split('.')[0].startswith('_')
+                and name != 'tests'
+                and not name.endswith('.libs')
+                and not name.startswith('pytest_')
+            }
+
+            if inspection['top_level_txt']:
+                all_top_dirs = set(top_level_dirs.keys())
+                all_top_files = {Path(f).stem for f in top_level_files if f.endswith('.py')}
+                all_top_files.update(
+                    f.split('.')[0] for f in top_level_files
+                    if f.endswith('.so') or f.endswith('.pyd') or '.cpython-' in f
+                )
+                known_names = all_top_dirs | all_top_files
+
+                for line in inspection['top_level_txt'].splitlines():
+                    tl_name = line.strip()
+                    if not tl_name:
+                        continue
+                    if '/' in tl_name or '\\' in tl_name:
+                        continue
+                    if tl_name.startswith('_') or tl_name == 'tests':
+                        continue
+                    if tl_name in known_names and tl_name not in import_names:
+                        import_names.add(tl_name)
+
+            return import_names
+
+
+        def check_import(name):
+            """Try to import a module by name; return (success, message)."""
             try:
-                print(f'Trying to import {name}...')
                 importlib.import_module(name)
-                print(f'Successfully imported {name}')
+                return True, f"Successfully imported {name}"
             except ImportError as e:
-                print(f'ERROR: Failed to import {name}: {e}')
-                sys.exit(1)
+                return False, f"ImportError: {e}"
             except Exception as e:
-                print(f'ERROR: Unexpected error: {e}')
+                return False, f"{type(e).__name__}: {e}"
+
+
+        def main():
+            """Classify a wheel and verify its imports; output a single JSON result line."""
+            classify_only = '--classify-only' in sys.argv
+            args = [a for a in sys.argv[1:] if a != '--classify-only']
+
+            if len(args) != 1:
+                print(json.dumps({"status": "ERROR", "reason": "Usage: verify_import.py [--classify-only] <wheel>"}))
+                sys.exit(2)
+
+            wheel_path = Path(args[0])
+            if not wheel_path.exists():
+                print(json.dumps({"wheel": wheel_path.name, "status": "ERROR",
+                                  "reason": f"File not found: {wheel_path}"}))
+                sys.exit(2)
+
+            inspection = inspect_wheel(wheel_path)
+
+            dist_name, version = 'unknown', 'unknown'
+            if inspection['dist_info_dir']:
+                dist_name, version = parse_dist_info(inspection['dist_info_dir'])
+
+            category = classify_wheel(inspection)
+
+            if category == 'empty':
+                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
+                                  "version": version, "status": "SKIP",
+                                  "reason": "empty wheel (only dist-info, no source files)",
+                                  "imports_tested": []}))
+                sys.exit(0)
+
+            if category == 'data-only':
+                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
+                                  "version": version, "status": "SKIP",
+                                  "reason": "data-only package (no importable Python code)",
+                                  "imports_tested": []}))
+                sys.exit(0)
+
+            if classify_only:
+                sys.exit(10)
+
+            import_names = detect_import_names(inspection)
+
+            if not import_names:
+                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
+                                  "version": version, "status": "FAIL",
+                                  "reason": "has source files but could not determine import names",
+                                  "imports_tested": []}))
                 sys.exit(1)
+
+            results = []
+            any_failed = False
+            for name in sorted(import_names):
+                success, message = check_import(name)
+                results.append({"name": name, "success": success, "message": message})
+                if not success:
+                    any_failed = True
+
+            status = "FAIL" if any_failed else "PASS"
+            print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
+                              "version": version, "status": status,
+                              "reason": "import failures" if any_failed else "",
+                              "imports_tested": results}))
+            sys.exit(1 if any_failed else 0)
+
+
+        if __name__ == '__main__':
+            main()
         EOF
 
         echo "Changing directory to ${FILES_DIR}"
@@ -146,27 +329,106 @@ spec:
             exit 1
         fi
 
+        RESULTS_DIR="/tmp/wheel-test-results"
+        mkdir -p "${RESULTS_DIR}"
+
         for WHEEL in "${whl_files[@]}"; do
-            if [ -f "$WHEEL" ]; then
-                echo "=================================================="
-                echo "Testing $WHEEL..."
+            [ -f "$WHEEL" ] || continue
 
-                rm -rf /tmp/test-venv
-                echo "Setting up virtual environment..."
-                python3.12 -m venv /tmp/test-venv
+            echo "=================================================="
+            echo "Testing $WHEEL..."
 
-                echo "Installing wheel..."
-                if ! /tmp/test-venv/bin/pip install --no-index --find-links . "${WHEEL}"; then
-                    echo "ERROR: Installation failed for $WHEEL"
-                    exit 1
+            RESULT_FILE="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
+
+            if python3.12 /tmp/verify_import.py --classify-only "${WHEEL}" > "$RESULT_FILE"; then
+                echo "SKIP: $WHEEL"
+                continue
+            fi
+
+            rm -rf /tmp/test-venv
+            echo "Setting up virtual environment..."
+            python3.12 -m venv /tmp/test-venv
+
+            echo "Installing wheel..."
+            if ! /tmp/test-venv/bin/pip install --no-index --find-links . "${WHEEL}" 2>&1; then
+                echo "FAIL: Installation failed for $WHEEL"
+                python3.12 -c "import json,sys; print(json.dumps({'wheel':sys.argv[1],'status':'FAIL','reason':'pip install failed','imports_tested':[]}))" "$WHEEL" > "$RESULT_FILE"
+                continue
+            fi
+
+            echo "Verifying import..."
+            if /tmp/test-venv/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                echo "PASS: $WHEEL"
+            else
+                VERIFY_RC=$?
+                if [ $VERIFY_RC -eq 2 ]; then
+                    echo "ERROR: Script error for $WHEEL"
+                else
+                    STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
+                    if [ "$STATUS" = "SKIP" ]; then
+                        echo "SKIP: $WHEEL"
+                    else
+                        echo "FAIL: $WHEEL"
+                    fi
                 fi
-
-                echo "Verifying import..."
-                /tmp/test-venv/bin/python /tmp/verify_import.py "${WHEEL}"
-
-                echo "Test successful for $WHEEL"
             fi
         done
 
+        echo ""
         echo "=================================================="
-        echo "Successfully tested all wheels!"
+        echo "              SUMMARY REPORT"
+        echo "=================================================="
+        echo ""
+
+        PASS_COUNT=0
+        FAIL_COUNT=0
+        SKIP_COUNT=0
+
+        printf "%-60s %-8s %s\n" "WHEEL" "STATUS" "DETAILS"
+        printf "%-60s %-8s %s\n" "-----" "------" "-------"
+
+        for RESULT_FILE in "${RESULTS_DIR}"/*.json; do
+            [ -f "$RESULT_FILE" ] || continue
+            ROW=$(python3.12 -c "
+        import json, sys
+        try:
+            d = json.load(open(sys.argv[1]))
+            w = d.get('wheel','?')
+            s = d.get('status','ERROR')
+            r = d.get('reason','')
+        except Exception:
+            w, s, r = '?', 'ERROR', 'parse error'
+        print(f'{s}\t{w}\t{r}')
+        " "$RESULT_FILE" 2>/dev/null)
+
+            R_STATUS="${ROW%%	*}"
+            REST="${ROW#*	}"
+            R_WHEEL="${REST%%	*}"
+            R_REASON="${REST#*	}"
+
+            printf "%-60s %-8s %s\n" "$R_WHEEL" "$R_STATUS" "$R_REASON"
+
+            case "$R_STATUS" in
+                PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
+                FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+                SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
+                *) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+            esac
+        done
+
+        TOTAL=$((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))
+        echo ""
+        echo "Total: ${TOTAL}  |  PASS: ${PASS_COUNT}  |  FAIL: ${FAIL_COUNT}  |  SKIP: ${SKIP_COUNT}"
+        echo ""
+
+        if [ $TOTAL -eq 0 ]; then
+            echo "RESULT: NO TESTS RUN"
+            exit 1
+        fi
+
+        if [ $FAIL_COUNT -gt 0 ]; then
+            echo "RESULT: FAILED"
+            exit 1
+        fi
+
+        echo "RESULT: PASSED"
