@@ -181,7 +181,7 @@ for PACKAGE in "${PACKAGES[@]}"; do
 
     # Patch Fromager SBOMs with PURL identifying the wheel and its origin index.
     # Must run after auditwheel repair since the final filename isn't known until then.
-    log "Patching Fromager SBOMs with PURL"
+    log "Patching Fromager SBOMs: adding PURL and renaming to redhat.spdx.json"
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # Only patch pure-python and manylinux wheels (skip original linux_x86_64
     # wheels since auditwheel already produced their manylinux replacements).
