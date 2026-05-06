@@ -209,7 +209,7 @@ spec:
 
             import_names = {
                 name for name in import_names
-                if not name.split('.')[0].startswith('_')
+                if not any(part.startswith('_') for part in name.split('.'))
                 and name != 'tests'
                 and not name.endswith('.libs')
                 and not name.startswith('pytest_')
