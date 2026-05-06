@@ -369,6 +369,20 @@ spec:
                         echo "SKIP: $WHEEL"
                     else
                         echo "FAIL: $WHEEL"
+                        python3.12 -c "
+        import json, sys
+        try:
+            with open(sys.argv[1]) as f:
+                d = json.load(f)
+            for t in d.get('imports_tested', []):
+                if not isinstance(t, dict) or t.get('success'):
+                    continue
+                name = t.get('name', '<unknown>')
+                message = t.get('message', '')
+                print(f'  {name}: {message}')
+        except Exception:
+            pass
+        " "$RESULT_FILE"
                     fi
                 fi
             fi
@@ -407,6 +421,23 @@ spec:
             R_REASON="${REST#*	}"
 
             printf "%-60s %-8s %s\n" "$R_WHEEL" "$R_STATUS" "$R_REASON"
+
+            if [ "$R_STATUS" = "FAIL" ]; then
+                python3.12 -c "
+        import json, sys
+        try:
+            with open(sys.argv[1]) as f:
+                d = json.load(f)
+            for t in d.get('imports_tested', []):
+                if not isinstance(t, dict) or t.get('success'):
+                    continue
+                name = t.get('name', '<unknown>')
+                message = t.get('message', '')
+                print(f'  -> {name}: {message}')
+        except Exception:
+            pass
+        " "$RESULT_FILE"
+            fi
 
             case "$R_STATUS" in
                 PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
