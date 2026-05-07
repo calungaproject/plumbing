@@ -171,7 +171,17 @@ for PACKAGE in "${PACKAGES[@]}"; do
 
     if [ -n "$(find wheels-repo/downloads -name '*linux_x86_64.whl' | head -1)" ]; then
         log manylinux wheels have been found, auditwheel step required
+
+        # Extract shared libraries from wheels so auditwheel can find
+        # wheel-internal libs (e.g. pyre's libjournal.so) during repair.
+        wheel_libs_dir=$(mktemp -d)
+        for whl in wheels-repo/downloads/*linux_x86_64.whl; do
+            unzip -joq "$whl" '*.so' '*.so.*' -d "$wheel_libs_dir" 2>/dev/null || true
+        done
+        export LD_LIBRARY_PATH="${wheel_libs_dir}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
         auditwheel repair wheels-repo/downloads/*linux_x86_64.whl -w wheels-repo/downloads
+        rm -rf "$wheel_libs_dir"
 
         # auditwheel >= 6.5 embeds CycloneDX SBOMs in repaired wheels by default.
         # Remove only auditwheel's SBOMs (*.cdx.json) and leave Fromager's intact.
