@@ -207,13 +207,22 @@ spec:
 
             import_names.update(namespace_imports)
 
-            import_names = {
+            non_underscore = {
                 name for name in import_names
                 if not any(part.startswith('_') for part in name.split('.'))
                 and name != 'tests'
                 and not name.endswith('.libs')
                 and not name.startswith('pytest_')
             }
+            if non_underscore:
+                import_names = non_underscore
+            else:
+                import_names = {
+                    name for name in import_names
+                    if name != 'tests'
+                    and not name.endswith('.libs')
+                    and not name.startswith('pytest_')
+                }
 
             if inspection['top_level_txt']:
                 all_top_dirs = set(top_level_dirs.keys())
@@ -230,7 +239,9 @@ spec:
                         continue
                     if '/' in tl_name or '\\' in tl_name:
                         continue
-                    if tl_name.startswith('_') or tl_name == 'tests':
+                    if tl_name == 'tests':
+                        continue
+                    if tl_name.startswith('_') and import_names:
                         continue
                     if tl_name in known_names and tl_name not in import_names:
                         import_names.add(tl_name)
