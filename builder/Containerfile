@@ -205,6 +205,15 @@ RUN export OPENBLAS_VERSION=0.3.31 && \
     /opt/_internal/build_scripts/build-openblas.sh
 
 
+FROM build_base AS build_libomp
+COPY build_scripts/build-libomp.sh /opt/_internal/build_scripts/
+RUN export LIBOMP_VERSION=20.1.6 && \
+    export LIBOMP_HASH=ff8dabd89212cd41b4fc5c26433bcde368873e4f10ea0331792e6b6e7707eff9 && \
+    export LIBOMP_CMAKE_HASH=b4b3efa5d5b01b3f211f1ba326bb6f0c318331f828202d332c95b7f30fca5f8c && \
+    export LIBOMP_DOWNLOAD_URL=https://github.com/llvm/llvm-project/releases/download && \
+    /opt/_internal/build_scripts/build-libomp.sh
+
+
 FROM build_base AS build_zlib
 COPY build_scripts/build-zlib.sh /opt/_internal/build_scripts/
 RUN export ZLIB_VERSION=1.3.1 && \
@@ -273,6 +282,7 @@ COPY --from=build_libxml2 /manylinux-buildfs /
 COPY --from=build_libxslt /manylinux-buildfs /
 COPY --from=build_libffi /manylinux-buildfs /
 COPY --from=build_openblas /manylinux-buildfs /
+COPY --from=build_libomp /manylinux-buildfs /
 ARG MANYLINUX_DISABLE_CLANG_FOR_CPYTHON
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-cpython.sh thomas@python.org https://accounts.google.com 3.12.12
@@ -289,6 +299,7 @@ COPY --from=build_libxml2 /manylinux-buildfs /
 COPY --from=build_libxslt /manylinux-buildfs /
 COPY --from=build_libffi /manylinux-buildfs /
 COPY --from=build_openblas /manylinux-buildfs /
+COPY --from=build_libomp /manylinux-buildfs /
 
 
 FROM runtime_base
@@ -308,6 +319,7 @@ COPY --from=build_libxml2 /manylinux-rootfs /
 COPY --from=build_libxslt /manylinux-rootfs /
 COPY --from=build_libffi /manylinux-rootfs /
 COPY --from=build_openblas /manylinux-rootfs /
+COPY --from=build_libomp /manylinux-rootfs /
 RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
     ldconfig
 
@@ -316,13 +328,13 @@ COPY --from=merged_buildfs /opt /opt
 COPY --from=merged_buildfs /usr/local/lib/pkgconfig /usr/local/lib/pkgconfig
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
