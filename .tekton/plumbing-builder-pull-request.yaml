@@ -34,6 +34,7 @@ spec:
     pipeline: 3h
   taskRunSpecs:
     - pipelineTaskName: build-container
+      timeout: 3h
       stepSpecs:
         - name: build
           computeResources:
