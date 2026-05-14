@@ -27,6 +27,19 @@ spec:
       value: Containerfile
     - name: path-context
       value: builder
+  timeouts:
+    pipeline: 3h
+  taskRunSpecs:
+    - pipelineTaskName: build-container
+      stepSpecs:
+        - name: build
+          computeResources:
+            requests:
+              cpu: '8'
+              memory: 12Gi
+            limits:
+              cpu: '8'
+              memory: 12Gi
   taskRunTemplate:
     serviceAccountName: build-pipeline-plumbing-builder
   workspaces:
