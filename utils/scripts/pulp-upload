@@ -16,9 +16,15 @@ PULP_REPOSITORY_VERSION=$( curl --fail --silent --retry 3 --max-time 30 "${PULP_
 
 shopt -s nullglob
 
+uploaded=()
+skipped_existing=()
+skipped_no_attestation=()
+failed=()
+
 for file in *.whl *.tar.gz; do
     if [[ ! -f "${file}.attestation" ]]; then
         echo "Skipping $file - attestation file missing"
+        skipped_no_attestation+=("$file")
         continue
     fi
 
@@ -28,15 +34,47 @@ for file in *.whl *.tar.gz; do
         --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" | jq '.results | length != 0' )
     if $WHEEL_EXISTS; then
         echo "Skipping ${file} - already exists in Pulp"
+        skipped_existing+=("$file")
         continue
     fi
 
-    if ! twine upload --non-interactive --verbose --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
-        echo "Failed to upload $file with attestation, skipping."
-        continue
+    if twine upload --non-interactive --verbose --disable-progress-bar --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
+        echo "Uploaded $file with attestation."
+        uploaded+=("$file")
+    else
+        echo "ERROR: Failed to upload $file"
+        failed+=("$file")
     fi
-    echo "Uploaded $file with attestation."
 done
 
-echo "Upload complete!"
+echo ""
+echo "=============================="
+echo "  Upload Summary"
+echo "=============================="
+echo ""
+echo "Uploaded (${#uploaded[@]}):"
+for f in "${uploaded[@]+"${uploaded[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Skipped - already in Pulp (${#skipped_existing[@]}):"
+for f in "${skipped_existing[@]+"${skipped_existing[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Skipped - missing attestation (${#skipped_no_attestation[@]}):"
+for f in "${skipped_no_attestation[@]+"${skipped_no_attestation[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Failed (${#failed[@]}):"
+for f in "${failed[@]+"${failed[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
 echo "Index URL: ${REPOSITORY_URL}"
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "ERROR: ${#failed[@]} upload(s) failed"
+    exit 1
+fi
