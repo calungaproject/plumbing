@@ -343,6 +343,12 @@ spec:
         RESULTS_DIR="/tmp/wheel-test-results"
         mkdir -p "${RESULTS_DIR}"
 
+        # Phase 1: Test each wheel in its own isolated venv.
+        # Tracks which wheels are importable (not empty/data-only) and
+        # whether any individual test failed.
+        IMPORTABLE_WHEELS=()
+        INDIVIDUAL_FAILED=false
+
         for WHEEL in "${whl_files[@]}"; do
             [ -f "$WHEEL" ] || continue
 
@@ -356,6 +362,8 @@ spec:
                 continue
             fi
 
+            IMPORTABLE_WHEELS+=("${WHEEL}")
+
             rm -rf /tmp/test-venv
             echo "Setting up virtual environment..."
             python3.12 -m venv /tmp/test-venv
@@ -364,6 +372,7 @@ spec:
             if ! /tmp/test-venv/bin/pip install --no-index --find-links . "${WHEEL}" 2>&1; then
                 echo "FAIL: Installation failed for $WHEEL"
                 python3.12 -c "import json,sys; print(json.dumps({'wheel':sys.argv[1],'status':'FAIL','reason':'pip install failed','imports_tested':[]}))" "$WHEEL" > "$RESULT_FILE"
+                INDIVIDUAL_FAILED=true
                 continue
             fi
 
@@ -374,12 +383,14 @@ spec:
                 VERIFY_RC=$?
                 if [ $VERIFY_RC -eq 2 ]; then
                     echo "ERROR: Script error for $WHEEL"
+                    INDIVIDUAL_FAILED=true
                 else
                     STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
                     if [ "$STATUS" = "SKIP" ]; then
                         echo "SKIP: $WHEEL"
                     else
                         echo "FAIL: $WHEEL"
+                        INDIVIDUAL_FAILED=true
                         python3.12 -c "
         import json, sys
         try:
@@ -463,6 +474,231 @@ spec:
         echo "Total: ${TOTAL}  |  PASS: ${PASS_COUNT}  |  FAIL: ${FAIL_COUNT}  |  SKIP: ${SKIP_COUNT}"
         echo ""
 
+        if [ "$INDIVIDUAL_FAILED" = false ]; then
+            echo "RESULT: PASSED"
+            exit 0
+        fi
+
+        # Phase 2: Combined venv fallback.
+        # Some wheels fail to import individually because they depend on
+        # sibling packages at import time (e.g. sphinxcontrib needs sphinx).
+        # Re-test all importable wheels in a single shared venv where
+        # cross-package dependencies are available.
+        echo ""
+        echo "=================================================="
+        echo "Individual wheel testing had failures."
+        echo "Retrying all importable wheels in a combined venv..."
+        echo "=================================================="
+
+        rm -rf /tmp/test-venv-combined
+        python3.12 -m venv /tmp/test-venv-combined
+
+        # Group wheels into install tiers to handle multiple versions of the
+        # same package. Tier 1 gets the lowest version of each package,
+        # tier 2 gets the next version (upgrading in-place), and so on.
+        # This avoids pip conflicts from installing two versions at once
+        # and ensures each version is the one actually installed when tested.
+        python3.12 -c "
+        import json, sys, re
+        from collections import defaultdict
+        from pathlib import PurePosixPath
+
+        wheels = sys.argv[1:]
+        pkg_versions = defaultdict(list)
+        for whl in wheels:
+            name = PurePosixPath(whl).name.split('-')[0].lower().replace('_', '-')
+            pkg_versions[name].append(whl)
+
+        def sort_key(whl):
+            parts = PurePosixPath(whl).name.split('-')
+            ver_str = parts[1] if len(parts) > 1 else '0'
+            segments = re.split(r'[.\-]', ver_str)
+            result = []
+            for s in segments:
+                try:
+                    result.append((0, int(s)))
+                except ValueError:
+                    result.append((1, s))
+            return result
+
+        for name in pkg_versions:
+            pkg_versions[name].sort(key=sort_key)
+
+        max_tiers = max(len(v) for v in pkg_versions.values())
+        tiers = []
+        for i in range(max_tiers):
+            tier = []
+            for name in sorted(pkg_versions):
+                versions = pkg_versions[name]
+                if i < len(versions):
+                    tier.append(versions[i])
+            tiers.append(tier)
+
+        json.dump(tiers, open('/tmp/install-tiers.json', 'w'))
+        print(f'Grouped {len(wheels)} wheels into {len(tiers)} install tier(s)')
+        for i, tier in enumerate(tiers):
+            print(f'  Tier {i+1}: {len(tier)} wheels')
+        " "${IMPORTABLE_WHEELS[@]}"
+
+        COMBINED_RESULTS_DIR="/tmp/wheel-test-results-combined"
+        rm -rf "${COMBINED_RESULTS_DIR}"
+        mkdir -p "${COMBINED_RESULTS_DIR}"
+
+        # Carry over SKIP results from phase 1 so the combined summary
+        # includes non-importable wheels and totals match.
+        for RESULT_FILE in "${RESULTS_DIR}"/*.json; do
+            [ -f "$RESULT_FILE" ] || continue
+            STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status',''))" "$RESULT_FILE" 2>/dev/null || true)
+            if [ "$STATUS" = "SKIP" ]; then
+                cp "$RESULT_FILE" "${COMBINED_RESULTS_DIR}/"
+            fi
+        done
+
+        # Install and test one tier at a time. Import checks run immediately
+        # after each tier so that each version is verified while it is the
+        # version actually installed in the venv.
+        TIER_INDEX=0
+        while IFS= read -r TIER_LINE; do
+            TIER_INDEX=$((TIER_INDEX + 1))
+            readarray -t TIER_WHEELS < <(echo "$TIER_LINE" | python3.12 -c "import json,sys; [print(w) for w in json.loads(sys.stdin.read())]")
+
+            echo ""
+            echo "Installing tier ${TIER_INDEX} (${#TIER_WHEELS[@]} wheels)..."
+            if ! /tmp/test-venv-combined/bin/pip install --no-index --find-links . "${TIER_WHEELS[@]}" 2>&1; then
+                echo "FAIL: Combined pip install failed at tier ${TIER_INDEX}"
+                echo ""
+                echo "RESULT: FAILED"
+                exit 1
+            fi
+
+            for WHEEL in "${TIER_WHEELS[@]}"; do
+                RESULT_FILE="${COMBINED_RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
+
+                # Verify that the version we intended to test is the one
+                # actually installed. If pip resolved a different version
+                # (e.g. via dependency resolution), carry over the individual
+                # phase result instead of testing the wrong version.
+                EXPECTED_VER=$(python3.12 -c "from pathlib import PurePosixPath; print(PurePosixPath('${WHEEL}').name.split('-')[1])")
+                PKG_NAME=$(python3.12 -c "from pathlib import PurePosixPath; print(PurePosixPath('${WHEEL}').name.split('-')[0].lower().replace('_', '-'))")
+                INSTALLED_VER=$(/tmp/test-venv-combined/bin/python -c "
+        from importlib.metadata import version
+        try:
+            print(version('${PKG_NAME}'))
+        except Exception:
+            print('NOT_INSTALLED')
+        " 2>/dev/null)
+
+                if [ "$INSTALLED_VER" != "$EXPECTED_VER" ]; then
+                    echo "=================================================="
+                    echo "NOT TESTED (combined venv, tier ${TIER_INDEX}): $WHEEL"
+                    echo "  Expected version ${EXPECTED_VER} but found ${INSTALLED_VER} installed"
+                    echo "  Carrying over individual phase result"
+                    INDIVIDUAL_RESULT="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
+                    if [ -f "$INDIVIDUAL_RESULT" ]; then
+                        cp "$INDIVIDUAL_RESULT" "$RESULT_FILE"
+                    fi
+                    continue
+                fi
+
+                echo "=================================================="
+                echo "Testing import (combined venv, tier ${TIER_INDEX}): $WHEEL..."
+
+                if /tmp/test-venv-combined/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                    echo "PASS: $WHEEL"
+                else
+                    VERIFY_RC=$?
+                    if [ $VERIFY_RC -eq 2 ]; then
+                        echo "ERROR: Script error for $WHEEL"
+                    else
+                        STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
+                        if [ "$STATUS" = "SKIP" ]; then
+                            echo "SKIP: $WHEEL"
+                        else
+                            echo "FAIL: $WHEEL"
+                            python3.12 -c "
+        import json, sys
+        try:
+            with open(sys.argv[1]) as f:
+                d = json.load(f)
+            for t in d.get('imports_tested', []):
+                if not isinstance(t, dict) or t.get('success'):
+                    continue
+                name = t.get('name', '<unknown>')
+                message = t.get('message', '')
+                print(f'  -> {name}: {message}')
+        except Exception:
+            pass
+        " "$RESULT_FILE"
+                        fi
+                    fi
+                fi
+            done
+        done < <(python3.12 -c "import json; tiers=json.load(open('/tmp/install-tiers.json')); [print(json.dumps(t)) for t in tiers]")
+
+        echo ""
+        echo "=================================================="
+        echo "         COMBINED VENV SUMMARY REPORT"
+        echo "=================================================="
+        echo ""
+
+        PASS_COUNT=0
+        FAIL_COUNT=0
+        SKIP_COUNT=0
+
+        printf "%-60s %-8s %s\n" "WHEEL" "STATUS" "DETAILS"
+        printf "%-60s %-8s %s\n" "-----" "------" "-------"
+
+        for RESULT_FILE in "${COMBINED_RESULTS_DIR}"/*.json; do
+            [ -f "$RESULT_FILE" ] || continue
+            ROW=$(python3.12 -c "
+        import json, sys
+        try:
+            d = json.load(open(sys.argv[1]))
+            w = d.get('wheel','?')
+            s = d.get('status','ERROR')
+            r = d.get('reason','')
+        except Exception:
+            w, s, r = '?', 'ERROR', 'parse error'
+        print(f'{s}\t{w}\t{r}')
+        " "$RESULT_FILE" 2>/dev/null)
+
+            R_STATUS="${ROW%%	*}"
+            REST="${ROW#*	}"
+            R_WHEEL="${REST%%	*}"
+            R_REASON="${REST#*	}"
+
+            printf "%-60s %-8s %s\n" "$R_WHEEL" "$R_STATUS" "$R_REASON"
+
+            if [ "$R_STATUS" = "FAIL" ]; then
+                python3.12 -c "
+        import json, sys
+        try:
+            with open(sys.argv[1]) as f:
+                d = json.load(f)
+            for t in d.get('imports_tested', []):
+                if not isinstance(t, dict) or t.get('success'):
+                    continue
+                name = t.get('name', '<unknown>')
+                message = t.get('message', '')
+                print(f'  -> {name}: {message}')
+        except Exception:
+            pass
+        " "$RESULT_FILE"
+            fi
+
+            case "$R_STATUS" in
+                PASS) PASS_COUNT=$((PASS_COUNT + 1)) ;;
+                FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+                SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
+                *) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+            esac
+        done
+
+        TOTAL=$((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))
+        echo ""
+        echo "Total: ${TOTAL}  |  PASS: ${PASS_COUNT}  |  FAIL: ${FAIL_COUNT}  |  SKIP: ${SKIP_COUNT}"
+        echo ""
+
         if [ $TOTAL -eq 0 ]; then
             echo "RESULT: NO TESTS RUN"
             exit 1
@@ -473,4 +709,4 @@ spec:
             exit 1
         fi
 
-        echo "RESULT: PASSED"
+        echo "RESULT: PASSED (via combined venv fallback)"
