@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Tests for add-system-deps-to-sbom.
+
+Run directly:  python3 test-add-system-deps
+No dependencies beyond the standard library (and optionally auditwheel + a real wheel).
+"""
+import json
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+import add_system_deps_to_sbom as mod
+
+PASSED = 0
+FAILED = 0
+
+
+def check(name, condition, detail=""):
+    global PASSED, FAILED
+    if condition:
+        PASSED += 1
+        print(f"  PASS  {name}")
+    else:
+        FAILED += 1
+        print(f"  FAIL  {name}" + (f" — {detail}" if detail else ""))
+
+
+# ── Test parse_system_libs with the exact example from the ticket ──────────
+
+TICKET_OUTPUT = """\
+ninja-1.13.0-0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+is consistent with the following platform tag:
+"manylinux_2_24_x86_64".
+The wheel references external versioned symbols in these
+system-provided shared libraries: libgcc_s.so.1 with versions
+{'GCC_3.3.1', 'GCC_3.0'}, libpthread.so.0 with versions
+{'GLIBC_2.2.5'}, libstdc++.so.6 with versions {'GLIBCXX_3.4',
+'GLIBCXX_3.4.19', 'GLIBCXX_3.4.18', 'GLIBCXX_3.4.20', 'CXXABI_1.3.9',
+'GLIBCXX_3.4.21', 'GLIBCXX_3.4.9', 'CXXABI_1.3.8', 'GLIBCXX_3.4.11',
+'CXXABI_1.3'}, libc.so.6 with versions {'GLIBC_2.14', 'GLIBC_2.6',
+'GLIBC_2.15', 'GLIBC_2.4', 'GLIBC_2.2.5', 'GLIBC_2.3.4'}
+This constrains the platform tag to "manylinux_2_24_x86_64". In order
+to achieve a more compatible tag, you would need to recompile a new
+wheel from source on a system with earlier versions of these
+libraries, such as a recent manylinux image.
+"""
+
+
+def test_parse_system_libs():
+    print("\n── parse_system_libs ──")
+    libs = mod.parse_system_libs(TICKET_OUTPUT)
+    check("finds all 4 libraries", len(libs) == 4, f"got {len(libs)}: {list(libs)}")
+    check("libc.so.6 present", "libc.so.6" in libs)
+    check("libgcc_s.so.1 present", "libgcc_s.so.1" in libs)
+    check("libstdc++.so.6 present", "libstdc++.so.6" in libs)
+    check("libpthread.so.0 present", "libpthread.so.0" in libs)
+    check("libc versions correct", set(libs.get("libc.so.6", [])) == {
+        "GLIBC_2.14", "GLIBC_2.6", "GLIBC_2.15", "GLIBC_2.4", "GLIBC_2.2.5", "GLIBC_2.3.4"
+    })
+    check("libgcc versions correct", set(libs.get("libgcc_s.so.1", [])) == {"GCC_3.3.1", "GCC_3.0"})
+    check("versions are sorted", libs.get("libc.so.6") == sorted(libs.get("libc.so.6", [])))
+
+
+def test_parse_no_system_libs():
+    print("\n── parse_system_libs (no system libs) ──")
+    output = 'foo-1.0-py3-none-any.whl is consistent with the following platform tag: "linux_x86_64".'
+    libs = mod.parse_system_libs(output)
+    check("returns empty dict", libs == {})
+
+
+MINIMAL_SBOM = {
+    "spdxVersion": "SPDX-2.3",
+    "SPDXID": "SPDXRef-DOCUMENT",
+    "name": "test-package",
+    "documentDescribes": ["SPDXRef-Package-test"],
+    "packages": [
+        {
+            "SPDXID": "SPDXRef-Package-test",
+            "name": "test-package",
+            "versionInfo": "1.0.0",
+            "downloadLocation": "https://example.com",
+            "externalRefs": [
+                {"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                 "referenceLocator": "pkg:pypi/test-package@1.0.0"}
+            ],
+        }
+    ],
+    "relationships": [
+        {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+         "relatedSpdxElement": "SPDXRef-Package-test"}
+    ],
+}
+
+
+def test_add_system_deps():
+    print("\n── add_system_deps ──")
+    system_libs = {"libc.so.6": ["GLIBC_2.14", "GLIBC_2.2.5"], "libgcc_s.so.1": ["GCC_3.0"]}
+    result = mod.add_system_deps(json.dumps(MINIMAL_SBOM).encode(), system_libs)
+    sbom = json.loads(result)
+
+    check("packages grew by 2", len(sbom["packages"]) == 3, f"got {len(sbom['packages'])}")
+    check("relationships grew by 2", len(sbom["relationships"]) == 3, f"got {len(sbom['relationships'])}")
+
+    sys_pkgs = {p["SPDXID"]: p for p in sbom["packages"] if p["SPDXID"].startswith("SPDXRef-SystemLib")}
+    check("libc package created", "SPDXRef-SystemLib-libc.so.6" in sys_pkgs)
+    check("libgcc package created", "SPDXRef-SystemLib-libgcc-s.so.1" in sys_pkgs)
+
+    libc = sys_pkgs.get("SPDXRef-SystemLib-libc.so.6", {})
+    check("libc name correct", libc.get("name") == "libc.so.6")
+    check("libc purpose is LIBRARY", libc.get("primaryPackagePurpose") == "LIBRARY")
+    check("libc comment has versions", "GLIBC_2.14" in libc.get("comment", ""))
+
+    deps = [r for r in sbom["relationships"] if r["relationshipType"] == "DEPENDS_ON"]
+    check("DEPENDS_ON relationships added", len(deps) == 2, f"got {len(deps)}")
+    check("root is source of deps",
+          all(r["spdxElementId"] == "SPDXRef-Package-test" for r in deps))
+
+
+def test_add_system_deps_idempotent():
+    print("\n── add_system_deps (idempotent) ──")
+    system_libs = {"libc.so.6": ["GLIBC_2.14"]}
+    first = mod.add_system_deps(json.dumps(MINIMAL_SBOM).encode(), system_libs)
+    second = mod.add_system_deps(first, system_libs)
+    sbom = json.loads(second)
+    check("no duplicates on re-run", len(sbom["packages"]) == 2, f"got {len(sbom['packages'])}")
+
+
+def test_sanitize_spdx_id():
+    print("\n── sanitize_spdx_id ──")
+    check("underscores replaced", mod.sanitize_spdx_id("libgcc_s.so.1") == "libgcc-s.so.1")
+    check("plus replaced", mod.sanitize_spdx_id("libstdc++.so.6") == "libstdc--.so.6")
+    check("clean name unchanged", mod.sanitize_spdx_id("libc.so.6") == "libc.so.6")
+
+
+def test_find_root_package_id():
+    print("\n── find_root_package_id ──")
+    check("finds via DESCRIBES relationship",
+          mod.find_root_package_id(MINIMAL_SBOM) == "SPDXRef-Package-test")
+
+    sbom_no_rels = {"documentDescribes": ["SPDXRef-Fallback"], "packages": []}
+    check("falls back to documentDescribes",
+          mod.find_root_package_id(sbom_no_rels) == "SPDXRef-Fallback")
+
+
+def test_full_wheel_rewrite():
+    """Create a fake wheel with a fromager.spdx.json, run the SBOM injection, verify."""
+    print("\n── full wheel rewrite ──")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        whl_path = Path(tmpdir) / "test_pkg-1.0.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+        dist_info = "test_pkg-1.0.0.dist-info"
+        sbom_path = f"{dist_info}/sboms/fromager.spdx.json"
+        record_path = f"{dist_info}/RECORD"
+
+        sbom_bytes = json.dumps(MINIMAL_SBOM).encode()
+
+        # Build a minimal valid wheel
+        with zipfile.ZipFile(whl_path, "w") as zf:
+            zf.writestr(f"{dist_info}/WHEEL", "Wheel-Version: 1.0\n")
+            zf.writestr(f"{dist_info}/METADATA", "Name: test-pkg\nVersion: 1.0.0\n")
+            zf.writestr(sbom_path, sbom_bytes)
+            import base64, hashlib
+            h = base64.urlsafe_b64encode(hashlib.sha256(sbom_bytes).digest()).rstrip(b"=").decode()
+            zf.writestr(record_path, f"{sbom_path},sha256={h},{len(sbom_bytes)}\n{record_path},,\n")
+
+        # Directly call add_system_deps + wheel rewrite (bypassing auditwheel)
+        system_libs = {"libc.so.6": ["GLIBC_2.14", "GLIBC_2.2.5"], "libm.so.6": ["GLIBC_2.2.5"]}
+
+        with zipfile.ZipFile(whl_path) as zf:
+            names = zf.namelist()
+        sbom_name = next(n for n in names if n.endswith("fromager.spdx.json"))
+        record_name = next(n for n in names if n.endswith("RECORD"))
+
+        tmp = whl_path.with_suffix(".tmp")
+        with zipfile.ZipFile(whl_path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            record_info = None
+            patched = None
+            for item in zin.infolist():
+                if item.filename == record_name:
+                    record_info = item
+                    continue
+                data = zin.read(item.filename)
+                if item.filename == sbom_name:
+                    data = patched = mod.add_system_deps(data, system_libs)
+                zout.writestr(item, data)
+            if record_info:
+                rec = zin.read(record_info.filename)
+                rec = mod.update_record(rec, sbom_name, patched)
+                zout.writestr(record_info, rec)
+        tmp.replace(whl_path)
+
+        # Verify the result
+        with zipfile.ZipFile(whl_path) as zf:
+            result_sbom = json.loads(zf.read(sbom_name))
+            result_record = zf.read(record_name).decode()
+
+        check("SBOM has 3 packages", len(result_sbom["packages"]) == 3, f"got {len(result_sbom['packages'])}")
+        check("SBOM has 3 relationships", len(result_sbom["relationships"]) == 3)
+        check("RECORD updated for sbom", "sha256=" in result_record.split("\n")[0])
+
+        sys_names = {p["name"] for p in result_sbom["packages"] if p["SPDXID"].startswith("SPDXRef-SystemLib")}
+        check("libc.so.6 in SBOM", "libc.so.6" in sys_names)
+        check("libm.so.6 in SBOM", "libm.so.6" in sys_names)
+
+
+def test_integration_with_real_wheel():
+    """Download a real manylinux wheel and run the full script. Requires auditwheel."""
+    print("\n── integration (real wheel + auditwheel) ──")
+    import shutil
+    if not shutil.which("auditwheel"):
+        print("  SKIP  auditwheel not installed (pip install auditwheel)")
+        return
+
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Download a small manylinux wheel with native code
+        r = subprocess.run(
+            ["pip", "download", "--no-deps", "--only-binary=:all:",
+             "--platform=manylinux_2_28_x86_64", "--python-version=312",
+             "--implementation=cp", "-d", tmpdir, "markupsafe==3.0.3"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print(f"  SKIP  pip download failed: {r.stderr.strip()}")
+            return
+
+        wheels = list(Path(tmpdir).glob("*.whl"))
+        if not wheels:
+            print("  SKIP  no wheel downloaded")
+            return
+        whl = wheels[0]
+        print(f"  using {whl.name}")
+
+        # auditwheel show should work on it
+        r = subprocess.run(["auditwheel", "show", str(whl)], capture_output=True, text=True)
+        check("auditwheel show succeeds", r.returncode == 0, r.stderr.strip())
+        if r.returncode != 0:
+            return
+
+        libs = mod.parse_system_libs(r.stdout)
+        print(f"  detected libs: {list(libs.keys())}")
+        check("found at least 1 system lib", len(libs) >= 1, f"got {len(libs)}")
+
+        # The wheel won't have fromager.spdx.json, so inject one for testing
+        sbom_bytes = json.dumps(MINIMAL_SBOM).encode()
+        with zipfile.ZipFile(whl) as zf:
+            dist_infos = {n.split("/")[0] for n in zf.namelist() if ".dist-info/" in n}
+        dist_info = next(iter(dist_infos))
+        sbom_entry = f"{dist_info}/sboms/fromager.spdx.json"
+        record_entry = f"{dist_info}/RECORD"
+
+        # Rewrite wheel to add SBOM
+        tmp = whl.with_suffix(".tmp")
+        with zipfile.ZipFile(whl) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == record_entry:
+                    continue
+                zout.writestr(item, zin.read(item.filename))
+            zout.writestr(sbom_entry, sbom_bytes)
+            import base64, hashlib
+            h = base64.urlsafe_b64encode(hashlib.sha256(sbom_bytes).digest()).rstrip(b"=").decode()
+            old_rec = zin.read(record_entry).decode().rstrip("\n")
+            new_rec = old_rec + f"\n{sbom_entry},sha256={h},{len(sbom_bytes)}\n"
+            zout.writestr(record_entry, new_rec)
+        tmp.replace(whl)
+
+        # Run the actual script
+        script = str(SCRIPT_DIR / "add_system_deps_to_sbom.py")
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        r = subprocess.run([sys.executable, script, str(whl)],
+                           capture_output=True, text=True)
+        check("script exits 0", r.returncode == 0, r.stderr.strip())
+        check("script reports system libs", "system lib" in r.stdout.lower() or "Added system deps" in r.stdout,
+              r.stdout.strip())
+
+        # Verify SBOM was patched
+        with zipfile.ZipFile(whl) as zf:
+            result = json.loads(zf.read(sbom_entry))
+        sys_pkgs = [p for p in result["packages"] if p["SPDXID"].startswith("SPDXRef-SystemLib")]
+        check("system lib packages in SBOM", len(sys_pkgs) >= 1, f"got {len(sys_pkgs)}")
+        if sys_pkgs:
+            print(f"  injected: {[p['name'] for p in sys_pkgs]}")
+
+
+if __name__ == "__main__":
+    print("=== add-system-deps-to-sbom tests ===")
+
+    test_parse_system_libs()
+    test_parse_no_system_libs()
+    test_sanitize_spdx_id()
+    test_find_root_package_id()
+    test_add_system_deps()
+    test_add_system_deps_idempotent()
+    test_full_wheel_rewrite()
+    test_integration_with_real_wheel()
+
+    print(f"\n{'='*40}")
+    print(f"  {PASSED} passed, {FAILED} failed")
+    print(f"{'='*40}")
+    sys.exit(1 if FAILED else 0)
