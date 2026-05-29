@@ -203,10 +203,20 @@ for PACKAGE in "${PACKAGES[@]}"; do
         log No manylinux wheels found, skipping auditwheel step
     fi
 
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Add system library dependencies to Fromager SBOMs in manylinux wheels.
+    # Uses auditwheel show to discover which system-provided shared libraries
+    # (e.g. libc, libgcc_s, libstdc++) the wheel links against.
+    for whl in wheels-repo/downloads/*manylinux*.whl; do
+        [ -f "$whl" ] || continue
+        log "Adding system library dependencies to SBOM in $(basename "$whl")"
+        "$SCRIPT_DIR/add_system_deps_to_sbom.py" "$whl"
+    done
+
     # Patch Fromager SBOMs with PURL identifying the wheel and its origin index.
     # Must run after auditwheel repair since the final filename isn't known until then.
     log "Patching Fromager SBOMs: adding PURL and renaming to redhat.spdx.json"
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # Only patch pure-python and manylinux wheels (skip original linux_x86_64
     # wheels since auditwheel already produced their manylinux replacements).
     for whl in wheels-repo/downloads/*none-any.whl wheels-repo/downloads/*manylinux*.whl; do
