@@ -1,0 +1,11 @@
+---
+# CTRL-004: Register build-python-wheels-oci-ta as a trusted task in Enterprise Contract.
+#
+# This file is referenced as a data source in Calunga's EC policies so that
+# Conforma can verify the build task without maintaining a separate
+# data-acceptable-bundles OCI artifact.  See ADR 0053 for background:
+# https://konflux-ci.dev/architecture/ADR/0053-trusted-task-model/
+trusted_task_rules:
+  allow:
+    calunga-build-tasks:
+      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-python-wheels*
