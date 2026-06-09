@@ -1,0 +1,6 @@
+# Pinned rust-toolset RPMs from UBI AppStream (Red Hat only — no rustup).
+# Base image: baseimage.lock (must match Containerfile ARG BASEIMAGE).
+# Bump when intentionally upgrading; image build fails if VR leaves the CDN.
+# Epoch is always (none) on UBI rust-toolset RPMs — RUST_VR is version-release only.
+RUST_VERSION=1.92.0
+RUST_VR=1.92.0-1.module+el8.10.0+23854+aa7622f9

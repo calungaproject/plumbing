@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Collect factory outputs and logs for SBOM / OCI artifact packaging.
+set -euo pipefail
+
+ARTIFACT_DIR="${1:-}"
+OUTPUT_DIR="${2:-/var/workdir/artifact}"
+
+if [[ -z "${ARTIFACT_DIR}" ]]; then
+    echo "Usage: collect-npm-artifacts <source-dir> [output-dir]" >&2
+    exit 2
+fi
+
+mkdir -p "${OUTPUT_DIR}"
+shopt -s nullglob
+for path in "${ARTIFACT_DIR}"/*.tgz "${ARTIFACT_DIR}"/**/*.tgz; do
+    [[ -f "${path}" ]] || continue
+    rel="${path#${ARTIFACT_DIR}/}"
+    dest="${OUTPUT_DIR}/${rel}"
+    mkdir -p "$(dirname "${dest}")"
+    cp -a "${path}" "${dest}"
+done
+
+echo "[collect-npm-artifacts] Collected artifacts under ${OUTPUT_DIR}"
