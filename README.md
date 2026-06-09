@@ -15,6 +15,16 @@ The [builder](./builder) directory contains everything needed to build a contain
 - Handle CA trust configuration for enterprise environments
 - Output both wheels and source distributions
 
+### npm Builder Image
+
+The [npm-builder](./npm-builder) directory contains the factory image for npm Trusted Libraries onboarding:
+
+- Node.js 20 LTS on UBI 8 (glibc, linux-x64)
+- Go, **Rust (Red Hat rust-toolset)**, and build tools for Tier B/C packages (esbuild, napi-rs, etc.)
+- Factory scripts (`build-npm-package`, `collect-npm-artifacts`) used by Tekton tasks
+
+Published to Quay as `npm-builder` via Konflux component `npm-builder`.
+
 ## Utils Image
 
 The [utils](./utils) directory is the source for the calunga utils image. This image is used for

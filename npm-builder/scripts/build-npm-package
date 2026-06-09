@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Factory orchestrator: run onboarder build.entrypoint.sh and verify.smoke.sh.
+# Invoked from Tekton; must not publish or hold registry credentials.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: build-npm-package --manifest <path> [--workdir <dir>]
+
+Environment (set by Tekton):
+  MANIFEST_PATH     Path to manifest.json
+  PACKAGE_DIR       Directory containing manifest + scripts
+  SOURCE_DIR        Checkout of source.ref (optional; entrypoint may clone)
+  OUT_DIR           Output directory for tarballs (default: ${PACKAGE_DIR}/out)
+EOF
+}
+
+MANIFEST_PATH="${MANIFEST_PATH:-}"
+PACKAGE_DIR="${PACKAGE_DIR:-}"
+WORK_DIR="${WORK_DIR:-/work}"
+OUT_DIR="${OUT_DIR:-}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --manifest) MANIFEST_PATH="$2"; shift 2 ;;
+        --workdir) WORK_DIR="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
+    esac
+done
+
+if [[ -z "${MANIFEST_PATH}" ]]; then
+    echo "MANIFEST_PATH or --manifest is required" >&2
+    exit 2
+fi
+
+PACKAGE_DIR="${PACKAGE_DIR:-$(dirname "${MANIFEST_PATH}")}"
+OUT_DIR="${OUT_DIR:-${PACKAGE_DIR}/out}"
+mkdir -p "${OUT_DIR}"
+
+ENTRYPOINT="${PACKAGE_DIR}/build.entrypoint.sh"
+SMOKE="${PACKAGE_DIR}/verify.smoke.sh"
+
+for script in "${ENTRYPOINT}" "${SMOKE}"; do
+    if [[ ! -x "${script}" ]]; then
+        echo "Required script missing or not executable: ${script}" >&2
+        exit 1
+    fi
+done
+
+export PACKAGE_DIR OUT_DIR WORK_DIR MANIFEST_PATH
+
+echo "[build-npm-package] Running ${ENTRYPOINT}"
+( cd "${PACKAGE_DIR}" && ./build.entrypoint.sh )
+
+echo "[build-npm-package] Running ${SMOKE}"
+( cd "${PACKAGE_DIR}" && ./verify.smoke.sh )
+
+echo "[build-npm-package] Done"
