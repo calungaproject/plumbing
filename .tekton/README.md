@@ -42,8 +42,9 @@ There is a dependency between the `Components`. For example, the builder image i
 build-python-wheels task. A change in the builder image requires not only building a new image, but
 also building a new Tekton bundle for that `Task` that uses the new builder image.
 
-The `npm-builder` image is built the same way as `plumbing-builder` and will be referenced by
-`build-npm-package` Tekton tasks in a later POC phase.
+The `npm-builder` image is built the same way as `plumbing-builder`. The Tekton task
+`build-npm-package-oci-ta` (component `task-build-npm-package`) is consumed by the
+`npm-registry` onboarding repo.
 
 The `Components` use [nudges](https://konflux-ci.dev/docs/building/component-nudges/#what-is-nudged)
 to keep these dependencies up to date. If all is working as expected, Konflux should
