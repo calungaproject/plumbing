@@ -1,0 +1,267 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: sast-snyk-check-sdist
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: security, sast, snyk, python, sdist
+  labels:
+    app.kubernetes.io/version: "0.1"
+spec:
+  description: >-
+    Run Snyk Code SAST scanning on Python sdist source code extracted from the
+    build artifact. Scans the actual upstream Python package source, not the
+    index repo. Non-blocking: gracefully skips when Snyk token is missing.
+  params:
+    - name: image-url
+      description: OCI artifact URL from build-wheels task
+      type: string
+    - name: image-digest
+      description: OCI artifact digest from build-wheels task
+      type: string
+    - name: SNYK_SECRET
+      description: >-
+        Name of the K8s secret containing the Snyk API token (key: snyk_token).
+        If the secret does not exist, the task outputs SKIPPED.
+      type: string
+      default: snyk-secret
+    - name: caTrustConfigMapName
+      description: The name of the ConfigMap to read CA bundle data from.
+      type: string
+      default: trusted-ca
+    - name: caTrustConfigMapKey
+      description: The name of the key in the ConfigMap that contains the CA bundle data.
+      type: string
+      default: ca-bundle.crt
+  results:
+    - name: TEST_OUTPUT
+      description: >-
+        SAST scan result in JSON format. Possible result values:
+        SKIPPED (no token or no sdists), SUCCESS (no findings),
+        WARNING (findings found), ERROR (scan failed).
+  volumes:
+    - name: snyk-secret
+      secret:
+        secretName: $(params.SNYK_SECRET)
+        optional: true
+    - name: trusted-ca
+      configMap:
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        name: $(params.caTrustConfigMapName)
+        optional: true
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+  steps:
+    - name: extract-sdists
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: IMAGE_URL
+          value: $(params.image-url)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        ARTIFACT_DIR="/var/workdir/artifact"
+        SDIST_SOURCE_DIR="/var/workdir/sdist-source"
+        mkdir -p "${ARTIFACT_DIR}" "${SDIST_SOURCE_DIR}"
+
+        IMAGE="${IMAGE_URL}@${IMAGE_DIGEST}"
+        echo "Pulling OCI artifact: ${IMAGE}"
+
+        AUTHFILE='/tmp/auth.json'
+        select-oci-auth "${IMAGE}" > "${AUTHFILE}"
+        retry oras pull --registry-config "${AUTHFILE}" "${IMAGE}" -o "${ARTIFACT_DIR}"
+
+        echo "Artifact contents:"
+        ls -la "${ARTIFACT_DIR}"
+
+        SDIST_COUNT=0
+        shopt -s nullglob
+        for tarball in "${ARTIFACT_DIR}"/*.tar.gz; do
+            BASENAME="$(basename "${tarball}" .tar.gz)"
+            DEST="${SDIST_SOURCE_DIR}/${BASENAME}"
+            mkdir -p "${DEST}"
+            echo "Extracting ${BASENAME}..."
+            tar -xzf "${tarball}" -C "${DEST}" --strip-components=1
+            SDIST_COUNT=$((SDIST_COUNT + 1))
+        done
+        shopt -u nullglob
+
+        echo "${SDIST_COUNT}" > /var/workdir/sdist-count
+        echo "Extracted ${SDIST_COUNT} sdist(s)"
+
+    - name: sast-snyk-check
+      image: quay.io/konflux-ci/konflux-test:v1.5.0@sha256:fbd5ad045b902065990218922aa6f343e8eb5fd039ecd445bc54819b8e968c3e
+      volumeMounts:
+        - mountPath: /etc/secrets
+          name: snyk-secret
+          readOnly: true
+      env:
+        - name: IMAGE_URL
+          value: $(params.image-url)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        SDIST_SOURCE_DIR="/var/workdir/sdist-source"
+        SARIF_DIR="/var/workdir/sarif"
+        RESULT_FILE="$(results.TEST_OUTPUT.path)"
+        mkdir -p "${SARIF_DIR}"
+
+        SNYK_TOKEN_PATH="/etc/secrets/snyk_token"
+        if [ ! -f "${SNYK_TOKEN_PATH}" ] || [ ! -s "${SNYK_TOKEN_PATH}" ]; then
+            echo "Snyk token not found — skipping SAST scan."
+            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"snyk-secret not configured"}' | tee "${RESULT_FILE}"
+            exit 0
+        fi
+
+        SDIST_COUNT="$(cat /var/workdir/sdist-count 2>/dev/null || echo 0)"
+        if [ "${SDIST_COUNT}" -eq 0 ]; then
+            echo "No sdists found in artifact — skipping SAST scan."
+            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no sdists in artifact"}' | tee "${RESULT_FILE}"
+            exit 0
+        fi
+
+        export SNYK_TOKEN="$(cat "${SNYK_TOKEN_PATH}")"
+
+        echo "Running Snyk Code scan on ${SDIST_COUNT} sdist(s)..."
+
+        TOTAL_FINDINGS=0
+        SCAN_ERRORS=0
+
+        shopt -s nullglob
+        SDIST_DIRS=("${SDIST_SOURCE_DIR}"/*/)
+        shopt -u nullglob
+
+        for SDIST_DIR in "${SDIST_DIRS[@]}"; do
+            SDIST_NAME="$(basename "${SDIST_DIR}")"
+            SARIF_FILE="${SARIF_DIR}/${SDIST_NAME}.sarif"
+
+            echo "=================================================="
+            echo "Scanning: ${SDIST_NAME}"
+
+            set +e
+            snyk code test "${SDIST_DIR}" \
+                --sarif-file-output="${SARIF_FILE}" \
+                2>&1
+            SNYK_RC=$?
+            set -e
+
+            case ${SNYK_RC} in
+                0)
+                    echo "CLEAN: ${SDIST_NAME} — no findings"
+                    ;;
+                1)
+                    FINDINGS=$(python3 -c "
+        import json, sys
+        try:
+            sarif = json.load(open(sys.argv[1]))
+            count = sum(len(r.get('results', [])) for r in sarif.get('runs', []))
+            print(count)
+        except Exception:
+            print(0)
+        " "${SARIF_FILE}" 2>/dev/null || echo 0)
+                    echo "FINDINGS: ${SDIST_NAME} — ${FINDINGS} issue(s) found"
+                    TOTAL_FINDINGS=$((TOTAL_FINDINGS + FINDINGS))
+                    ;;
+                3)
+                    echo "PARTIAL: ${SDIST_NAME} — scan completed with warnings"
+                    ;;
+                *)
+                    echo "ERROR: ${SDIST_NAME} — snyk exited with code ${SNYK_RC}"
+                    SCAN_ERRORS=$((SCAN_ERRORS + 1))
+                    ;;
+            esac
+        done
+
+        echo ""
+        echo "=================================================="
+        echo "         SNYK SDIST SCAN SUMMARY"
+        echo "=================================================="
+        echo "Sdists scanned: ${SDIST_COUNT}"
+        echo "Total findings: ${TOTAL_FINDINGS}"
+        echo "Scan errors:    ${SCAN_ERRORS}"
+        echo ""
+
+        if [ "${SCAN_ERRORS}" -gt 0 ] && [ "${SCAN_ERRORS}" -eq "${SDIST_COUNT}" ]; then
+            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":'"${SCAN_ERRORS}"',"warnings":0,"note":"all scans failed"}' | tee "${RESULT_FILE}"
+        elif [ "${TOTAL_FINDINGS}" -gt 0 ]; then
+            echo '{"result":"WARNING","namespace":"default","successes":'"$((SDIST_COUNT - SCAN_ERRORS))"',"failures":0,"warnings":'"${TOTAL_FINDINGS}"',"note":"findings detected in sdist source"}' | tee "${RESULT_FILE}"
+        else
+            echo '{"result":"SUCCESS","namespace":"default","successes":'"${SDIST_COUNT}"',"failures":0,"warnings":0,"note":"no findings in sdist source"}' | tee "${RESULT_FILE}"
+        fi
+
+    - name: upload-results
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: IMAGE_URL
+          value: $(params.image-url)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        SARIF_DIR="/var/workdir/sarif"
+        MERGED_SARIF="/var/workdir/snyk-sdist-results.sarif"
+
+        shopt -s nullglob
+        SARIF_FILES=("${SARIF_DIR}"/*.sarif)
+        shopt -u nullglob
+
+        if [ ${#SARIF_FILES[@]} -eq 0 ]; then
+            echo "No SARIF files to upload — skipping."
+            exit 0
+        fi
+
+        python3 -c "
+        import json, sys, glob
+
+        merged = {
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+            'version': '2.1.0',
+            'runs': []
+        }
+        for path in sorted(glob.glob(sys.argv[1] + '/*.sarif')):
+            try:
+                sarif = json.load(open(path))
+                merged['runs'].extend(sarif.get('runs', []))
+            except Exception as e:
+                print(f'Warning: failed to parse {path}: {e}', file=sys.stderr)
+        json.dump(merged, open(sys.argv[2], 'w'), indent=2)
+        print(f'Merged {len(merged[\"runs\"])} run(s) into {sys.argv[2]}')
+        " "${SARIF_DIR}" "${MERGED_SARIF}"
+
+        IMAGE="${IMAGE_URL}@${IMAGE_DIGEST}"
+        AUTHFILE='/tmp/auth.json'
+        select-oci-auth "${IMAGE}" > "${AUTHFILE}"
+
+        echo "Uploading SARIF results to ${IMAGE}..."
+        if ! retry oras attach --registry-config "${AUTHFILE}" \
+            --artifact-type "application/sarif+json" \
+            "${IMAGE}" "${MERGED_SARIF}:application/sarif+json" 2>&1; then
+            echo "WARNING: Failed to upload SARIF results (non-fatal)"
+        else
+            echo "SARIF results uploaded successfully"
+        fi
