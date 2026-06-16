@@ -25,6 +25,9 @@ The [npm-builder](./npm-builder) directory contains the factory image for npm Tr
 
 Published to Quay as `npm-builder` via Konflux component `npm-builder`.
 
+Tekton task `build-npm-package-oci-ta` is bundled as `task-build-npm-package` for the
+`npm-registry` onboarding pipeline.
+
 ## Utils Image
 
 The [utils](./utils) directory is the source for the calunga utils image. This image is used for

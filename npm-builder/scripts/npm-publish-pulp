@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Publish factory .tgz outputs to a Pulp npm repository.
+# Credentials come from env or a mounted npmrc — never from recipe scripts.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: npm-publish-pulp <artifact-dir>
+
+Environment:
+  PULP_NPM_REGISTRY_URL   npm registry URL (required), e.g.
+                            https://pulp.example.com/pulp/content/npm/calunga-stage/
+  NPM_PUBLISH_NPMRC       Full .npmrc contents (preferred when secret provides npmrc key)
+  NPM_PUBLISH_USERNAME    Basic auth username (with NPM_PUBLISH_PASSWORD)
+  NPM_PUBLISH_PASSWORD    Basic auth password
+  NPM_CONFIG_USERCONFIG   Override npmrc path (default: /tmp/npm-publish.npmrc)
+EOF
+}
+
+ARTIFACT_DIR="${1:-}"
+if [[ -z "${ARTIFACT_DIR}" || "${ARTIFACT_DIR}" == "-h" || "${ARTIFACT_DIR}" == "--help" ]]; then
+    usage
+    exit 2
+fi
+
+REGISTRY_URL="${PULP_NPM_REGISTRY_URL:?PULP_NPM_REGISTRY_URL is required}"
+NPMRC="${NPM_CONFIG_USERCONFIG:-/tmp/npm-publish.npmrc}"
+
+write_npmrc() {
+    if [[ -n "${NPM_PUBLISH_NPMRC:-}" ]]; then
+        printf '%s\n' "${NPM_PUBLISH_NPMRC}" > "${NPMRC}"
+        return
+    fi
+
+    if [[ -n "${NPM_PUBLISH_USERNAME:-}" && -n "${NPM_PUBLISH_PASSWORD:-}" ]]; then
+        local host
+        host="$(python3 - <<'PY'
+import os
+from urllib.parse import urlparse
+print(urlparse(os.environ["PULP_NPM_REGISTRY_URL"]).netloc)
+PY
+)"
+        local token
+        token="$(printf '%s:%s' "${NPM_PUBLISH_USERNAME}" "${NPM_PUBLISH_PASSWORD}" | base64 | tr -d '\n')"
+        cat > "${NPMRC}" <<EOF
+registry=${REGISTRY_URL}
+//${host}/:_auth=${token}
+always-auth=true
+EOF
+        return
+    fi
+
+    echo "npm publish credentials required (NPM_PUBLISH_NPMRC or username/password)" >&2
+    exit 1
+}
+
+write_npmrc
+chmod 600 "${NPMRC}"
+export NPM_CONFIG_USERCONFIG="${NPMRC}"
+
+shopt -s nullglob globstar
+mapfile -t tarballs < <(find "${ARTIFACT_DIR}" -type f -name '*.tgz' | sort)
+if [[ ${#tarballs[@]} -eq 0 ]]; then
+    echo "No .tgz files under ${ARTIFACT_DIR}" >&2
+    exit 1
+fi
+
+published=()
+failed=()
+
+for tgz in "${tarballs[@]}"; do
+    echo "Publishing ${tgz} to ${REGISTRY_URL}"
+    if npm publish "${tgz}" --registry "${REGISTRY_URL}"; then
+        published+=("${tgz}")
+    else
+        failed+=("${tgz}")
+    fi
+done
+
+echo ""
+echo "Published (${#published[@]}):"
+printf '  - %s\n' "${published[@]}"
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Failed (${#failed[@]}):"
+    printf '  - %s\n' "${failed[@]}"
+    exit 1
+fi
