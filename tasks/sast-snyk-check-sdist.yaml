@@ -20,6 +20,13 @@ spec:
     - name: image-digest
       description: OCI artifact digest from build-wheels task
       type: string
+    - name: SEVERITY_THRESHOLD
+      description: >-
+        Minimum severity to count as an actionable finding. Findings below
+        this level are logged but do not trigger a WARNING result.
+        Valid values: low, medium, high.
+      type: string
+      default: medium
     - name: SNYK_SECRET
       description: >-
         Name of the K8s secret containing the Snyk API token (key: snyk_token).
@@ -140,9 +147,13 @@ spec:
 
         export SNYK_TOKEN="$(cat "${SNYK_TOKEN_PATH}")"
 
+        SEVERITY_THRESHOLD="$(echo "$(params.SEVERITY_THRESHOLD)" | tr '[:upper:]' '[:lower:]')"
         echo "Running Snyk Code scan on ${SDIST_COUNT} sdist(s)..."
+        echo "Severity threshold: ${SEVERITY_THRESHOLD}"
 
-        TOTAL_FINDINGS=0
+        HIGH_FINDINGS=0
+        MEDIUM_FINDINGS=0
+        LOW_FINDINGS=0
         SCAN_ERRORS=0
 
         shopt -s nullglob
@@ -168,17 +179,29 @@ spec:
                     echo "CLEAN: ${SDIST_NAME} — no findings"
                     ;;
                 1)
-                    FINDINGS=$(python3 -c "
+                    read -r H M L <<< "$(python3 -c "
         import json, sys
         try:
             sarif = json.load(open(sys.argv[1]))
-            count = sum(len(r.get('results', [])) for r in sarif.get('runs', []))
-            print(count)
+            h = m = l = 0
+            for run in sarif.get('runs', []):
+                for result in run.get('results', []):
+                    level = result.get('level', 'warning')
+                    if level == 'error':
+                        h += 1
+                    elif level == 'warning':
+                        m += 1
+                    else:
+                        l += 1
+            print(h, m, l)
         except Exception:
-            print(0)
-        " "${SARIF_FILE}" 2>/dev/null || echo 0)
-                    echo "FINDINGS: ${SDIST_NAME} — ${FINDINGS} issue(s) found"
-                    TOTAL_FINDINGS=$((TOTAL_FINDINGS + FINDINGS))
+            print('0 0 0')
+        " "${SARIF_FILE}" 2>/dev/null || echo "0 0 0")"
+                    TOTAL=$((H + M + L))
+                    echo "FINDINGS: ${SDIST_NAME} — ${TOTAL} issue(s): ${H} high, ${M} medium, ${L} low"
+                    HIGH_FINDINGS=$((HIGH_FINDINGS + H))
+                    MEDIUM_FINDINGS=$((MEDIUM_FINDINGS + M))
+                    LOW_FINDINGS=$((LOW_FINDINGS + L))
                     ;;
                 3)
                     echo "PARTIAL: ${SDIST_NAME} — scan completed with warnings"
@@ -190,21 +213,34 @@ spec:
             esac
         done
 
+        TOTAL_FINDINGS=$((HIGH_FINDINGS + MEDIUM_FINDINGS + LOW_FINDINGS))
+
+        case "${SEVERITY_THRESHOLD}" in
+            high)   ACTIONABLE=${HIGH_FINDINGS} ;;
+            medium) ACTIONABLE=$((HIGH_FINDINGS + MEDIUM_FINDINGS)) ;;
+            *)      ACTIONABLE=${TOTAL_FINDINGS} ;;
+        esac
+
         echo ""
         echo "=================================================="
         echo "         SNYK SDIST SCAN SUMMARY"
         echo "=================================================="
-        echo "Sdists scanned: ${SDIST_COUNT}"
-        echo "Total findings: ${TOTAL_FINDINGS}"
-        echo "Scan errors:    ${SCAN_ERRORS}"
+        echo "Sdists scanned:     ${SDIST_COUNT}"
+        echo "Severity threshold: ${SEVERITY_THRESHOLD}"
+        echo "  High findings:    ${HIGH_FINDINGS}"
+        echo "  Medium findings:  ${MEDIUM_FINDINGS}"
+        echo "  Low findings:     ${LOW_FINDINGS}"
+        echo "  Total findings:   ${TOTAL_FINDINGS}"
+        echo "  Actionable:       ${ACTIONABLE}"
+        echo "Scan errors:        ${SCAN_ERRORS}"
         echo ""
 
         if [ "${SCAN_ERRORS}" -gt 0 ] && [ "${SCAN_ERRORS}" -eq "${SDIST_COUNT}" ]; then
             echo '{"result":"ERROR","namespace":"default","successes":0,"failures":'"${SCAN_ERRORS}"',"warnings":0,"note":"all scans failed"}' | tee "${RESULT_FILE}"
-        elif [ "${TOTAL_FINDINGS}" -gt 0 ]; then
-            echo '{"result":"WARNING","namespace":"default","successes":'"$((SDIST_COUNT - SCAN_ERRORS))"',"failures":0,"warnings":'"${TOTAL_FINDINGS}"',"note":"findings detected in sdist source"}' | tee "${RESULT_FILE}"
+        elif [ "${ACTIONABLE}" -gt 0 ]; then
+            echo '{"result":"WARNING","namespace":"default","successes":'"$((SDIST_COUNT - SCAN_ERRORS))"',"failures":0,"warnings":'"${ACTIONABLE}"',"note":"'"${ACTIONABLE} finding(s) at or above ${SEVERITY_THRESHOLD} severity"'"}' | tee "${RESULT_FILE}"
         else
-            echo '{"result":"SUCCESS","namespace":"default","successes":'"${SDIST_COUNT}"',"failures":0,"warnings":0,"note":"no findings in sdist source"}' | tee "${RESULT_FILE}"
+            echo '{"result":"SUCCESS","namespace":"default","successes":'"${SDIST_COUNT}"',"failures":0,"warnings":0,"note":"'"no findings at or above ${SEVERITY_THRESHOLD} severity (${TOTAL_FINDINGS} below threshold)"'"}' | tee "${RESULT_FILE}"
         fi
 
     - name: upload-results
