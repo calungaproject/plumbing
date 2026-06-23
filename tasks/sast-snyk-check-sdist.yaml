@@ -67,7 +67,7 @@ spec:
         name: workdir
   steps:
     - name: extract-sdists
-      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      image: quay.io/konflux-ci/konflux-test:v1.5.0@sha256:fbd5ad045b902065990218922aa6f343e8eb5fd039ecd445bc54819b8e968c3e
       volumeMounts:
         - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
           name: trusted-ca
