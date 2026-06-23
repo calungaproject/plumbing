@@ -19,6 +19,12 @@ spec:
         JSON array of packages in "name==version" format, e.g.
         '["requests==2.32.0","click==8.1.7"]'. Produced by identify-packages.
       type: string
+    - name: CSO_GIT_REF
+      description: >-
+        Git ref (tag, branch, or commit SHA) of check-source-origin to install.
+        Pin to a specific commit or tag for reproducible builds.
+      type: string
+      default: b52bf7320d651d57abe4fd5ea9d1b140dda2e5d1
     - name: caTrustConfigMapName
       description: The name of the ConfigMap to read CA bundle data from.
       type: string
@@ -64,6 +70,12 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
+        CA_BUNDLE="/etc/pki/tls/certs/ca-custom-bundle.crt"
+        if [ -s "${CA_BUNDLE}" ]; then
+            export SSL_CERT_FILE="${CA_BUNDLE}"
+            export REQUESTS_CA_BUNDLE="${CA_BUNDLE}"
+        fi
+
         RESULT_FILE="$(results.TEST_OUTPUT.path)"
 
         GIT_CREDENTIALS="$(workspaces.basic-auth.path)/.git-credentials"
@@ -97,7 +109,8 @@ spec:
             exit 0
         fi
 
-        pip install --quiet "check-source-origin @ git+https://github.com/calungaproject/check-source-origin.git"
+        CSO_REF="$(params.CSO_GIT_REF)"
+        pip install --quiet "check-source-origin @ git+https://github.com/calungaproject/check-source-origin.git@${CSO_REF}"
 
         SUCCESSES=0
         FAILURES=0
@@ -114,7 +127,7 @@ spec:
             echo "Checking: ${NAME}==${VERSION}"
 
             set +e
-            OUTPUT=$(check-source-origin verify "${NAME}" "${VERSION}" --json-output 2>&1)
+            check-source-origin verify "${NAME}" "${VERSION}" --json-output 2>&1
             RC=$?
             set -e
 
