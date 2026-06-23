@@ -66,8 +66,8 @@ spec:
       - mountPath: /var/workdir
         name: workdir
   steps:
-    - name: extract-sdists
-      image: quay.io/konflux-ci/konflux-test:v1.5.0@sha256:fbd5ad045b902065990218922aa6f343e8eb5fd039ecd445bc54819b8e968c3e
+    - name: pull-artifact
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
       volumeMounts:
         - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
           name: trusted-ca
@@ -83,8 +83,7 @@ spec:
         set -euo pipefail
 
         ARTIFACT_DIR="/var/workdir/artifact"
-        SDIST_SOURCE_DIR="/var/workdir/sdist-source"
-        mkdir -p "${ARTIFACT_DIR}" "${SDIST_SOURCE_DIR}"
+        mkdir -p "${ARTIFACT_DIR}"
 
         IMAGE="${IMAGE_URL}@${IMAGE_DIGEST}"
         echo "Pulling OCI artifact: ${IMAGE}"
@@ -95,6 +94,16 @@ spec:
 
         echo "Artifact contents:"
         ls -la "${ARTIFACT_DIR}"
+
+    - name: extract-sdists
+      image: quay.io/konflux-ci/konflux-test:v1.5.0@sha256:fbd5ad045b902065990218922aa6f343e8eb5fd039ecd445bc54819b8e968c3e
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        ARTIFACT_DIR="/var/workdir/artifact"
+        SDIST_SOURCE_DIR="/var/workdir/sdist-source"
+        mkdir -p "${SDIST_SOURCE_DIR}"
 
         SDIST_COUNT=0
         shopt -s nullglob
@@ -243,35 +252,13 @@ spec:
             echo '{"result":"SUCCESS","namespace":"default","successes":'"${SDIST_COUNT}"',"failures":0,"warnings":0,"note":"'"no findings at or above ${SEVERITY_THRESHOLD} severity (${TOTAL_FINDINGS} below threshold)"'"}' | tee "${RESULT_FILE}"
         fi
 
-    - name: upload-results
-      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
-      volumeMounts:
-        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
-          name: trusted-ca
-          readOnly: true
-          subPath: ca-bundle.crt
-      env:
-        - name: IMAGE_URL
-          value: $(params.image-url)
-        - name: IMAGE_DIGEST
-          value: $(params.image-digest)
-      script: |
-        #!/bin/bash
-        set -euo pipefail
-
-        SARIF_DIR="/var/workdir/sarif"
         MERGED_SARIF="/var/workdir/snyk-sdist-results.sarif"
-
         shopt -s nullglob
         SARIF_FILES=("${SARIF_DIR}"/*.sarif)
         shopt -u nullglob
 
-        if [ ${#SARIF_FILES[@]} -eq 0 ]; then
-            echo "No SARIF files to upload — skipping."
-            exit 0
-        fi
-
-        python3 -c "
+        if [ ${#SARIF_FILES[@]} -gt 0 ]; then
+            python3 -c "
         import json, sys, glob
 
         merged = {
@@ -288,6 +275,30 @@ spec:
         json.dump(merged, open(sys.argv[2], 'w'), indent=2)
         print(f'Merged {len(merged[\"runs\"])} run(s) into {sys.argv[2]}')
         " "${SARIF_DIR}" "${MERGED_SARIF}"
+        fi
+
+    - name: upload-results
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: IMAGE_URL
+          value: $(params.image-url)
+        - name: IMAGE_DIGEST
+          value: $(params.image-digest)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        MERGED_SARIF="/var/workdir/snyk-sdist-results.sarif"
+
+        if [ ! -f "${MERGED_SARIF}" ]; then
+            echo "No merged SARIF file to upload — skipping."
+            exit 0
+        fi
 
         IMAGE="${IMAGE_URL}@${IMAGE_DIGEST}"
         AUTHFILE='/tmp/auth.json'
