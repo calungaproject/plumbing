@@ -102,7 +102,11 @@ spec:
             chmod 600 ~/.gitconfig
         fi
 
-        PACKAGE_LIST="$(echo "${PACKAGES}" | python3 -c "import json,sys; [print(p) for p in json.load(sys.stdin)]" 2>/dev/null || true)"
+        if ! PACKAGE_LIST="$(echo "${PACKAGES}" | python3 -c "import json,sys; [print(p) for p in json.load(sys.stdin)]")"; then
+            echo "Failed to parse PACKAGES JSON."
+            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"invalid PACKAGES JSON"}' | tee "${RESULT_FILE}"
+            exit 0
+        fi
         if [ -z "${PACKAGE_LIST}" ]; then
             echo "No packages to check."
             echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no packages"}' | tee "${RESULT_FILE}"
