@@ -88,25 +88,10 @@ spec:
     - name: build-packages
       image: $(params.BUILDER_IMAGE)
       workingDir: /var/workdir/source
-      script: |
-        #!/usr/bin/env bash
-        set -euo pipefail
-        cd /var/workdir/source
-        mkdir -p /var/workdir/built
-        : > /var/workdir/built/list.txt
-        PACKAGES=(
-          $(params.PACKAGES[*])
-        )
-        for pkg in "${PACKAGES[@]}"; do
-          manifest="${pkg}/manifest.json"
-          if [[ ! -f "${manifest}" ]]; then
-            echo "Missing manifest: ${manifest}" >&2
-            exit 1
-          fi
-          echo "[build-packages] ${pkg}"
-          build-npm-package --manifest "${manifest}"
-          echo "${pkg}" >> /var/workdir/built/list.txt
-        done
+      command:
+        - build-npm-packages
+      args:
+        - $(params.PACKAGES[*])
       computeResources:
         limits:
           cpu: "4"
