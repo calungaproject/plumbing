@@ -305,9 +305,10 @@ spec:
         select-oci-auth "${IMAGE}" > "${AUTHFILE}"
 
         echo "Uploading SARIF results to ${IMAGE}..."
+        cd /var/workdir
         if ! retry oras attach --registry-config "${AUTHFILE}" \
             --artifact-type "application/sarif+json" \
-            "${IMAGE}" "${MERGED_SARIF}:application/sarif+json" 2>&1; then
+            "${IMAGE}" "snyk-sdist-results.sarif:application/sarif+json" 2>&1; then
             echo "WARNING: Failed to upload SARIF results (non-fatal)"
         else
             echo "SARIF results uploaded successfully"
