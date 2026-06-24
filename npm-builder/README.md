@@ -65,6 +65,7 @@ quay.io/redhat-user-workloads/calunga-tenant/npm-builder:<tag>
 | Script | Role |
 | ------ | ---- |
 | `build-npm-package` | Run entrypoint + smoke for one manifest |
+| `build-npm-packages` | Build multiple package dirs (Tekton `PACKAGES` args) |
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |

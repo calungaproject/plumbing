@@ -51,7 +51,7 @@ RUN chmod +x /tmp/install-rust-toolset.sh && \
 
 RUN useradd -m -u 1001 -s /bin/bash builder
 
-COPY --chmod=755 scripts/build-npm-package scripts/collect-npm-artifacts scripts/npm-publish-pulp /usr/local/bin/
+COPY --chmod=755 scripts/build-npm-package scripts/build-npm-packages scripts/collect-npm-artifacts scripts/npm-publish-pulp /usr/local/bin/
 
 # rust-toolset + llvm-toolset (dependency) install under /opt/rh/* — same as `scl enable`.
 ENV PATH="/opt/rh/rust-toolset/root/usr/bin:/opt/rh/llvm-toolset/root/usr/bin:/usr/local/bin:${PATH}"

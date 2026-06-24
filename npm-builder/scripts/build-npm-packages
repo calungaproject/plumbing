@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Build one or more npm TL package recipes. Each argument is a package directory
+# under the repo root (e.g. packages/esbuild/0.28.0). Invoked from Tekton with
+# args expanded from the PACKAGES array param.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: build-npm-packages <pkg-dir> [<pkg-dir>...]
+
+Build onboarder recipes via build-npm-package. Writes package dirs, one per line,
+to BUILT_LIST (default: /var/workdir/built/list.txt).
+EOF
+}
+
+BUILT_LIST="${BUILT_LIST:-/var/workdir/built/list.txt}"
+
+if [[ $# -lt 1 ]]; then
+    usage >&2
+    exit 2
+fi
+
+mkdir -p "$(dirname "${BUILT_LIST}")"
+: > "${BUILT_LIST}"
+
+for pkg in "$@"; do
+    manifest="${pkg}/manifest.json"
+    if [[ ! -f "${manifest}" ]]; then
+        echo "Missing manifest: ${manifest}" >&2
+        exit 1
+    fi
+    echo "[build-npm-packages] ${pkg}"
+    build-npm-package --manifest "${manifest}"
+    echo "${pkg}" >> "${BUILT_LIST}"
+done
+
+echo "[build-npm-packages] Done"
