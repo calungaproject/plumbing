@@ -132,6 +132,43 @@ assert_file_exists() {
     fi
 }
 
+assert_wheel_contains() {
+    local test_name="$1"
+    local wheel_path="$2"
+    local pattern="$3"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if unzip -Z1 "$wheel_path" | grep -q "$pattern"; then
+        log_info "✓ $test_name: PASSED"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    else
+        log_error "✗ $test_name: FAILED (pattern '$pattern' not found in $wheel_path)"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+}
+
+assert_wheel_not_contains() {
+    local test_name="$1"
+    local wheel_path="$2"
+    local pattern="$3"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+
+    if unzip -Z1 "$wheel_path" | grep -q "$pattern"; then
+        log_error "✗ $test_name: FAILED (pattern '$pattern' unexpectedly found in $wheel_path)"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    else
+        log_info "✓ $test_name: PASSED"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    fi
+}
+
 # Setup function - build or pull container image
 setup() {
     log_info "Setting up test environment..."
@@ -309,6 +346,80 @@ test_build_sequence_summaries() {
     assert_contains "Summary for second package" "$output" "./build-sequence-summary-wheel__0.42.0.json"
 }
 
+test_sbom_cyclonedx_removal() {
+  log_info "Running test: CycloneDX SBOM removal from manylinux wheels"
+
+  local test_dir="$TEST_OUTPUT_DIR/sbom-cdx-removal"
+  local output
+
+  # Build a package with native C extensions to trigger auditwheel repair.
+  # auditwheel >= 6.5 injects CycloneDX SBOMs into repaired wheels;
+  # build-wheels then calls remove-cyclonedx-sboms to strip them.
+  set +e
+  output=$(run_build_wheels "$test_dir" "markupsafe==2.1.5" 2>&1)
+  local exit_code=$?
+  set -e
+
+  assert_success "Build completes successfully" "$exit_code"
+  assert_contains "CycloneDX removal ran" "$output" "Removing auditwheel-generated SBOMs from repaired manylinux wheels"
+
+  # Find the manylinux wheel (produced by auditwheel repair)
+  local whl
+  whl=$(find "$test_dir/output/wheels-repo/downloads" -iname 'markupsafe-*manylinux*.whl' | head -1)
+
+  if [ -z "$whl" ]; then
+    TESTS_RUN=$((TESTS_RUN + 1))
+    log_error "✗ MarkupSafe manylinux wheel not found on disk: FAILED"
+    log_error "  Wheels present: $(ls "$test_dir/output/wheels-repo/downloads/"*.whl 2>/dev/null || echo 'none')"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    return 1
+  fi
+
+  # Verify CycloneDX SBOMs were removed by remove-cyclonedx-sboms
+  assert_wheel_not_contains "No CycloneDX SBOMs in manylinux wheel" "$whl" '\.cdx\.json'
+
+  # Verify Fromager's SPDX SBOM was preserved and renamed
+  assert_wheel_not_contains "No fromager.spdx.json (should be renamed)" "$whl" 'fromager\.spdx\.json'
+  assert_wheel_contains "redhat.spdx.json present" "$whl" 'redhat\.spdx\.json'
+}
+
+test_sbom_integration() {
+  log_info "Running test: SBOM integration (end-to-end with container build)"
+
+  local test_dir="$TEST_OUTPUT_DIR/sbom-integration"
+  local output
+
+  set +e
+  output=$(run_build_wheels "$test_dir" "setuptools==69.0.0" 2>&1)
+  local exit_code=$?
+  set -e
+
+  assert_success "Build completes successfully" "$exit_code"
+
+  # Find the output wheel
+  local whl
+  whl=$(find "$test_dir/output/wheels-repo/downloads" -name 'setuptools-*-none-any.whl' | head -1)
+
+  if [ -z "$whl" ]; then
+    TESTS_RUN=$((TESTS_RUN + 1))
+    log_error "✗ Setuptools wheel not found on disk: FAILED"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    return 1
+  fi
+
+  # Verify SBOM was renamed from fromager.spdx.json to redhat.spdx.json
+  assert_wheel_not_contains "No fromager.spdx.json in output wheel" "$whl" 'fromager\.spdx\.json'
+  assert_wheel_contains "redhat.spdx.json present in output wheel" "$whl" 'redhat\.spdx\.json'
+
+  # Verify no CycloneDX SBOMs (setuptools is pure-python so auditwheel doesn't
+  # run, but verify the invariant anyway)
+  assert_wheel_not_contains "No CycloneDX SBOMs in output wheel" "$whl" '\.cdx\.json'
+
+  # Verify file_name= qualifier in PURL
+  local sbom_content
+  sbom_content=$(unzip -p "$whl" "$(unzip -Z1 "$whl" | grep 'redhat\.spdx\.json')")
+  assert_contains "PURL has file_name= qualifier" "$sbom_content" "file_name=$(basename "$whl")"
+}
 
 # Main execution
 main() {
@@ -354,6 +465,8 @@ main() {
     test_basic_functionality
     test_file_generation
     test_build_sequence_summaries
+    test_sbom_cyclonedx_removal
+    test_sbom_integration
     echo
     echo "======================================="
     echo "  Test Results"
