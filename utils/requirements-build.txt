@@ -70,9 +70,9 @@ hatch-vcs==0.5.0 \
     --hash=sha256:0395fa126940340215090c344a2bf4e2a77bcbe7daab16f41b37b98c95809ff9 \
     --hash=sha256:b49677dbdc597460cc22d01b27ab3696f5e16a21ecf2700fb01bc28e1f2a04a7
     # via urllib3
-hatchling==1.28.0 \
-    --hash=sha256:4d50b02aece6892b8cd0b3ce6c82cb218594d3ec5836dbde75bf41a21ab004c8 \
-    --hash=sha256:dc48722b68b3f4bbfa3ff618ca07cdea6750e7d03481289ffa8be1521d18a961
+hatchling==1.30.1 \
+    --hash=sha256:161eacafb3c6f91526e92116d21426369f2c36e98c36a864f11a96345ad4ee31 \
+    --hash=sha256:eee4fd45357f72ebb3d7a42e5d72cfb5e29ed426d79e8836288926c4258d5f2e
     # via
     #   hatch-vcs
     #   urllib3

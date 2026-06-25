@@ -76,9 +76,9 @@ hatch-vcs==0.5.0 \
     #   platformdirs
     #   urllib3
     #   virtualenv
-hatchling==1.28.0 \
-    --hash=sha256:4d50b02aece6892b8cd0b3ce6c82cb218594d3ec5836dbde75bf41a21ab004c8 \
-    --hash=sha256:dc48722b68b3f4bbfa3ff618ca07cdea6750e7d03481289ffa8be1521d18a961
+hatchling==1.30.1 \
+    --hash=sha256:161eacafb3c6f91526e92116d21426369f2c36e98c36a864f11a96345ad4ee31 \
+    --hash=sha256:eee4fd45357f72ebb3d7a42e5d72cfb5e29ed426d79e8836288926c4258d5f2e
     # via
     #   annotated-types
     #   filelock
