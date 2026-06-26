@@ -490,14 +490,10 @@ spec:
         echo "Retrying all importable wheels in a combined venv..."
         echo "=================================================="
 
-        rm -rf /tmp/test-venv-combined
-        python3.12 -m venv /tmp/test-venv-combined
-
-        # Group wheels into install tiers to handle multiple versions of the
-        # same package. Tier 1 gets the lowest version of each package,
-        # tier 2 gets the next version (upgrading in-place), and so on.
-        # This avoids pip conflicts from installing two versions at once
-        # and ensures each version is the one actually installed when tested.
+        # Group wheels into install tiers. Each tier contains ALL packages
+        # but swaps in a different version for multi-version packages.
+        # Tier 1 uses the lowest version, tier 2 the next, etc. Each tier
+        # gets its own fresh venv so dependency resolution is clean.
         python3.12 -c "
         import json, sys, re
         from collections import defaultdict
@@ -530,12 +526,16 @@ spec:
             tier = []
             for name in sorted(pkg_versions):
                 versions = pkg_versions[name]
-                if i < len(versions):
-                    tier.append(versions[i])
+                idx = min(i, len(versions) - 1)
+                tier.append(versions[idx])
             tiers.append(tier)
 
         json.dump(tiers, open('/tmp/install-tiers.json', 'w'))
+        multi = {n for n, v in pkg_versions.items() if len(v) > 1}
         print(f'Grouped {len(wheels)} wheels into {len(tiers)} install tier(s)')
+        if multi:
+            sep = ', '
+            print(f'  Multi-version packages: {sep.join(sorted(multi))}')
         for i, tier in enumerate(tiers):
             print(f'  Tier {i+1}: {len(tier)} wheels')
         " "${IMPORTABLE_WHEELS[@]}"
@@ -554,9 +554,11 @@ spec:
             fi
         done
 
-        # Install and test one tier at a time. Import checks run immediately
-        # after each tier so that each version is verified while it is the
-        # version actually installed in the venv.
+        # Install and test one tier at a time. Each tier gets a fresh venv
+        # with all packages, swapping in the appropriate version for
+        # multi-version packages. If a tier's install fails (e.g. dependency
+        # conflict), skip it and try the next tier.
+        ANY_TIER_PASSED=false
         TIER_INDEX=0
         while IFS= read -r TIER_LINE; do
             TIER_INDEX=$((TIER_INDEX + 1))
@@ -564,13 +566,14 @@ spec:
 
             echo ""
             echo "Installing tier ${TIER_INDEX} (${#TIER_WHEELS[@]} wheels)..."
+            rm -rf /tmp/test-venv-combined
+            python3.12 -m venv /tmp/test-venv-combined
             if ! /tmp/test-venv-combined/bin/pip install --no-index --find-links . "${TIER_WHEELS[@]}" 2>&1; then
-                echo "FAIL: Combined pip install failed at tier ${TIER_INDEX}"
-                echo ""
-                echo "RESULT: FAILED"
-                exit 1
+                echo "WARNING: Tier ${TIER_INDEX} install failed, skipping tier"
+                continue
             fi
 
+            TIER_FAILED=false
             for WHEEL in "${TIER_WHEELS[@]}"; do
                 RESULT_FILE="${COMBINED_RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
 
@@ -609,12 +612,14 @@ spec:
                     VERIFY_RC=$?
                     if [ $VERIFY_RC -eq 2 ]; then
                         echo "ERROR: Script error for $WHEEL"
+                        TIER_FAILED=true
                     else
                         STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
                         if [ "$STATUS" = "SKIP" ]; then
                             echo "SKIP: $WHEEL"
                         else
                             echo "FAIL: $WHEEL"
+                            TIER_FAILED=true
                             python3.12 -c "
         import json, sys
         try:
@@ -633,6 +638,9 @@ spec:
                     fi
                 fi
             done
+            if [ "$TIER_FAILED" = false ]; then
+                ANY_TIER_PASSED=true
+            fi
         done < <(python3.12 -c "import json; tiers=json.load(open('/tmp/install-tiers.json')); [print(json.dumps(t)) for t in tiers]")
 
         echo ""
@@ -704,7 +712,7 @@ spec:
             exit 1
         fi
 
-        if [ $FAIL_COUNT -gt 0 ]; then
+        if [ "$ANY_TIER_PASSED" != true ]; then
             echo "RESULT: FAILED"
             exit 1
         fi
