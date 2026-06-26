@@ -132,6 +132,24 @@ assert_file_exists() {
     fi
 }
 
+assert_equals() {
+    local test_name="$1"
+    local expected="$2"
+    local actual="$3"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [ "$expected" = "$actual" ]; then
+        log_info "✓ $test_name: PASSED"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    else
+        log_error "✗ $test_name: FAILED (expected '$expected', got '$actual')"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+}
+
 assert_wheel_contains() {
     local test_name="$1"
     local wheel_path="$2"
@@ -433,6 +451,76 @@ test_sbom_integration() {
     assert_contains "Creator Organization is Red Hat" "$creator_organization" "Organization: Red Hat"
 }
 
+test_sbom_record_integrity() {
+    log_info "Running test: SBOM RECORD file integrity after patch-sbom-purl"
+
+    local test_dir="$TEST_OUTPUT_DIR/sbom-record"
+    local output
+
+    set +e
+    output=$(run_build_wheels "$test_dir" "setuptools==69.0.0" 2>&1)
+    local exit_code=$?
+    set -e
+
+    assert_success "Build completes successfully" "$exit_code"
+
+    # Find the output wheel
+    local whl
+    whl=$(find "$test_dir/output/wheels-repo/downloads" -name 'setuptools-*-none-any.whl' | head -1)
+
+    if [ -z "$whl" ]; then
+        TESTS_RUN=$((TESTS_RUN + 1))
+        log_error "✗ Setuptools wheel not found on disk: FAILED"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+
+    # Extract RECORD and SBOM to a temp directory
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    local record_path
+    record_path=$(unzip -Z1 "$whl" | grep '\.dist-info/RECORD$')
+    local sbom_path
+    sbom_path=$(unzip -Z1 "$whl" | grep 'redhat\.spdx\.json')
+
+    if [ -z "$record_path" ] || [ -z "$sbom_path" ]; then
+        TESTS_RUN=$((TESTS_RUN + 1))
+        log_error "✗ RECORD or redhat.spdx.json not found in wheel: FAILED"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    unzip -o "$whl" "$record_path" "$sbom_path" -d "$tmpdir"
+
+    # Parse the SBOM entry from RECORD
+    # Format: <path>,sha256=<urlsafe_b64_no_padding>,<size>
+    local record_line
+    record_line=$(grep 'redhat\.spdx\.json' "$tmpdir/$record_path")
+    local record_hash
+    record_hash=$(echo "$record_line" | cut -d',' -f2 | sed 's/^sha256=//')
+    local record_size
+    record_size=$(echo "$record_line" | cut -d',' -f3)
+
+    # Compute actual hash, match what is done in patch-sbom-purl
+    # - compute SHA-256 hash of the SBOM file
+    # - grab the hex hash (e.g. a1b2c3d4e5f6...)
+    # - convert hex text back to binary bytes (Python's hashlib.sha256().digest() returns raw bytes, not hex)
+    # - base64 encode raw bytes
+    # - swap characters so encoding is URL safe (match Python's base64.urlsafe_b64encode())
+    # - strip padding '=' characters from the end
+    local actual_hash
+    actual_hash=$(sha256sum "$tmpdir/$sbom_path" | cut -d' ' -f1 | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
+    local actual_size
+    actual_size=$(wc -c < "$tmpdir/$sbom_path" | tr -d ' ')
+
+    assert_equals "RECORD hash matches actual SBOM sha256" "$record_hash" "$actual_hash"
+    assert_equals "RECORD size matches actual SBOM file size" "$record_size" "$actual_size"
+
+    rm -rf "$tmpdir"
+}
+
 # Main execution
 main() {
     # Parse command line arguments
@@ -479,6 +567,7 @@ main() {
     test_build_sequence_summaries
     test_sbom_cyclonedx_removal
     test_sbom_integration
+    test_sbom_record_integrity
     echo
     echo "======================================="
     echo "  Test Results"
