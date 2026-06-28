@@ -42,8 +42,22 @@ for file in *.whl *.tar.gz; do
         echo "Uploaded $file with attestation."
         uploaded+=("$file")
     else
-        echo "ERROR: Failed to upload $file"
-        failed+=("$file")
+        # Upload failed — could be a race condition where another task uploaded it first.
+        # Re-fetch the latest repository version and check if the package exists now.
+        echo "Upload failed for $file, checking if another task uploaded it..."
+        sleep 5
+        PULP_REPOSITORY_VERSION=$( curl --fail --silent --retry 3 --max-time 30 "${PULP_QUERY_BASE}repositories/python/python/" \
+            | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
+        WHEEL_EXISTS_NOW=$( curl --fail --silent --retry 3 --max-time 30 -G \
+            "${PULP_QUERY_BASE}content/python/packages/" --data-urlencode "filename=${file}" \
+            --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" | jq '.results | length != 0' )
+        if $WHEEL_EXISTS_NOW; then
+            echo "Package ${file} was probably uploaded by another task — not an error."
+            skipped_existing+=("$file")
+        else
+            echo "ERROR: Failed to upload $file"
+            failed+=("$file")
+        fi
     fi
 done
 
