@@ -24,7 +24,7 @@ spec:
         Git ref (tag, branch, or commit SHA) of check-source-origin to install.
         Pin to a specific commit or tag for reproducible builds.
       type: string
-      default: b52bf7320d651d57abe4fd5ea9d1b140dda2e5d1
+      default: main
     - name: caTrustConfigMapName
       description: The name of the ConfigMap to read CA bundle data from.
       type: string
