@@ -12,7 +12,7 @@ spec:
   description: >-
     Run Snyk Code SAST scanning on Python sdist source code extracted from the
     build artifact. Scans the actual upstream Python package source, not the
-    index repo. Non-blocking: gracefully skips when Snyk token is missing.
+    index repo. Errors when Snyk token is missing.
   params:
     - name: image-url
       description: OCI artifact URL from build-wheels task
@@ -30,7 +30,7 @@ spec:
     - name: SNYK_SECRET
       description: >-
         Name of the K8s secret containing the Snyk API token (key: snyk_token).
-        If the secret does not exist, the task outputs SKIPPED.
+        If the secret does not exist, the task outputs ERROR.
       type: string
       default: snyk-secret
     - name: caTrustConfigMapName
@@ -45,8 +45,8 @@ spec:
     - name: TEST_OUTPUT
       description: >-
         SAST scan result in JSON format. Possible result values:
-        SKIPPED (no token or no sdists), SUCCESS (no findings),
-        WARNING (findings found), ERROR (scan failed).
+        ERROR (no token or scan failed), WARNING (no sdists or findings found),
+        SUCCESS (no findings).
   volumes:
     - name: snyk-secret
       secret:
@@ -142,15 +142,15 @@ spec:
 
         SNYK_TOKEN_PATH="/etc/secrets/snyk_token"
         if [ ! -f "${SNYK_TOKEN_PATH}" ] || [ ! -s "${SNYK_TOKEN_PATH}" ]; then
-            echo "Snyk token not found — skipping SAST scan."
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"snyk-secret not configured"}' | tee "${RESULT_FILE}"
+            echo "Snyk token not found — cannot run SAST scan."
+            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"snyk-secret not configured"}' | tee "${RESULT_FILE}"
             exit 0
         fi
 
         SDIST_COUNT="$(cat /var/workdir/sdist-count 2>/dev/null || echo 0)"
         if [ "${SDIST_COUNT}" -eq 0 ]; then
-            echo "No sdists found in artifact — skipping SAST scan."
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no sdists in artifact"}' | tee "${RESULT_FILE}"
+            echo "No sdists found in artifact."
+            echo '{"result":"WARNING","namespace":"default","successes":0,"failures":0,"warnings":1,"note":"no sdists in artifact"}' | tee "${RESULT_FILE}"
             exit 0
         fi
 
