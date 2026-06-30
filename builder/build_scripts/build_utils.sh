@@ -16,7 +16,7 @@ OS_ID_LIKE=rhel
 
 # Auto-detect architecture when not explicitly set (multi-arch builds)
 : "${AUDITWHEEL_ARCH:=$(uname -m)}"
-: "${AUDITWHEEL_PLAT:=${AUDITWHEEL_POLICY}_${AUDITWHEEL_ARCH}}"
+AUDITWHEEL_PLAT="${AUDITWHEEL_POLICY}_${AUDITWHEEL_ARCH}"
 export AUDITWHEEL_ARCH AUDITWHEEL_PLAT
 
 function check_var {
