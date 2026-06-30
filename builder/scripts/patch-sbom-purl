@@ -19,10 +19,16 @@ def parse_args():
 
 
 def add_filename_to_purl(sbom_data, filename):
-    """Append file_name=<filename> to every PURL ref in the SBOM JSON."""
+    """Append file_name=<filename> to PURLs in the SBOM JSON, skipping the upstream package.
+
+    The upstream section references the original PyPI source package, so file_name
+    (which refers to our built wheel) does not belong there.
+    """
     sbom = json.loads(sbom_data)
     encoded_name = quote(filename, safe="")
     for pkg in sbom.get("packages", []):
+        if pkg.get("SPDXID") == "SPDXRef-upstream":
+            continue
         for ref in pkg.get("externalRefs", []):
             if ref.get("referenceType") == "purl":
                 purl = ref["referenceLocator"]
