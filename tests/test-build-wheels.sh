@@ -115,6 +115,25 @@ assert_contains() {
     fi
 }
 
+assert_not_contains() {
+    local test_name="$1"
+    local haystack="$2"
+    local needle="$3"
+
+    TESTS_RUN=$((TESTS_RUN + 1))
+
+    if [[ "$haystack" != *"$needle"* ]]; then
+        log_info "✓ $test_name: PASSED"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        return 0
+    else
+        log_error "✗ $test_name: FAILED (did not expect '$needle' in output)"
+        log_error "   Output was: $haystack"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        return 1
+    fi
+}
+
 assert_file_exists() {
     local test_name="$1"
     local file_path="$2"
@@ -432,15 +451,19 @@ test_sbom_integration() {
     # run, but verify the invariant anyway)
     assert_wheel_not_contains "No CycloneDX SBOMs in output wheel" "$whl" '\.cdx\.json'
 
-    # Verify file_name= qualifier in PURL
+    # Verify file_name= qualifier in PURL (wheel only, not upstream)
     local sbom_content
     sbom_content=$(unzip -p "$whl" "$(unzip -Z1 "$whl" | grep 'redhat\.spdx\.json')")
 
-    # Extract PURLs
-    local sbom_purls
-    sbom_purls=$(jq '.packages[].externalRefs[] | select(.referenceType == "purl") | .referenceLocator' <<< "$sbom_content")
+    local wheel_purl
+    wheel_purl=$(jq -r '.packages[] | select(.SPDXID == "SPDXRef-wheel") | .externalRefs[] | select(.referenceType == "purl") | .referenceLocator' <<< "$sbom_content")
 
-    assert_contains "PURL has file_name= qualifier" "$sbom_purls" "file_name=$(basename "$whl")"
+    assert_contains "Wheel PURL has file_name= qualifier" "$wheel_purl" "file_name=$(basename "$whl")"
+
+    local upstream_purl
+    upstream_purl=$(jq -r '.packages[] | select(.SPDXID == "SPDXRef-upstream") | .externalRefs[] | select(.referenceType == "purl") | .referenceLocator' <<< "$sbom_content")
+
+    assert_not_contains "Upstream PURL does not have file_name= qualifier" "$upstream_purl" "file_name="
 
     # Verify creationInfo.creators
     # Value comes from Fromager's overrides/settings.yaml
