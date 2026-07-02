@@ -16,7 +16,7 @@ spec:
   params:
     - name: PACKAGES
       description: >-
-        List of packages to be built. Each is expected to be pinned to a version, e.g. ["urllib3==2.5.0", "numpy==2.3.1"]
+        List of packages to be built. Supports version-pinned packages (e.g. ["urllib3==2.5.0"]) and git source URLs (e.g. ["stevedore @ git+https://github.com/openstack/stevedore.git@v3.5.2"])
       type: array
     - name: IMAGE
       description: Reference of the OCI artifact to be produced.

@@ -30,6 +30,8 @@ EXAMPLES:
     $0 urllib3==2.4.0
     $0 urllib3==2.4.0 requests==2.31.0
     $0 --cache-wheel-server-url https://wheels.example.com urllib3==2.4.0 requests==2.31.0
+    $0 "stevedore @ git+https://github.com/openstack/stevedore.git"
+    $0 "stevedore @ git+https://github.com/openstack/stevedore.git@v3.5.2"
 
 ENVIRONMENT:
     DEBUG=1                        Enable debug mode with verbose output
