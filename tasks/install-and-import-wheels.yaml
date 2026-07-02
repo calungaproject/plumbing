@@ -479,148 +479,236 @@ spec:
             exit 0
         fi
 
-        # Phase 2: Combined venv fallback.
+        # Phase 2: Build-group venv fallback.
         # Some wheels fail to import individually because they depend on
-        # sibling packages at import time (e.g. sphinxcontrib needs sphinx).
-        # Re-test all importable wheels in a single shared venv where
-        # cross-package dependencies are available.
+        # sibling packages at import time (e.g. opentelemetry-instrumentation
+        # needs openai). Re-test using build-sequence-summary groups — each
+        # group contains a primary package and its resolved dependency tree,
+        # so they install cleanly together without cross-group conflicts.
         echo ""
         echo "=================================================="
         echo "Individual wheel testing had failures."
-        echo "Retrying all importable wheels in a combined venv..."
+        echo "Retrying using build-sequence-summary groups..."
         echo "=================================================="
 
-        # Group wheels into install tiers. Each tier contains ALL packages
-        # but swaps in a different version for multi-version packages.
-        # Tier 1 uses the lowest version, tier 2 the next, etc. Each tier
-        # gets its own fresh venv so dependency resolution is clean.
+        SUMMARY_FILES=(build-sequence-summary-*.json)
+        if [ ${#SUMMARY_FILES[@]} -eq 0 ]; then
+            echo "No build-sequence-summary files found — cannot run group tests."
+            echo "RESULT: FAILED"
+            exit 1
+        fi
+
+        echo "Found ${#SUMMARY_FILES[@]} build-sequence-summary file(s)"
+
+        # Build a wheel index: normalized_name-version -> wheel filename
         python3.12 -c "
-        import json, sys, re
-        from collections import defaultdict
-        from pathlib import PurePosixPath
+        import json, os, re
 
-        wheels = sys.argv[1:]
-        pkg_versions = defaultdict(list)
-        for whl in wheels:
-            name = PurePosixPath(whl).name.split('-')[0].lower().replace('_', '-')
-            pkg_versions[name].append(whl)
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
 
-        def sort_key(whl):
-            parts = PurePosixPath(whl).name.split('-')
-            ver_str = parts[1] if len(parts) > 1 else '0'
-            segments = re.split(r'[.\-]', ver_str)
-            result = []
-            for s in segments:
-                try:
-                    result.append((0, int(s)))
-                except ValueError:
-                    result.append((1, s))
-            return result
+        wheel_index = {}
+        for f in os.listdir('.'):
+            if not f.endswith('.whl'):
+                continue
+            parts = f.split('-')
+            if len(parts) >= 2:
+                key = normalize(parts[0]) + '-' + parts[1]
+                wheel_index[key] = f
 
-        for name in pkg_versions:
-            pkg_versions[name].sort(key=sort_key)
-
-        max_tiers = max(len(v) for v in pkg_versions.values())
-        tiers = []
-        for i in range(max_tiers):
-            tier = []
-            for name in sorted(pkg_versions):
-                versions = pkg_versions[name]
-                idx = min(i, len(versions) - 1)
-                tier.append(versions[idx])
-            tiers.append(tier)
-
-        json.dump(tiers, open('/tmp/install-tiers.json', 'w'))
-        multi = {n for n, v in pkg_versions.items() if len(v) > 1}
-        print(f'Grouped {len(wheels)} wheels into {len(tiers)} install tier(s)')
-        if multi:
-            sep = ', '
-            print(f'  Multi-version packages: {sep.join(sorted(multi))}')
-        for i, tier in enumerate(tiers):
-            print(f'  Tier {i+1}: {len(tier)} wheels')
-        " "${IMPORTABLE_WHEELS[@]}"
+        json.dump(wheel_index, open('/tmp/wheel-index.json', 'w'))
+        print(f'Indexed {len(wheel_index)} wheel(s)')
+        "
 
         COMBINED_RESULTS_DIR="/tmp/wheel-test-results-combined"
         rm -rf "${COMBINED_RESULTS_DIR}"
         mkdir -p "${COMBINED_RESULTS_DIR}"
 
-        # Carry over SKIP results from phase 1 so the combined summary
-        # includes non-importable wheels and totals match.
+        # Carry forward all phase 1 results. Phase 2 overwrites
+        # any that it retests.
         for RESULT_FILE in "${RESULTS_DIR}"/*.json; do
             [ -f "$RESULT_FILE" ] || continue
-            STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status',''))" "$RESULT_FILE" 2>/dev/null || true)
-            if [ "$STATUS" = "SKIP" ]; then
-                cp "$RESULT_FILE" "${COMBINED_RESULTS_DIR}/"
-            fi
+            cp "$RESULT_FILE" "${COMBINED_RESULTS_DIR}/"
         done
 
-        # Install and test one tier at a time. Each tier gets a fresh venv
-        # with all packages, swapping in the appropriate version for
-        # multi-version packages. If a tier's install fails (e.g. dependency
-        # conflict), skip it and try the next tier.
-        ANY_TIER_PASSED=false
-        TIER_INDEX=0
-        while IFS= read -r TIER_LINE; do
-            TIER_INDEX=$((TIER_INDEX + 1))
-            readarray -t TIER_WHEELS < <(echo "$TIER_LINE" | python3.12 -c "import json,sys; [print(w) for w in json.loads(sys.stdin.read())]")
+        ANY_GROUP_FAILED=false
+        GROUP_INDEX=0
+
+        for SUMMARY_FILE in "${SUMMARY_FILES[@]}"; do
+            GROUP_INDEX=$((GROUP_INDEX + 1))
+
+            PRIMARY_LABEL=$(basename "$SUMMARY_FILE" .json | sed 's/^build-sequence-summary-//')
 
             echo ""
-            echo "Installing tier ${TIER_INDEX} (${#TIER_WHEELS[@]} wheels)..."
-            rm -rf /tmp/test-venv-combined
-            python3.12 -m venv /tmp/test-venv-combined
-            if ! /tmp/test-venv-combined/bin/pip install --no-index --find-links . "${TIER_WHEELS[@]}" 2>&1; then
-                echo "WARNING: Tier ${TIER_INDEX} install failed, skipping tier"
+            echo "=================================================="
+            echo "Group ${GROUP_INDEX}: ${PRIMARY_LABEL}"
+            echo "=================================================="
+
+            PRIMARY_NAME=$(echo "$PRIMARY_LABEL" | sed 's/__.*//; s/_/-/g')
+            PRIMARY_VERSION=$(echo "$PRIMARY_LABEL" | sed 's/.*__//')
+            PRIMARY_WHEEL=$(python3.12 -c "
+        import json, re, sys
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+        wheel_index = json.load(open('/tmp/wheel-index.json'))
+        key = normalize(sys.argv[1]) + '-' + sys.argv[2]
+        print(wheel_index.get(key, ''))
+        " "$PRIMARY_NAME" "$PRIMARY_VERSION")
+            if [ -z "$PRIMARY_WHEEL" ]; then
+                echo "  WARNING: No matching wheel for ${PRIMARY_NAME}==${PRIMARY_VERSION}, skipping"
+                continue
+            fi
+            echo "  Installing ${PRIMARY_NAME}==${PRIMARY_VERSION}..."
+            rm -rf /tmp/test-venv-group
+            python3.12 -m venv /tmp/test-venv-group
+            if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1; then
+                echo "  WARNING: Group install failed for ${PRIMARY_LABEL}, skipping"
+                ANY_GROUP_FAILED=true
                 continue
             fi
 
-            TIER_FAILED=false
-            for WHEEL in "${TIER_WHEELS[@]}"; do
+            # Get installed packages and match to wheel files in artifact
+            readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | python3.12 -c "
+        import json, re, sys
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+        wheel_index = json.load(open('/tmp/wheel-index.json'))
+        installed = json.load(sys.stdin)
+        for pkg in installed:
+            key = normalize(pkg['name']) + '-' + pkg['version']
+            whl = wheel_index.get(key)
+            if whl:
+                print(whl)
+        ")
+
+            GROUP_FAILED=false
+            WHEEL_IDX=0
+            while [ $WHEEL_IDX -lt ${#INSTALLED_WHEELS[@]} ]; do
+                WHEEL="${INSTALLED_WHEELS[$WHEEL_IDX]}"
+                WHEEL_IDX=$((WHEEL_IDX + 1))
                 RESULT_FILE="${COMBINED_RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
 
-                # Verify that the version we intended to test is the one
-                # actually installed. If pip resolved a different version
-                # (e.g. via dependency resolution), carry over the individual
-                # phase result instead of testing the wrong version.
-                EXPECTED_VER=$(python3.12 -c "from pathlib import PurePosixPath; print(PurePosixPath('${WHEEL}').name.split('-')[1])")
-                PKG_NAME=$(python3.12 -c "from pathlib import PurePosixPath; print(PurePosixPath('${WHEEL}').name.split('-')[0].lower().replace('_', '-'))")
-                INSTALLED_VER=$(/tmp/test-venv-combined/bin/python -c "
-        from importlib.metadata import version
-        try:
-            print(version('${PKG_NAME}'))
-        except Exception:
-            print('NOT_INSTALLED')
-        " 2>/dev/null)
-
-                if [ "$INSTALLED_VER" != "$EXPECTED_VER" ]; then
-                    echo "=================================================="
-                    echo "NOT TESTED (combined venv, tier ${TIER_INDEX}): $WHEEL"
-                    echo "  Expected version ${EXPECTED_VER} but found ${INSTALLED_VER} installed"
-                    echo "  Carrying over individual phase result"
-                    INDIVIDUAL_RESULT="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
-                    if [ -f "$INDIVIDUAL_RESULT" ]; then
-                        cp "$INDIVIDUAL_RESULT" "$RESULT_FILE"
+                # Skip non-importable wheels already classified in phase 1
+                if [ -f "$RESULT_FILE" ]; then
+                    PREV_STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status',''))" "$RESULT_FILE" 2>/dev/null || true)
+                    if [ "$PREV_STATUS" = "SKIP" ]; then
+                        continue
                     fi
+                fi
+
+                # Classify: skip non-importable wheels
+                if python3.12 /tmp/verify_import.py --classify-only "${WHEEL}" > /dev/null 2>&1; then
                     continue
                 fi
 
-                echo "=================================================="
-                echo "Testing import (combined venv, tier ${TIER_INDEX}): $WHEEL..."
+                echo "  Testing import (group ${GROUP_INDEX}): $WHEEL..."
 
-                if /tmp/test-venv-combined/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
-                    echo "PASS: $WHEEL"
+                if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                    echo "  PASS: $WHEEL"
                 else
                     VERIFY_RC=$?
                     if [ $VERIFY_RC -eq 2 ]; then
-                        echo "ERROR: Script error for $WHEEL"
-                        TIER_FAILED=true
-                    else
-                        STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
-                        if [ "$STATUS" = "SKIP" ]; then
-                            echo "SKIP: $WHEEL"
-                        else
-                            echo "FAIL: $WHEEL"
-                            TIER_FAILED=true
+                        echo "  ERROR: Script error for $WHEEL"
+                        GROUP_FAILED=true
+                        continue
+                    fi
+
+                    STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
+                    if [ "$STATUS" = "SKIP" ]; then
+                        echo "  SKIP: $WHEEL"
+                        continue
+                    fi
+
+                    # Loop: keep resolving missing undeclared deps until pass or we
+                    # can't find an untried wheel (prevents infinite loop)
+                    UNDECLARED_DEPS=""
+                    TRIED_WHEELS=""
+                    FOUND_DEPS=""
+                    FALLBACK_RESOLVED=false
+                    while true; do
+                        MISSING_MODULE=$(python3.12 -c "
+        import json, sys
+        d = json.load(open(sys.argv[1]))
+        for t in d.get('imports_tested', []):
+            if isinstance(t, dict) and not t.get('success', True):
+                msg = t.get('message', '')
+                if 'No module named' in msg:
+                    mod = msg.split(\"'\")[1] if \"'\" in msg else ''
+                    if mod:
+                        print(mod.split('.')[0])
+                        break
+        " "$RESULT_FILE" 2>/dev/null)
+
+                        if [ -z "$MISSING_MODULE" ]; then
+                            break
+                        fi
+
+                        MISSING_WHEEL=$(python3.12 -c "
+        import re, sys, os
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+        target = normalize(sys.argv[1])
+        tried = set(sys.argv[2].split(',')) if sys.argv[2] else set()
+        for f in sorted(os.listdir('.')):
+            if f.endswith('.whl') and normalize(f.split('-')[0]) == target and f not in tried:
+                print(f)
+                break
+        " "$MISSING_MODULE" "$TRIED_WHEELS" 2>/dev/null)
+
+                        if [ -z "$MISSING_WHEEL" ]; then
+                            break
+                        fi
+                        TRIED_WHEELS="${TRIED_WHEELS:+${TRIED_WHEELS},}${MISSING_WHEEL}"
+                        FOUND_DEPS="${FOUND_DEPS:+${FOUND_DEPS} }${MISSING_WHEEL}"
+                        UNDECLARED_DEPS="${UNDECLARED_DEPS:+${UNDECLARED_DEPS},}${MISSING_MODULE}"
+
+                        # Clean venv and install primary + all found deps together
+                        # so pip can resolve all constraints holistically
+                        echo "  Retrying with undeclared dep(s): ${FOUND_DEPS}"
+                        rm -rf /tmp/test-venv-group
+                        python3.12 -m venv /tmp/test-venv-group
+                        if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . \
+                            "${PRIMARY_NAME}==${PRIMARY_VERSION}" ${FOUND_DEPS} 2>&1; then
+                            echo "  WARNING: Install failed with deps: ${FOUND_DEPS}"
+                            continue
+                        fi
+
+                        # Refresh installed wheels list from clean install
+                        readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | python3.12 -c "
+        import json, re, sys
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+        wheel_index = json.load(open('/tmp/wheel-index.json'))
+        installed = json.load(sys.stdin)
+        for pkg in installed:
+            key = normalize(pkg['name']) + '-' + pkg['version']
+            whl = wheel_index.get(key)
+            if whl:
+                print(whl)
+        ")
+
+                        if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                            echo "  PASS: $WHEEL (with undeclared deps: ${UNDECLARED_DEPS})"
                             python3.12 -c "
+        import json, sys
+        with open(sys.argv[1]) as f:
+            d = json.load(f)
+        d['undeclared_dep'] = sys.argv[2]
+        with open(sys.argv[1], 'w') as f:
+            json.dump(d, f)
+        " "$RESULT_FILE" "$UNDECLARED_DEPS"
+                            FALLBACK_RESOLVED=true
+                            break
+                        fi
+                    done
+
+                    if [ "$FALLBACK_RESOLVED" = "true" ]; then
+                        continue
+                    fi
+
+                    echo "  FAIL: $WHEEL"
+                    GROUP_FAILED=true
+                    python3.12 -c "
         import json, sys
         try:
             with open(sys.argv[1]) as f:
@@ -630,22 +718,21 @@ spec:
                     continue
                 name = t.get('name', '<unknown>')
                 message = t.get('message', '')
-                print(f'  -> {name}: {message}')
+                print(f'    -> {name}: {message}')
         except Exception:
             pass
         " "$RESULT_FILE"
-                        fi
-                    fi
                 fi
             done
-            if [ "$TIER_FAILED" = false ]; then
-                ANY_TIER_PASSED=true
+
+            if [ "$GROUP_FAILED" = true ]; then
+                ANY_GROUP_FAILED=true
             fi
-        done < <(python3.12 -c "import json; tiers=json.load(open('/tmp/install-tiers.json')); [print(json.dumps(t)) for t in tiers]")
+        done
 
         echo ""
         echo "=================================================="
-        echo "         COMBINED VENV SUMMARY REPORT"
+        echo "         BUILD GROUP SUMMARY REPORT"
         echo "=================================================="
         echo ""
 
@@ -665,6 +752,9 @@ spec:
             w = d.get('wheel','?')
             s = d.get('status','ERROR')
             r = d.get('reason','')
+            dep = d.get('undeclared_dep','')
+            if dep:
+                r = f'undeclared dep: {dep}' if not r else f'{r} (undeclared dep: {dep})'
         except Exception:
             w, s, r = '?', 'ERROR', 'parse error'
         print(f'{s}\t{w}\t{r}')
@@ -712,9 +802,9 @@ spec:
             exit 1
         fi
 
-        if [ "$ANY_TIER_PASSED" != true ]; then
+        if [ "$ANY_GROUP_FAILED" = true ]; then
             echo "RESULT: FAILED"
             exit 1
         fi
 
-        echo "RESULT: PASSED (via combined venv fallback)"
+        echo "RESULT: PASSED (via build-group fallback)"
