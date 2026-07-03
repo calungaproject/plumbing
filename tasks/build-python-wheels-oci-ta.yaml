@@ -154,6 +154,7 @@ spec:
         if [ -n "${GIT_TOKEN:-}" ]; then
           git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
         fi
+        pip install wheel
         BUILD_WHEELS=build-wheels
         if [ -n "$SCRIPTS_REPO_URL" ]; then
           echo "[$(date --utc -Ins)] Cloning scripts from $SCRIPTS_REPO_URL @ $SCRIPTS_REPO_REF"
