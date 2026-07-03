@@ -68,6 +68,13 @@ spec:
         Only used when SCRIPTS_REPO_URL is non-empty.
       type: string
       default: "main"
+    - name: GIT_TOKEN_SECRET_NAME
+      description: >-
+        Name of the K8s secret containing a Git token for cloning private
+        repositories referenced in package specs. The token is read from
+        the 'password' key. Set to empty string to disable.
+      type: string
+      default: ""
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -133,11 +140,20 @@ spec:
           value: $(params.WHEEL_SERVER_URL)
         - name: LOCAL_VERSION
           value: $(params.LOCAL_VERSION)
+        - name: GIT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.GIT_TOKEN_SECRET_NAME)
+              key: password
+              optional: true
       args:
         - $(params.PACKAGES[*])
       script: |
         #!/bin/bash
         set -euo pipefail
+        if [ -n "${GIT_TOKEN:-}" ]; then
+          git config --global url."https://x-access-token:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+        fi
         BUILD_WHEELS=build-wheels
         if [ -n "$SCRIPTS_REPO_URL" ]; then
           echo "[$(date --utc -Ins)] Cloning scripts from $SCRIPTS_REPO_URL @ $SCRIPTS_REPO_REF"
