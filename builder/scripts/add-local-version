@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Add a PEP 440 local version identifier to a wheel.
+
+Unpacks the wheel, patches the version in METADATA and the .dist-info
+directory name, then repacks with ``wheel.wheelfile.WheelFile`` (which
+regenerates RECORD automatically).
+
+Example:
+    add-local-version wheel-0.45.1-0-py3-none-any.whl rhlw
+    # produces: wheel-0.45.1+rhlw-0-py3-none-any.whl
+"""
+import argparse
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+from packaging.utils import parse_wheel_filename
+from wheel.wheelfile import WheelFile
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Add a PEP 440 local version segment to a built wheel"
+    )
+    parser.add_argument("wheel", type=Path, help="Path to the .whl file")
+    parser.add_argument("local", help="Local version identifier to append (e.g. 'rhlw')")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for the repackaged wheel (default: same as input)",
+    )
+    return parser.parse_args()
+
+
+def patch_metadata_version(metadata_path, old_version, new_version):
+    """Replace the Version field in METADATA."""
+    text = metadata_path.read_text()
+    patched = re.sub(
+        rf"^Version:\s*{re.escape(old_version)}$",
+        f"Version: {new_version}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if patched == text:
+        print(
+            f"ERROR: could not find 'Version: {old_version}' in {metadata_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    metadata_path.write_text(patched)
+
+
+def build_wheel_filename(name, new_version, build_tag, tags):
+    """Construct the output wheel filename from parsed components."""
+    tag_str = ".".join(str(t) for t in sorted(tags))
+    parts = [name, new_version]
+    if build_tag:
+        parts.append(f"{build_tag[0]}{build_tag[1]}")
+    parts.append(tag_str)
+    return "-".join(parts) + ".whl"
+
+
+def main():
+    args = parse_args()
+    whl_path = args.wheel.resolve()
+    output_dir = (args.output_dir or whl_path.parent).resolve()
+
+    name, version, build_tag, tags = parse_wheel_filename(whl_path.name)
+    if version.local:
+        print(f"ERROR: wheel already has a local version: {version}", file=sys.stderr)
+        sys.exit(1)
+
+    old_version_str = str(version)
+    new_version_str = f"{version}+{args.local}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # Unpack
+        with WheelFile(whl_path, "r") as wf:
+            wf.extractall(tmp_path)
+
+        # The archive contents are flat (no wrapper directory), so dist-info
+        # is directly inside tmp_path
+        dist_infos = list(tmp_path.glob("*.dist-info"))
+        if len(dist_infos) != 1:
+            print(
+                f"ERROR: expected one .dist-info directory, found {len(dist_infos)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        dist_info = dist_infos[0]
+
+        # Patch Version in METADATA
+        patch_metadata_version(
+            dist_info / "METADATA", old_version_str, new_version_str
+        )
+
+        # Rename .dist-info directory to reflect new version
+        new_dist_info_name = dist_info.name.replace(
+            old_version_str, new_version_str, 1
+        )
+        dist_info.rename(dist_info.with_name(new_dist_info_name))
+
+        # Repack — WheelFile.write_files walks the directory and close()
+        # generates RECORD automatically
+        out_filename = build_wheel_filename(name, new_version_str, build_tag, tags)
+        out_path = output_dir / out_filename
+        with WheelFile(out_path, "w") as wf:
+            wf.write_files(str(tmp_path))
+
+    print(f"Created {out_path}")
+
+
+if __name__ == "__main__":
+    main()

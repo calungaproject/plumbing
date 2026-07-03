@@ -42,6 +42,14 @@ spec:
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
       default: ""
+    - name: LOCAL_VERSION
+      description: >-
+        PEP 440 local version identifier to add to the top-level package
+        wheels (e.g. 'rhlw' produces pkg-1.0+rhlw). Only applied to
+        explicitly requested packages, not their dependencies. Set to
+        empty string to disable.
+      type: string
+      default: "rhlw"
     - name: SERVICE_ACCOUNT_SECRET_NAME
       description: >-
         Name of the K8s secret containing wheel cache server credentials (keys: username, password)
@@ -107,9 +115,11 @@ spec:
       command:
         - build-wheels
       args:
-        - $(params.PACKAGES[*])
         - --cache-wheel-server-url
         - $(params.WHEEL_SERVER_URL)
+        - --local-version
+        - $(params.LOCAL_VERSION)
+        - $(params.PACKAGES[*])
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:67778fbcd0272b99221fe3086c58a5b5791274a079c3ddd8f978ab0cc0165b95
       command:

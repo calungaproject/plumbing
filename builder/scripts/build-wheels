@@ -3,8 +3,10 @@ set -euo pipefail
 
 # Initialize variables
 WHEEL_SERVER_URL=""
+LOCAL_VERSION=""
 PACKAGES=()
 BUILD_SEQUENCE_SUMMARIES=()
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Help function
 show_help() {
@@ -24,6 +26,10 @@ ARGUMENTS:
 
 OPTIONS:
     --cache-wheel-server-url URL    Optional wheel cache server URL for faster builds
+    --local-version SUFFIX          Add a PEP 440 local version identifier to the
+                                    top-level package wheels (e.g. 'rhlw' produces
+                                    pkg-1.0+rhlw). Only applied to explicitly
+                                    requested packages, not their dependencies.
     --help                          Show this help message
 
 EXAMPLES:
@@ -58,6 +64,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             WHEEL_SERVER_URL="$2"
+            shift 2
+            ;;
+        --local-version)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --local-version requires a value" >&2
+                exit 1
+            fi
+            LOCAL_VERSION="$2"
             shift 2
             ;;
         -*)
@@ -203,8 +217,6 @@ for PACKAGE in "${PACKAGES[@]}"; do
         log No manylinux wheels found, skipping auditwheel step
     fi
 
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
     # Add system library dependencies to Fromager SBOMs in manylinux wheels.
     # Uses auditwheel show to discover which system-provided shared libraries
     # (e.g. libc, libgcc_s, libstdc++) the wheel links against.
@@ -223,6 +235,27 @@ for PACKAGE in "${PACKAGES[@]}"; do
         [ -f "$whl" ] || continue
         "$SCRIPT_DIR/patch-sbom-purl" "$whl"
     done
+
+    # Add local version identifier to top-level package wheels
+    if [ -n "$LOCAL_VERSION" ]; then
+        # Extract the package name (before ' @ ' for PEP 440 direct references,
+        # before '==' for pinned versions)
+        pkg_name=$(echo "$PACKAGE" | sed -E 's/\s*(@\s.*|[=><!].*)//')
+        # Normalize to wheel filename convention: lowercase, [-_.] become _
+        pkg_pattern=$(echo "$pkg_name" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/_/g')
+
+        log "Adding local version '+${LOCAL_VERSION}' to wheels matching '${pkg_pattern}'"
+        for whl in wheels-repo/downloads/*.whl; do
+            [ -f "$whl" ] || continue
+            # Extract the name portion (first field before '-') and normalize it
+            whl_name=$(basename "$whl" | cut -d'-' -f1 | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/_/g')
+            if [[ "$whl_name" == "$pkg_pattern" ]]; then
+                log "  Repackaging $(basename "$whl")"
+                "$SCRIPT_DIR/add-local-version" "$whl" "$LOCAL_VERSION" --output-dir wheels-repo/downloads
+                rm "$whl"
+            fi
+        done
+    fi
 
     # Clear work-dir after processing package (but preserve sdists-repo and wheels-repo)
     log "Clearing work-dir after processing $PACKAGE (preserving sdists-repo and wheels-repo)"
