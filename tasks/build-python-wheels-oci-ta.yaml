@@ -55,6 +55,19 @@ spec:
         Name of the K8s secret containing wheel cache server credentials (keys: username, password)
       type: string
       default: builder-service-account
+    - name: SCRIPTS_REPO_URL
+      description: >-
+        Git URL of the plumbing repository containing the build scripts.
+        When set, scripts are cloned from this repo instead of using the
+        versions baked into the builder image.
+      type: string
+      default: ""
+    - name: SCRIPTS_REPO_REF
+      description: >-
+        Git ref (branch, tag, or commit SHA) to checkout from SCRIPTS_REPO_URL.
+        Only used when SCRIPTS_REPO_URL is non-empty.
+      type: string
+      default: "main"
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -112,14 +125,24 @@ spec:
             secretKeyRef:
               name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
               key: password
-      command:
-        - build-wheels
-      args:
-        - --cache-wheel-server-url
-        - $(params.WHEEL_SERVER_URL)
-        - --local-version
-        - $(params.LOCAL_VERSION)
-        - $(params.PACKAGES[*])
+        - name: SCRIPTS_REPO_URL
+          value: $(params.SCRIPTS_REPO_URL)
+        - name: SCRIPTS_REPO_REF
+          value: $(params.SCRIPTS_REPO_REF)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+        BUILD_WHEELS=build-wheels
+        if [ -n "$SCRIPTS_REPO_URL" ]; then
+          echo "[$(date --utc -Ins)] Cloning scripts from $SCRIPTS_REPO_URL @ $SCRIPTS_REPO_REF"
+          git clone --depth 1 --branch "$SCRIPTS_REPO_REF" "$SCRIPTS_REPO_URL" /tmp/plumbing
+          chmod +x /tmp/plumbing/builder/scripts/*
+          BUILD_WHEELS=/tmp/plumbing/builder/scripts/build-wheels
+        fi
+        exec "$BUILD_WHEELS" \
+          --cache-wheel-server-url "$(params.WHEEL_SERVER_URL)" \
+          --local-version "$(params.LOCAL_VERSION)" \
+          $(params.PACKAGES[*])
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:67778fbcd0272b99221fe3086c58a5b5791274a079c3ddd8f978ab0cc0165b95
       command:
