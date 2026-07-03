@@ -247,12 +247,21 @@ for PACKAGE in "${PACKAGES[@]}"; do
         log "Adding local version '+${LOCAL_VERSION}' to wheels matching '${pkg_pattern}'"
         for whl in wheels-repo/downloads/*.whl; do
             [ -f "$whl" ] || continue
-            # Extract the name portion (first field before '-') and normalize it
             whl_name=$(basename "$whl" | cut -d'-' -f1 | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/_/g')
             if [[ "$whl_name" == "$pkg_pattern" ]]; then
-                log "  Repackaging $(basename "$whl")"
+                log "  Repackaging wheel $(basename "$whl")"
                 "$SCRIPT_DIR/add-local-version" "$whl" "$LOCAL_VERSION" --output-dir wheels-repo/downloads
                 rm "$whl"
+            fi
+        done
+
+        for sdist in sdists-repo/builds/*.tar.gz; do
+            [ -f "$sdist" ] || continue
+            sdist_name=$(basename "$sdist" | cut -d'-' -f1 | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/_/g')
+            if [[ "$sdist_name" == "$pkg_pattern" ]]; then
+                log "  Repackaging sdist $(basename "$sdist")"
+                "$SCRIPT_DIR/add-local-version-sdist" "$sdist" "$LOCAL_VERSION" --output-dir sdists-repo/builds
+                rm "$sdist"
             fi
         done
     fi

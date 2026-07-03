@@ -1,0 +1,130 @@
+#!/src/venv/bin/python
+"""Add a PEP 440 local version identifier to a source distribution.
+
+Repacks the sdist tarball with the local version segment appended to the
+version in PKG-INFO and the top-level directory name.
+
+Example:
+    add-local-version-sdist wheel-0.45.1.tar.gz rhlw
+    # produces: wheel-0.45.1+rhlw.tar.gz
+"""
+import argparse
+import re
+import shutil
+import sys
+import tarfile
+import tempfile
+from io import BytesIO
+from pathlib import Path
+
+from packaging.utils import parse_sdist_filename
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Add a PEP 440 local version segment to a source distribution"
+    )
+    parser.add_argument("sdist", type=Path, help="Path to the .tar.gz sdist file")
+    parser.add_argument(
+        "local", help="Local version identifier to append (e.g. 'rhlw')"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for the repackaged sdist (default: same as input)",
+    )
+    return parser.parse_args()
+
+
+def patch_pkg_info_version(data, old_version, new_version):
+    """Replace the Version field in PKG-INFO."""
+    text = data.decode()
+    patched = re.sub(
+        rf"^Version:\s*{re.escape(old_version)}$",
+        f"Version: {new_version}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if patched == text:
+        print(
+            f"ERROR: could not find 'Version: {old_version}' in PKG-INFO",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return patched.encode()
+
+
+def main():
+    args = parse_args()
+    sdist_path = args.sdist.resolve()
+    output_dir = (args.output_dir or sdist_path.parent).resolve()
+
+    name, version = parse_sdist_filename(sdist_path.name)
+    if version.local:
+        print(
+            f"ERROR: sdist already has a local version: {version}", file=sys.stderr
+        )
+        sys.exit(1)
+
+    old_version_str = str(version)
+    new_version_str = f"{version}+{args.local}"
+    old_prefix = f"{name}-{old_version_str}"
+    new_prefix = f"{name}-{new_version_str}"
+
+    out_path = output_dir / f"{new_prefix}.tar.gz"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        with (
+            tarfile.open(sdist_path, "r:gz") as tf_in,
+            tarfile.open(tmp_path / "out.tar.gz", "w:gz") as tf_out,
+        ):
+            for member in tf_in.getmembers():
+                # Rename top-level directory in all paths
+                if member.name.startswith(old_prefix + "/"):
+                    member.name = new_prefix + member.name[len(old_prefix) :]
+                elif member.name == old_prefix:
+                    member.name = new_prefix
+
+                # PAX headers override member.name when present
+                pax_path = member.pax_headers.get("path", "")
+                if pax_path.startswith(old_prefix + "/"):
+                    member.pax_headers["path"] = (
+                        new_prefix + pax_path[len(old_prefix) :]
+                    )
+                elif pax_path == old_prefix:
+                    member.pax_headers["path"] = new_prefix
+
+                # Also update linkname for symlinks/hardlinks
+                if member.linkname and member.linkname.startswith(
+                    old_prefix + "/"
+                ):
+                    member.linkname = (
+                        new_prefix + member.linkname[len(old_prefix) :]
+                    )
+
+                if member.isfile():
+                    fileobj = tf_in.extractfile(member)
+                    data = fileobj.read()
+
+                    # Patch Version in PKG-INFO
+                    if member.name.endswith("/PKG-INFO"):
+                        data = patch_pkg_info_version(
+                            data, old_version_str, new_version_str
+                        )
+                        member.size = len(data)
+
+                    tf_out.addfile(member, BytesIO(data))
+                else:
+                    tf_out.addfile(member)
+
+        shutil.move(tmp_path / "out.tar.gz", out_path)
+
+    print(f"Created {out_path}")
+
+
+if __name__ == "__main__":
+    main()
