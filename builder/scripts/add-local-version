@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/src/venv/bin/python
 """Add a PEP 440 local version identifier to a wheel.
 
 Unpacks the wheel, patches the version in METADATA and the .dist-info
