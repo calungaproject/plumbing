@@ -221,7 +221,6 @@ spec:
                     name for name in import_names
                     if name != 'tests'
                     and not name.endswith('.libs')
-                    and not name.startswith('pytest_')
                 }
 
             if inspection['top_level_txt']:
@@ -346,7 +345,6 @@ spec:
         # Phase 1: Test each wheel in its own isolated venv.
         # Tracks which wheels are importable (not empty/data-only) and
         # whether any individual test failed.
-        IMPORTABLE_WHEELS=()
         INDIVIDUAL_FAILED=false
 
         for WHEEL in "${whl_files[@]}"; do
@@ -362,7 +360,7 @@ spec:
                 continue
             fi
 
-            IMPORTABLE_WHEELS+=("${WHEEL}")
+
 
             rm -rf /tmp/test-venv
             echo "Setting up virtual environment..."
@@ -531,7 +529,6 @@ spec:
             cp "$RESULT_FILE" "${COMBINED_RESULTS_DIR}/"
         done
 
-        ANY_GROUP_FAILED=false
         GROUP_INDEX=0
 
         for SUMMARY_FILE in "${SUMMARY_FILES[@]}"; do
@@ -563,7 +560,6 @@ spec:
             python3.12 -m venv /tmp/test-venv-group
             if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1; then
                 echo "  WARNING: Group install failed for ${PRIMARY_LABEL}, skipping"
-                ANY_GROUP_FAILED=true
                 continue
             fi
 
@@ -603,8 +599,20 @@ spec:
 
                 echo "  Testing import (group ${GROUP_INDEX}): $WHEEL..."
 
+                PREV_UNDECLARED=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('undeclared_dep',''))" "$RESULT_FILE" 2>/dev/null || true)
+
                 if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                     echo "  PASS: $WHEEL"
+                    if [ -n "$PREV_UNDECLARED" ]; then
+                        python3.12 -c "
+        import json, sys
+        with open(sys.argv[1]) as f:
+            d = json.load(f)
+        d['undeclared_dep'] = sys.argv[2]
+        with open(sys.argv[1], 'w') as f:
+            json.dump(d, f)
+        " "$RESULT_FILE" "$PREV_UNDECLARED"
+                    fi
                 else
                     VERIFY_RC=$?
                     if [ $VERIFY_RC -eq 2 ]; then
@@ -621,6 +629,8 @@ spec:
 
                     # Loop: keep resolving missing undeclared deps until pass or we
                     # can't find an untried wheel (prevents infinite loop)
+                    SAVED_WHEEL_IDX=$WHEEL_IDX
+                    SAVED_INSTALLED_WHEELS=("${INSTALLED_WHEELS[@]}")
                     UNDECLARED_DEPS=""
                     TRIED_WHEELS=""
                     FOUND_DEPS=""
@@ -637,7 +647,7 @@ spec:
                     if mod:
                         print(mod.split('.')[0])
                         break
-        " "$RESULT_FILE" 2>/dev/null)
+        " "$RESULT_FILE" 2>/dev/null || true)
 
                         if [ -z "$MISSING_MODULE" ]; then
                             break
@@ -653,7 +663,7 @@ spec:
             if f.endswith('.whl') and normalize(f.split('-')[0]) == target and f not in tried:
                 print(f)
                 break
-        " "$MISSING_MODULE" "$TRIED_WHEELS" 2>/dev/null)
+        " "$MISSING_MODULE" "$TRIED_WHEELS" 2>/dev/null || true)
 
                         if [ -z "$MISSING_WHEEL" ]; then
                             break
@@ -686,6 +696,7 @@ spec:
             if whl:
                 print(whl)
         ")
+                        WHEEL_IDX=0
 
                         if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                             echo "  PASS: $WHEEL (with undeclared deps: ${UNDECLARED_DEPS})"
@@ -705,6 +716,17 @@ spec:
                     if [ "$FALLBACK_RESOLVED" = "true" ]; then
                         continue
                     fi
+
+                    # Fallback failed: restore pre-fallback state to prevent
+                    # infinite loop and testing against wrong venv
+                    WHEEL_IDX=$SAVED_WHEEL_IDX
+                    INSTALLED_WHEELS=("${SAVED_INSTALLED_WHEELS[@]}")
+
+                    # Restore group venv so remaining wheels aren't poisoned
+                    rm -rf /tmp/test-venv-group
+                    python3.12 -m venv /tmp/test-venv-group
+                    /tmp/test-venv-group/bin/pip install --no-index --find-links . \
+                        "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1 || true
 
                     echo "  FAIL: $WHEEL"
                     GROUP_FAILED=true
@@ -726,7 +748,7 @@ spec:
             done
 
             if [ "$GROUP_FAILED" = true ]; then
-                ANY_GROUP_FAILED=true
+                echo "  Group ${GROUP_INDEX} had failures"
             fi
         done
 
@@ -802,7 +824,7 @@ spec:
             exit 1
         fi
 
-        if [ "$ANY_GROUP_FAILED" = true ]; then
+        if [ $FAIL_COUNT -gt 0 ]; then
             echo "RESULT: FAILED"
             exit 1
         fi
