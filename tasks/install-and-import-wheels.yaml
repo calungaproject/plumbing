@@ -221,6 +221,7 @@ spec:
                     name for name in import_names
                     if name != 'tests'
                     and not name.endswith('.libs')
+                    and not name.startswith('pytest_')
                 }
 
             if inspection['top_level_txt']:
@@ -518,6 +519,51 @@ spec:
         print(f'Indexed {len(wheel_index)} wheel(s)')
         "
 
+        # Build reverse mapping: import name -> wheel filename(s).
+        # Handles cases where import name != distribution name
+        # (e.g. bs4 -> beautifulsoup4, PIL -> pillow).
+        python3.12 -c "
+        import json, os, re, zipfile
+        from pathlib import PurePosixPath
+
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+
+        import_to_wheel = {}
+        for f in sorted(os.listdir('.')):
+            if not f.endswith('.whl'):
+                continue
+            try:
+                names = set()
+                with zipfile.ZipFile(f) as zf:
+                    entries = zf.namelist()
+                    # Try top_level.txt first
+                    for entry in entries:
+                        if entry.endswith('/top_level.txt'):
+                            for line in zf.read(entry).decode('utf-8', errors='replace').splitlines():
+                                n = line.strip()
+                                if n and not n.startswith('#'):
+                                    names.add(n)
+                            break
+                    # Fall back to scanning directory structure
+                    if not names:
+                        for entry in entries:
+                            parts = PurePosixPath(entry).parts
+                            if not parts or parts[0].endswith(('.dist-info', '.data')):
+                                continue
+                            if len(parts) >= 2 and parts[1] == '__init__.py':
+                                names.add(parts[0])
+                            elif len(parts) == 1 and entry.endswith('.py'):
+                                names.add(PurePosixPath(entry).stem)
+                for n in names:
+                    import_to_wheel.setdefault(normalize(n), []).append(f)
+            except Exception:
+                pass
+
+        json.dump(import_to_wheel, open('/tmp/import-to-wheel.json', 'w'))
+        print(f'Mapped {len(import_to_wheel)} import name(s) to wheels')
+        "
+
         COMBINED_RESULTS_DIR="/tmp/wheel-test-results-combined"
         rm -rf "${COMBINED_RESULTS_DIR}"
         mkdir -p "${COMBINED_RESULTS_DIR}"
@@ -578,6 +624,7 @@ spec:
         ")
 
             GROUP_FAILED=false
+            TESTED_IN_GROUP=" "
             WHEEL_IDX=0
             while [ $WHEEL_IDX -lt ${#INSTALLED_WHEELS[@]} ]; do
                 WHEEL="${INSTALLED_WHEELS[$WHEEL_IDX]}"
@@ -597,12 +644,18 @@ spec:
                     continue
                 fi
 
+                # Skip wheels already tested and passed in this group
+                if [[ "$TESTED_IN_GROUP" == *" ${WHEEL} "* ]]; then
+                    continue
+                fi
+
                 echo "  Testing import (group ${GROUP_INDEX}): $WHEEL..."
 
                 PREV_UNDECLARED=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('undeclared_dep',''))" "$RESULT_FILE" 2>/dev/null || true)
 
                 if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                     echo "  PASS: $WHEEL"
+                    TESTED_IN_GROUP="${TESTED_IN_GROUP}${WHEEL} "
                     if [ -n "$PREV_UNDECLARED" ]; then
                         python3.12 -c "
         import json, sys
@@ -654,11 +707,21 @@ spec:
                         fi
 
                         MISSING_WHEEL=$(python3.12 -c "
-        import re, sys, os
+        import re, sys, os, json
         def normalize(name):
             return re.sub(r'[-_.]+', '_', name).lower()
         target = normalize(sys.argv[1])
         tried = set(sys.argv[2].split(',')) if sys.argv[2] else set()
+        # Check import-to-wheel mapping first (handles import != dist name)
+        try:
+            import_map = json.load(open('/tmp/import-to-wheel.json'))
+            for whl in import_map.get(target, []):
+                if whl not in tried:
+                    print(whl)
+                    sys.exit(0)
+        except Exception:
+            pass
+        # Fallback: match by distribution name
         for f in sorted(os.listdir('.')):
             if f.endswith('.whl') and normalize(f.split('-')[0]) == target and f not in tried:
                 print(f)
@@ -708,6 +771,7 @@ spec:
         with open(sys.argv[1], 'w') as f:
             json.dump(d, f)
         " "$RESULT_FILE" "$UNDECLARED_DEPS"
+                            TESTED_IN_GROUP="${TESTED_IN_GROUP}${WHEEL} "
                             FALLBACK_RESOLVED=true
                             break
                         fi
@@ -725,8 +789,11 @@ spec:
                     # Restore group venv so remaining wheels aren't poisoned
                     rm -rf /tmp/test-venv-group
                     python3.12 -m venv /tmp/test-venv-group
-                    /tmp/test-venv-group/bin/pip install --no-index --find-links . \
-                        "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1 || true
+                    if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . \
+                        "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1; then
+                        echo "  WARNING: Could not restore group venv for ${PRIMARY_LABEL}, skipping remaining wheels"
+                        break
+                    fi
 
                     echo "  FAIL: $WHEEL"
                     GROUP_FAILED=true
