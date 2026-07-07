@@ -25,6 +25,12 @@ spec:
         Pin to a specific commit or tag for reproducible builds.
       type: string
       default: main
+    - name: FAIL_SEVERITY
+      description: >-
+        Result severity for verification failures and invalid input. Use
+        WARNING while validating the task, switch to ERROR once reliable.
+      type: string
+      default: WARNING
     - name: caTrustConfigMapName
       description: The name of the ConfigMap to read CA bundle data from.
       type: string
@@ -81,16 +87,16 @@ spec:
         GIT_CREDENTIALS="$(workspaces.basic-auth.path)/.git-credentials"
         if [ "$(workspaces.basic-auth.bound)" != "true" ] || [ ! -f "${GIT_CREDENTIALS}" ]; then
             echo "Git credentials not found — skipping source origin check."
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"git-auth workspace not bound"}' | tee "${RESULT_FILE}"
+            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"git-auth workspace not bound"}' | tee "${RESULT_FILE}"
             exit 0
         fi
 
         { set +x; } 2>/dev/null
-        GH_TOKEN="$(grep github.com "${GIT_CREDENTIALS}" | sed 's|.*://[^:]*:\([^@]*\)@.*|\1|' | head -1)"
+        GH_TOKEN="$(grep github.com "${GIT_CREDENTIALS}" 2>/dev/null | sed 's|.*://[^:]*:\([^@]*\)@.*|\1|' | head -1 || true)"
         export GH_TOKEN
         if [ -z "${GH_TOKEN}" ]; then
             echo "No GitHub token found in git credentials — skipping."
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no github token in git-credentials"}' | tee "${RESULT_FILE}"
+            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no github token in git-credentials"}' | tee "${RESULT_FILE}"
             exit 0
         fi
 
@@ -102,14 +108,16 @@ spec:
             chmod 600 ~/.gitconfig
         fi
 
+        FAIL_SEVERITY="$(params.FAIL_SEVERITY)"
+
         if ! PACKAGE_LIST="$(echo "${PACKAGES}" | python3 -c "import json,sys; [print(p) for p in json.load(sys.stdin)]")"; then
             echo "Failed to parse PACKAGES JSON."
-            echo '{"result":"ERROR","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"invalid PACKAGES JSON"}' | tee "${RESULT_FILE}"
+            echo "{\"result\":\"${FAIL_SEVERITY}\",\"namespace\":\"default\",\"successes\":0,\"failures\":0,\"warnings\":0,\"note\":\"invalid PACKAGES JSON\"}" | tee "${RESULT_FILE}"
             exit 0
         fi
         if [ -z "${PACKAGE_LIST}" ]; then
             echo "No packages to check."
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no packages"}' | tee "${RESULT_FILE}"
+            echo "{\"result\":\"${FAIL_SEVERITY}\",\"namespace\":\"default\",\"successes\":0,\"failures\":0,\"warnings\":0,\"note\":\"no packages\"}" | tee "${RESULT_FILE}"
             exit 0
         fi
 
@@ -160,11 +168,11 @@ spec:
         WARNINGS=$((FAILURES + ERRORS))
 
         if [ "${TOTAL}" -eq 0 ]; then
-            echo '{"result":"SKIPPED","namespace":"default","successes":0,"failures":0,"warnings":0,"note":"no packages"}' | tee "${RESULT_FILE}"
+            echo "{\"result\":\"${FAIL_SEVERITY}\",\"namespace\":\"default\",\"successes\":0,\"failures\":0,\"warnings\":0,\"note\":\"no packages\"}" | tee "${RESULT_FILE}"
         elif [ "${ERRORS}" -eq "${TOTAL}" ]; then
-            echo "{\"result\":\"ERROR\",\"namespace\":\"default\",\"successes\":0,\"failures\":${ERRORS},\"warnings\":0,\"note\":\"all checks failed\"}" | tee "${RESULT_FILE}"
+            echo "{\"result\":\"${FAIL_SEVERITY}\",\"namespace\":\"default\",\"successes\":0,\"failures\":${ERRORS},\"warnings\":0,\"note\":\"all checks failed\"}" | tee "${RESULT_FILE}"
         elif [ "${WARNINGS}" -gt 0 ]; then
-            echo "{\"result\":\"WARNING\",\"namespace\":\"default\",\"successes\":${SUCCESSES},\"failures\":${FAILURES},\"warnings\":${WARNINGS},\"note\":\"source origin differences or errors found\"}" | tee "${RESULT_FILE}"
+            echo "{\"result\":\"${FAIL_SEVERITY}\",\"namespace\":\"default\",\"successes\":${SUCCESSES},\"failures\":${FAILURES},\"warnings\":${WARNINGS},\"note\":\"source origin differences or errors found\"}" | tee "${RESULT_FILE}"
         else
             echo "{\"result\":\"SUCCESS\",\"namespace\":\"default\",\"successes\":${SUCCESSES},\"failures\":0,\"warnings\":0,\"note\":\"all packages verified against VCS source\"}" | tee "${RESULT_FILE}"
         fi
