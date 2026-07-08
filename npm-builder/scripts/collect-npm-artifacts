@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ARTIFACT_DIR="${1:-}"
-OUTPUT_DIR="${2:-/var/workdir/artifact}"
+OUTPUT_DIR="${2:-${ARTIFACT_ROOT:-./artifact}}"
 
 if [[ -z "${ARTIFACT_DIR}" ]]; then
     echo "Usage: collect-npm-artifacts <source-dir> [output-dir]" >&2

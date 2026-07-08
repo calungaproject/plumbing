@@ -7,11 +7,12 @@ usage() {
     cat <<'EOF'
 Usage: build-npm-package --manifest <path> [--workdir <dir>]
 
-Environment (set by Tekton):
+Environment (set by Tekton via build-npm-packages):
   MANIFEST_PATH     Path to manifest.json
-  PACKAGE_DIR       Directory containing manifest + scripts
+  PACKAGE_DIR       Directory containing manifest + scripts (read-only trusted artifact)
+  WORK_DIR          Writable scratch dir for clones/builds (default: ${PACKAGE_DIR}/.work)
+  OUT_DIR           Output directory for tarballs (default: ${PACKAGE_DIR}/out; Tekton: ${OUTPUT_ROOT}/<pkg>)
   SOURCE_DIR        Checkout of source.ref (optional; entrypoint may clone)
-  OUT_DIR           Output directory for tarballs (default: ${PACKAGE_DIR}/out)
 EOF
 }
 
@@ -35,8 +36,9 @@ if [[ -z "${MANIFEST_PATH}" ]]; then
 fi
 
 PACKAGE_DIR="${PACKAGE_DIR:-$(dirname "${MANIFEST_PATH}")}"
+WORK_DIR="${WORK_DIR:-${PACKAGE_DIR}/.work}"
 OUT_DIR="${OUT_DIR:-${PACKAGE_DIR}/out}"
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${WORK_DIR}"
 
 ENTRYPOINT="${PACKAGE_DIR}/build.entrypoint.sh"
 SMOKE="${PACKAGE_DIR}/verify.smoke.sh"

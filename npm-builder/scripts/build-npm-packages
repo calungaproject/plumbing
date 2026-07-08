@@ -9,27 +9,38 @@ usage() {
 Usage: build-npm-packages <pkg-dir> [<pkg-dir>...]
 
 Build onboarder recipes via build-npm-package. Writes package dirs, one per line,
-to BUILT_LIST (default: /var/workdir/built/list.txt).
+to BUILT_LIST (under WORKDIR_ROOT, default /var/workdir/built/list.txt).
+
+Environment:
+  WORKDIR_ROOT   Factory scratch root (Tekton: /var/workdir)
+  SOURCE_ROOT    Onboarding repo checkout (default: ${WORKDIR_ROOT}/source)
+  WORK_ROOT      Writable build scratch (default: ${WORKDIR_ROOT}/work)
+  OUTPUT_ROOT    Factory tarball output (default: ${WORKDIR_ROOT}/output)
 EOF
 }
 
-BUILT_LIST="${BUILT_LIST:-/var/workdir/built/list.txt}"
+# shellcheck source=npm-workdir-load.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/npm-workdir-load.sh"
 
 if [[ $# -lt 1 ]]; then
     usage >&2
     exit 2
 fi
 
-mkdir -p "$(dirname "${BUILT_LIST}")"
+mkdir -p "$(dirname "${BUILT_LIST}")" "${WORK_ROOT}" "${OUTPUT_ROOT}"
 : > "${BUILT_LIST}"
 
 for pkg in "$@"; do
-    manifest="${pkg}/manifest.json"
+    manifest="${SOURCE_ROOT}/${pkg}/manifest.json"
     if [[ ! -f "${manifest}" ]]; then
         echo "Missing manifest: ${manifest}" >&2
         exit 1
     fi
     echo "[build-npm-packages] ${pkg}"
+    WORK_DIR="${WORK_ROOT}/${pkg}" \
+    OUT_DIR="${OUTPUT_ROOT}/${pkg}" \
+    PACKAGE_DIR="${SOURCE_ROOT}/${pkg}" \
+    MANIFEST_PATH="${manifest}" \
     build-npm-package --manifest "${manifest}"
     echo "${pkg}" >> "${BUILT_LIST}"
 done
