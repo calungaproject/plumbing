@@ -161,8 +161,6 @@ spec:
       workspaces:
         - name: git-basic-auth
           workspace: git-auth
-        - name: netrc
-          workspace: netrc
     - name: build-container
       params:
         - name: IMAGE
@@ -567,6 +565,4 @@ spec:
             - "false"
   workspaces:
     - name: git-auth
-      optional: true
-    - name: netrc
       optional: true
