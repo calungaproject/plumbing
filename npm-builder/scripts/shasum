@@ -1,0 +1,6 @@
+#!/bin/sh
+# esbuild's Makefile calls shasum (Perl, common on macOS). UBI provides sha256sum only.
+if [ "$1" = "-a" ] && [ "$2" = "256" ]; then
+    shift 2
+fi
+exec sha256sum "$@"
