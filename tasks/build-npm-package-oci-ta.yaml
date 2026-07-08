@@ -45,6 +45,11 @@ spec:
       description: When true, npm publish to Pulp Stage (requires stage secret)
       type: string
       default: "false"
+    - name: WORKDIR_ROOT
+      description: >-
+        Writable emptyDir mount for factory scratch (source checkout, build output, OCI staging)
+      type: string
+      default: /var/workdir
     - name: caTrustConfigMapKey
       type: string
       default: ca-bundle.crt
@@ -71,15 +76,18 @@ spec:
     - name: workdir
       emptyDir: {}
   stepTemplate:
+    env:
+      - name: WORKDIR_ROOT
+        value: $(params.WORKDIR_ROOT)
     volumeMounts:
-      - mountPath: /var/workdir
+      - mountPath: $(params.WORKDIR_ROOT)
         name: workdir
   steps:
     - name: use-trusted-artifact
       image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:2712c8a6453fc9db5fc4c2d9d952554a4eea46d2fdba47a272b79fa07f8c8c40
       args:
         - use
-        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+        - $(params.SOURCE_ARTIFACT)=$(params.WORKDIR_ROOT)/source
       volumeMounts:
         - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
           name: trusted-ca
@@ -87,7 +95,7 @@ spec:
           subPath: ca-bundle.crt
     - name: build-packages
       image: $(params.BUILDER_IMAGE)
-      workingDir: /var/workdir/source
+      workingDir: $(params.WORKDIR_ROOT)/source
       command:
         - build-npm-packages
       args:
@@ -101,20 +109,8 @@ spec:
           memory: 4Gi
     - name: collect-artifacts
       image: $(params.BUILDER_IMAGE)
-      script: |
-        #!/usr/bin/env bash
-        set -euo pipefail
-        rm -rf /var/workdir/artifact
-        mkdir -p /var/workdir/artifact
-        while IFS= read -r pkg; do
-          [[ -n "${pkg}" ]] || continue
-          out="/var/workdir/source/${pkg}/out"
-          if [[ ! -d "${out}" ]]; then
-            echo "Missing out/ for ${pkg}" >&2
-            exit 1
-          fi
-          collect-npm-artifacts "${out}" "/var/workdir/artifact"
-        done < /var/workdir/built/list.txt
+      command:
+        - collect-npm-package-outputs
       computeResources:
         limits:
           memory: 2Gi
@@ -136,7 +132,7 @@ spec:
           memory: 256Mi
     - name: create-oci-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
-      workingDir: /var/workdir
+      workingDir: $(params.WORKDIR_ROOT)
       volumeMounts:
         - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
           name: trusted-ca
@@ -159,7 +155,8 @@ spec:
         EXPIRE_LABEL=()
         [ -n "$IMAGE_EXPIRES_AFTER" ] && EXPIRE_LABEL=("--annotation" "quay.expires-after=$IMAGE_EXPIRES_AFTER")
 
-        cd artifact
+        ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
+        cd "${ARTIFACT_ROOT}"
 
         echo "Pushing OCI artifact to ${IMAGE}"
         if ! retry oras push "$IMAGE" \
@@ -226,7 +223,8 @@ spec:
           echo "PULP_NPM_REGISTRY_URL is required when PUBLISH_TO_PULP=true" >&2
           exit 1
         fi
-        npm-publish-pulp /var/workdir/artifact
+        ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
+        npm-publish-pulp "${ARTIFACT_ROOT}"
       computeResources:
         limits:
           memory: 1Gi
@@ -238,8 +236,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        list="$(tr '\n' ',' < /var/workdir/built/list.txt | sed 's/,$//')"
-        echo -n "${list}" | tee "$(results.PACKAGES_BUILT.path)"
+        record-npm-packages-built | tee "$(results.PACKAGES_BUILT.path)"
       computeResources:
         limits:
           memory: 256Mi

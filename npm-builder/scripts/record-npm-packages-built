@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Write comma-separated package list from BUILT_LIST to stdout (Tekton result).
+set -euo pipefail
+
+# shellcheck source=npm-workdir-load.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/npm-workdir-load.sh"
+
+if [[ ! -f "${BUILT_LIST}" ]]; then
+    echo "Missing built list: ${BUILT_LIST}" >&2
+    exit 1
+fi
+
+tr '\n' ',' < "${BUILT_LIST}" | sed 's/,$//'
