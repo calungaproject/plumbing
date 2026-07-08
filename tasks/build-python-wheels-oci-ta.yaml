@@ -42,11 +42,6 @@ spec:
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
       default: ""
-    - name: SERVICE_ACCOUNT_SECRET_NAME
-      description: >-
-        Name of the K8s secret containing wheel cache server credentials (keys: username, password)
-      type: string
-      default: builder-service-account
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -93,17 +88,6 @@ spec:
         - mountPath: /mnt/trusted-ca
           name: trusted-ca
           readOnly: true
-      env:
-        - name: SERVICE_ACCOUNT_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: username
-        - name: SERVICE_ACCOUNT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
-              key: password
       command:
         - build-wheels
       args:
