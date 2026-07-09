@@ -221,7 +221,6 @@ spec:
                     name for name in import_names
                     if name != 'tests'
                     and not name.endswith('.libs')
-                    and not name.startswith('pytest_')
                 }
 
             if inspection['top_level_txt']:
