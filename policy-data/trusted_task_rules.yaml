@@ -9,3 +9,4 @@ trusted_task_rules:
   allow:
     calunga-build-tasks:
       - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-python-wheels*
+      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-npm-package*
