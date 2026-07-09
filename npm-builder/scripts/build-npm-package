@@ -52,10 +52,12 @@ done
 
 export PACKAGE_DIR OUT_DIR WORK_DIR MANIFEST_PATH
 
+echo "[build-npm-package] OUT_DIR=${OUT_DIR} WORK_DIR=${WORK_DIR} PACKAGE_DIR=${PACKAGE_DIR}"
+
 echo "[build-npm-package] Running ${ENTRYPOINT}"
-( cd "${PACKAGE_DIR}" && ./build.entrypoint.sh )
+"${ENTRYPOINT}"
 
 echo "[build-npm-package] Running ${SMOKE}"
-( cd "${PACKAGE_DIR}" && ./verify.smoke.sh )
+"${SMOKE}"
 
 echo "[build-npm-package] Done"
