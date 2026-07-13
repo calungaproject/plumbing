@@ -6,9 +6,10 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: build-npm-packages <pkg-dir> [<pkg-dir>...]
+Usage: build-npm-packages [<pkg-dir> ...]
 
-Build onboarder recipes via build-npm-package. Writes package dirs, one per line,
+Build onboarder recipes via build-npm-package. With no package dirs, prepares an
+empty artifact for infra-only pipeline runs. Writes package dirs, one per line,
 to BUILT_LIST (under WORKDIR_ROOT, default /var/workdir/built/list.txt).
 
 Environment:
@@ -22,13 +23,13 @@ EOF
 # shellcheck source=npm-workdir-load.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/npm-workdir-load.sh"
 
-if [[ $# -lt 1 ]]; then
-    usage >&2
-    exit 2
-fi
-
 mkdir -p "$(dirname "${BUILT_LIST}")" "${WORK_ROOT}" "${OUTPUT_ROOT}"
 : > "${BUILT_LIST}"
+
+if [[ $# -lt 1 ]]; then
+    echo "[build-npm-packages] no packages to build (infra-only)"
+    exit 0
+fi
 
 for pkg in "$@"; do
     manifest="${SOURCE_ROOT}/${pkg}/manifest.json"
