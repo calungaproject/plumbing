@@ -29,7 +29,7 @@ spec:
         mountPath: /var/workdir
   steps:
     - name: get-image-urls
-      image: quay.io/konflux-ci/buildah-task:latest@sha256:b82d465a06c926882d02b721cf8a8476048711332749f39926a01089cf85a3f9
+      image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
       script: |
         #!/bin/bash
         set -euo pipefail
