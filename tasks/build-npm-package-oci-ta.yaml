@@ -156,16 +156,23 @@ spec:
         [ -n "$IMAGE_EXPIRES_AFTER" ] && EXPIRE_LABEL=("--annotation" "quay.expires-after=$IMAGE_EXPIRES_AFTER")
 
         ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
-        mkdir -p "${ARTIFACT_ROOT}"
-        cd "${ARTIFACT_ROOT}"
+        # Stage push contents in a dir the oras image user can write (ARTIFACT_ROOT
+        # is owned by the builder image user from collect-artifacts).
+        PUSH_DIR="$(mktemp -d)"
+        if [[ -d "${ARTIFACT_ROOT}" ]]; then
+          # Copy any collected artifacts; empty dir leaves PUSH_DIR empty.
+          cp -a "${ARTIFACT_ROOT}/." "${PUSH_DIR}/" 2>/dev/null || true
+        fi
+        cd "${PUSH_DIR}"
 
-        shopt -s nullglob
+        shopt -s nullglob dotglob
         artifact_files=(*)
         if [[ ${#artifact_files[@]} -eq 0 ]]; then
           echo "No npm artifacts to push; using placeholder .keep (infra-only run)"
           touch .keep
           artifact_files=(.keep)
         fi
+        shopt -u dotglob
 
         echo "Pushing OCI artifact to ${IMAGE}"
         if ! retry oras push "$IMAGE" \
