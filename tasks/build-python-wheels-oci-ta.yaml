@@ -42,6 +42,10 @@ spec:
       description: Optional wheel server URL for prebuilt wheel lookup
       type: string
       default: ""
+    - name: PACKAGE_SETTINGS_DIR
+      description: Optional directory of per-package fromager settings (e.g. build_dir for monorepo packages)
+      type: string
+      default: /var/workdir/source/overrides/settings
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -94,6 +98,8 @@ spec:
         - $(params.PACKAGES[*])
         - --cache-wheel-server-url
         - $(params.WHEEL_SERVER_URL)
+        - --package-settings-dir
+        - $(params.PACKAGE_SETTINGS_DIR)
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:abe5804fbc5073ea3d7999523d4eae9c44cd290c5fb0450969d2b7e4627789bf
       command:
