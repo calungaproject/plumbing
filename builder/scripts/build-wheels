@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Initialize variables
 WHEEL_SERVER_URL=""
+PACKAGE_SETTINGS_DIR=""
 PACKAGES=()
 BUILD_SEQUENCE_SUMMARIES=()
 
@@ -24,6 +25,7 @@ ARGUMENTS:
 
 OPTIONS:
     --cache-wheel-server-url URL    Optional wheel cache server URL for faster builds
+    --package-settings-dir DIR      Optional directory of per-package fromager settings
     --help                          Show this help message
 
 EXAMPLES:
@@ -58,6 +60,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             WHEEL_SERVER_URL="$2"
+            shift 2
+            ;;
+        --package-settings-dir)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --package-settings-dir requires a value" >&2
+                exit 1
+            fi
+            PACKAGE_SETTINGS_DIR="$2"
             shift 2
             ;;
         -*)
@@ -123,9 +133,13 @@ for PACKAGE in "${PACKAGES[@]}"; do
     log "Resolving dependencies and creating build order"
     fromager_args=(
         --settings-file /usr/local/share/fromager/overrides/settings.yaml
-        bootstrap
-        "${PACKAGE}"
     )
+
+    if [ -n "$PACKAGE_SETTINGS_DIR" ]; then
+        fromager_args+=(--settings-dir "$PACKAGE_SETTINGS_DIR")
+    fi
+
+    fromager_args+=(bootstrap "${PACKAGE}")
 
     # Add wheel server URL if provided
     if [ -n "$WHEEL_SERVER_URL" ]; then
@@ -138,9 +152,13 @@ for PACKAGE in "${PACKAGES[@]}"; do
     log "Building wheels from build order"
     fromager_build_args=(
         --settings-file /usr/local/share/fromager/overrides/settings.yaml
-        build-sequence
-        work-dir/build-order.json
     )
+
+    if [ -n "$PACKAGE_SETTINGS_DIR" ]; then
+        fromager_build_args+=(--settings-dir "$PACKAGE_SETTINGS_DIR")
+    fi
+
+    fromager_build_args+=(build-sequence work-dir/build-order.json)
 
     if [ -n "$WHEEL_SERVER_URL" ]; then
         fromager_build_args+=(--cache-wheel-server-url "$WHEEL_SERVER_URL")
