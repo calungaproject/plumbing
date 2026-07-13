@@ -156,14 +156,23 @@ spec:
         [ -n "$IMAGE_EXPIRES_AFTER" ] && EXPIRE_LABEL=("--annotation" "quay.expires-after=$IMAGE_EXPIRES_AFTER")
 
         ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
+        mkdir -p "${ARTIFACT_ROOT}"
         cd "${ARTIFACT_ROOT}"
+
+        shopt -s nullglob
+        artifact_files=(*)
+        if [[ ${#artifact_files[@]} -eq 0 ]]; then
+          echo "No npm artifacts to push; using placeholder .keep (infra-only run)"
+          touch .keep
+          artifact_files=(.keep)
+        fi
 
         echo "Pushing OCI artifact to ${IMAGE}"
         if ! retry oras push "$IMAGE" \
           --registry-config "${AUTHFILE}" \
           "${EXPIRE_LABEL[@]}" \
           --artifact-type "application/vnd.npm.packages" \
-          *
+          "${artifact_files[@]}"
         then
           echo "Failed to push OCI artifact ${IMAGE} to registry"
           exit 1
