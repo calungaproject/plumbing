@@ -122,7 +122,8 @@ def build_wheel(  # noqa: PLR0913
 
     faiss_prefix = sdist_root_dir / "_faiss_install"
     cmake_build = sdist_root_dir / "_cmake_build"
-    jobs = max(1, ctx.settings.max_jobs or multiprocessing.cpu_count())
+    _max = ctx.settings.max_jobs
+    jobs = max(1, _max if _max is not None else multiprocessing.cpu_count())
     opt_level = _faiss_opt_level()
 
     logger.info(
