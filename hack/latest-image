@@ -1,0 +1,136 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+available_components() {
+    local f
+    for f in "${REPO_ROOT}"/.tekton/*-push.yaml; do
+        basename "$f" | sed 's/-push\.yaml$//'
+    done
+}
+
+usage() {
+    cat <<EOF
+Determine the latest image built by a Tekton push pipeline in this repo.
+
+Usage: $(basename "$0") [OPTIONS] COMPONENT
+
+Arguments:
+  COMPONENT                  Component name (required). Available components:
+$(available_components | sed 's/^/                              - /')
+
+Options:
+  -d, --digest               Resolve and use the image digest instead of the tag.
+  -r, --remote REMOTE        Git remote name. Auto-detected from the remote
+                              pointing at calungaproject/plumbing, or "origin".
+  -h, --help                 Show this help message.
+EOF
+    exit 0
+}
+
+COMPONENT=""
+REMOTE_ARG=""
+USE_DIGEST=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -d|--digest)
+            USE_DIGEST=true
+            shift
+            ;;
+        -r|--remote)
+            [[ $# -lt 2 ]] && { echo "Error: $1 requires a value" >&2; exit 1; }
+            REMOTE_ARG="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Error: unknown option $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -n "$COMPONENT" ]]; then
+                echo "Error: unexpected argument '$1' (component already set to '${COMPONENT}')" >&2
+                echo "Use --help for usage information" >&2
+                exit 1
+            fi
+            COMPONENT="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$COMPONENT" ]]; then
+    echo "Error: COMPONENT argument is required" >&2
+    echo "Use --help for usage information" >&2
+    exit 1
+fi
+
+PIPELINE_FILE="${REPO_ROOT}/.tekton/${COMPONENT}-push.yaml"
+if [[ ! -f "$PIPELINE_FILE" ]]; then
+    echo "Error: unknown component '${COMPONENT}'" >&2
+    echo "Available components:" >&2
+    available_components | sed 's/^/  - /' >&2
+    exit 1
+fi
+
+detect_remote() {
+    if [[ -n "$REMOTE_ARG" ]]; then
+        echo "$REMOTE_ARG"
+        return
+    fi
+
+    local remote
+    remote=$(git -C "$REPO_ROOT" remote -v \
+        | grep -E 'github\.com[:/]calungaproject/plumbing(\.git)?\s' \
+        | head -1 | awk '{print $1}')
+
+    echo "${remote:-origin}"
+}
+
+extract_trigger_paths() {
+    grep -oP '"\K[^"]+(?="\.pathChanged\(\))' "$PIPELINE_FILE"
+}
+
+extract_image_repo() {
+    grep -A1 'name: output-image' "$PIPELINE_FILE" \
+        | grep 'value:' \
+        | sed 's/.*value: *//' \
+        | sed 's/:{{revision}}//'
+}
+
+REMOTE=$(detect_remote)
+IMAGE_REPO=$(extract_image_repo)
+
+mapfile -t PATHS < <(extract_trigger_paths)
+if [[ ${#PATHS[@]} -eq 0 ]]; then
+    echo "Error: no trigger paths found in ${PIPELINE_FILE}" >&2
+    exit 1
+fi
+
+REVISION=$(git -C "$REPO_ROOT" log -1 --format='%H' "${REMOTE}/main" -- "${PATHS[@]}" 2>/dev/null || true)
+if [[ -z "$REVISION" ]]; then
+    echo "Error: no matching commits found on ${REMOTE}/main" >&2
+    echo "You may need to run: git fetch ${REMOTE}" >&2
+    exit 1
+fi
+
+IMAGE_REF="${IMAGE_REPO}:${REVISION}"
+
+if [[ "$USE_DIGEST" == true ]]; then
+    DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${IMAGE_REF}" 2>/dev/null || true)
+    if [[ -z "$DIGEST" ]]; then
+        echo "Error: failed to fetch digest for ${IMAGE_REF}" >&2
+        echo "Ensure skopeo is installed and the image exists." >&2
+        exit 1
+    fi
+    echo "${IMAGE_REPO}@${DIGEST}"
+else
+    echo "${IMAGE_REF}"
+fi
