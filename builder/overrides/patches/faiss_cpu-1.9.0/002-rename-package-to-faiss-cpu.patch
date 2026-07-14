@@ -1,0 +1,9 @@
+--- a/faiss/python/setup.py
++++ b/faiss/python/setup.py
+@@ -51,7 +51,7 @@ long_description="""
+ """
+ setup(
+-    name='faiss',
++    name='faiss-cpu',
+     version='1.9.0',
+     description='A library for efficient similarity search and clustering of dense vectors',

@@ -1,0 +1,8 @@
+--- a/faiss/python/CMakeLists.txt
++++ b/faiss/python/CMakeLists.txt
+@@ -229,7 +229,7 @@ target_include_directories(swigfaiss_sve PRIVATE ${PROJECT_SOURCE_DIR}/../..)
+
+ find_package(Python REQUIRED
+-  COMPONENTS Development NumPy
++  COMPONENTS Development.Module NumPy
+ )
