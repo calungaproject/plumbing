@@ -4,6 +4,7 @@ set -euo pipefail
 # Initialize variables
 WHEEL_SERVER_URL=""
 PACKAGE_SETTINGS_DIR=""
+MAX_JOBS=""
 PACKAGES=()
 BUILD_SEQUENCE_SUMMARIES=()
 
@@ -26,6 +27,7 @@ ARGUMENTS:
 OPTIONS:
     --cache-wheel-server-url URL    Optional wheel cache server URL for faster builds
     --package-settings-dir DIR      Optional directory of per-package fromager settings
+    --max-jobs N                    Maximum parallel jobs for builds (default: all CPUs)
     --help                          Show this help message
 
 EXAMPLES:
@@ -68,6 +70,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             PACKAGE_SETTINGS_DIR="$2"
+            shift 2
+            ;;
+        --max-jobs)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --max-jobs requires a value" >&2
+                exit 1
+            fi
+            MAX_JOBS="$2"
             shift 2
             ;;
         -*)
@@ -139,6 +149,15 @@ for PACKAGE in "${PACKAGES[@]}"; do
         fromager_args+=(--settings-dir "$PACKAGE_SETTINGS_DIR")
     fi
 
+    _builtin_patches_dir=/usr/local/share/fromager/overrides/patches
+    if [ -d "$_builtin_patches_dir" ]; then
+        fromager_args+=(--patches-dir "$_builtin_patches_dir")
+    fi
+
+    if [ -n "$MAX_JOBS" ]; then
+        fromager_args+=(--jobs "$MAX_JOBS")
+    fi
+
     fromager_args+=(bootstrap "${PACKAGE}")
 
     # Add wheel server URL if provided
@@ -156,6 +175,14 @@ for PACKAGE in "${PACKAGES[@]}"; do
 
     if [ -n "$PACKAGE_SETTINGS_DIR" ]; then
         fromager_build_args+=(--settings-dir "$PACKAGE_SETTINGS_DIR")
+    fi
+
+    if [ -d "$_builtin_patches_dir" ]; then
+        fromager_build_args+=(--patches-dir "$_builtin_patches_dir")
+    fi
+
+    if [ -n "$MAX_JOBS" ]; then
+        fromager_build_args+=(--jobs "$MAX_JOBS")
     fi
 
     fromager_build_args+=(build-sequence work-dir/build-order.json)

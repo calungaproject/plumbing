@@ -383,6 +383,9 @@ RUN venv/bin/python -m pip install -r requirements.txt --no-deps --no-cache-dir 
 
 COPY scripts/* /usr/local/bin/
 COPY overrides/settings.yaml /usr/local/share/fromager/overrides/settings.yaml
+COPY overrides/patches /usr/local/share/fromager/overrides/patches
+COPY overrides/package_plugins /src/package_plugins
+RUN venv/bin/pip install --no-deps /src/package_plugins
 
 RUN \
     ln -s /src/venv/bin/python /usr/local/bin/python3 && \
