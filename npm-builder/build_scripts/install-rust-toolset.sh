@@ -3,7 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCK_FILE="${RUST_TOOLSET_LOCK:-${SCRIPT_DIR}/../rust-toolset.lock}"
+if [[ -n "${RUST_TOOLSET_LOCK:-}" ]]; then
+    LOCK_FILE="${RUST_TOOLSET_LOCK}"
+elif [[ -f "${SCRIPT_DIR}/rust-toolset.lock" ]]; then
+    LOCK_FILE="${SCRIPT_DIR}/rust-toolset.lock"
+else
+    LOCK_FILE="${SCRIPT_DIR}/../rust-toolset.lock"
+fi
 
 if [[ -f "${LOCK_FILE}" ]]; then
     set -a

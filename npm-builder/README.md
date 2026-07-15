@@ -13,8 +13,9 @@ downloads from `static.rust-lang.org`.
 | UBI 8 base | `registry.access.redhat.com/ubi8/ubi` | digest in [`baseimage.lock`](./baseimage.lock) + Containerfile `ARG BASEIMAGE` |
 | Node.js 20 LTS | AppStream `nodejs:20` module | stream `20` |
 | Go | AppStream `golang` | distro default |
+| **C/C++ (node-gyp)** | **gcc-toolset-14** (CodeReady Builder) | toolset version in [`gcc-toolset.lock`](./gcc-toolset.lock); C++20 on UBI 8 glibc |
 | **Rust** | AppStream **`rust-toolset`** module | **exact RPM VR** in [`rust-toolset.lock`](./rust-toolset.lock) |
-| C/C++ / node-gyp | `gcc`, `python3`, `openssl-devel`, etc. | — |
+| node-gyp deps | `python3`, `openssl-devel`, stock `make`, etc. | stock gcc remains installed; **`CC`/`CXX`** point at toolset |
 
 ### Rust pinning (RHEL 8)
 
@@ -31,7 +32,11 @@ use epoch `(none)`; we pin by installing exact version-release specs, then
 digest in Containerfile `ARG BASEIMAGE` (required before `FROM`; buildkit cannot
 read the lock file into that line).
 
-To refresh the lock file from current UBI (uses `baseimage.lock` as the query image).
+**Edit [`gcc-toolset.lock`](./gcc-toolset.lock) when bumping gcc-toolset** — set
+`GCC_TOOLSET` and update Containerfile `ENV` paths
+(`/opt/rh/gcc-toolset-${GCC_TOOLSET}/...`).
+
+To refresh the rust lock file from current UBI (uses `baseimage.lock` as the query image).
 Requires `docker` on the host (`CONTAINER_RUNTIME=podman` also works):
 
 ```bash
@@ -49,8 +54,10 @@ docker run --rm --platform linux/amd64 "$(grep BASEIMAGE= baseimage.lock | cut -
 pinned VR disappears, the image build fails until you bump `rust-toolset.lock` —
 that is intentional.
 
-The Python `plumbing-builder` uses **rustup** from the internet for a specific
-version; this npm image deliberately uses **Red Hat RPMs only**.
+The Python **`plumbing-builder`** uses the same **gcc-toolset-14** pattern for manylinux
+wheels. npm-builder reuses it so Tier C addons (e.g. **better-sqlite3 ≥ 11.2**) can
+compile with **C++20** without moving the base image to UBI 9. For Rust, **`plumbing-builder`**
+uses **rustup** from the internet; this npm image deliberately uses **Red Hat RPMs only**.
 
 ## Quay
 
@@ -68,7 +75,9 @@ quay.io/redhat-user-workloads/calunga-tenant/npm-builder:<tag>
 | `build-npm-packages` | Build multiple package dirs (Tekton `PACKAGES` args) |
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
+| `build_scripts/install-gcc-toolset.sh` | Install gcc-toolset from `gcc-toolset.lock` |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |
+| `hack/update-rust-toolset-lock.sh` | Refresh `rust-toolset.lock` from UBI |
 
 Publishing to Quay (OCI artifact), optional Pulp, and cosign are handled in **Tekton steps**, not in these scripts.
 
@@ -80,6 +89,8 @@ Requires `docker` on the host (`CONTAINER_RUNTIME=podman ./hack/update-rust-tool
 docker build -t npm-builder -f Containerfile .
 docker run --rm npm-builder node --version
 docker run --rm npm-builder go version
+docker run --rm npm-builder g++ --version
+docker run --rm npm-builder bash -c 'echo | g++ -std=c++20 -x c++ - -o /dev/null -'
 docker run --rm npm-builder rustc --version
 docker run --rm npm-builder cargo --version
 ```

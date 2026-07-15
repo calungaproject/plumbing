@@ -1,0 +1,3 @@
+# gcc-toolset major version from UBI CodeReady Builder (Red Hat only).
+# Also update Containerfile ENV paths (/opt/rh/gcc-toolset-${GCC_TOOLSET}/...).
+GCC_TOOLSET=14

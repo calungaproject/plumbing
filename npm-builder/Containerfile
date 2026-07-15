@@ -41,10 +41,18 @@ RUN dnf -y module enable nodejs:20 && \
         && dnf clean all \
         && rm -rf /var/cache/dnf
 
+# gcc-toolset pin: edit gcc-toolset.lock only (single source of truth).
+COPY gcc-toolset.lock build_scripts/install-gcc-toolset.sh /tmp/
+RUN chmod +x /tmp/install-gcc-toolset.sh && \
+    /tmp/install-gcc-toolset.sh && \
+    rm -f /tmp/install-gcc-toolset.sh /tmp/gcc-toolset.lock && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
 # Rust version pin: edit rust-toolset.lock only (single source of truth).
 COPY rust-toolset.lock build_scripts/install-rust-toolset.sh /tmp/
 RUN chmod +x /tmp/install-rust-toolset.sh && \
-    RUST_TOOLSET_LOCK=/tmp/rust-toolset.lock /tmp/install-rust-toolset.sh && \
+    /tmp/install-rust-toolset.sh && \
     rm -f /tmp/install-rust-toolset.sh /tmp/rust-toolset.lock && \
     dnf clean all && \
     rm -rf /var/cache/dnf
@@ -56,8 +64,12 @@ COPY --chmod=755 scripts/build-npm-package scripts/build-npm-packages scripts/co
 COPY --chmod=644 scripts/npm-workdir-env.sh /usr/local/lib/npm-builder/
 ENV NPM_BUILDER_LIB=/usr/local/lib/npm-builder
 
-# rust-toolset + llvm-toolset (dependency) install under /opt/rh/* — same as `scl enable`.
-ENV PATH="/opt/rh/rust-toolset/root/usr/bin:/opt/rh/llvm-toolset/root/usr/bin:/usr/local/bin:${PATH}"
+# gcc-toolset + rust-toolset + llvm-toolset under /opt/rh/* — node-gyp uses CC/CXX.
+# GCC_TOOLSET must match gcc-toolset.lock (currently 14).
+ENV GCC_TOOLSET_ROOT=/opt/rh/gcc-toolset-14/root \
+    CC=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+    CXX=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
+    PATH="/opt/rh/gcc-toolset-14/root/usr/bin:/opt/rh/rust-toolset/root/usr/bin:/opt/rh/llvm-toolset/root/usr/bin:/usr/local/bin:${PATH}"
 
 WORKDIR /work
 USER builder
