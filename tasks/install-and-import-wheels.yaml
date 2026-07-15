@@ -586,16 +586,23 @@ spec:
             echo "Group ${GROUP_INDEX}: ${PRIMARY_LABEL}"
             echo "=================================================="
 
-            PRIMARY_NAME=$(echo "$PRIMARY_LABEL" | sed 's/__.*//; s/_/-/g')
-            PRIMARY_VERSION=$(echo "$PRIMARY_LABEL" | sed 's/.*__//')
-            PRIMARY_WHEEL=$(python3.12 -c "
+            PRIMARY_INFO=$(python3.12 -c "
         import json, re, sys
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
+        label = re.sub(r'[-.]', '_', sys.argv[1]).lower()
         wheel_index = json.load(open('/tmp/wheel-index.json'))
-        key = normalize(sys.argv[1]) + '-' + sys.argv[2]
-        print(wheel_index.get(key, ''))
-        " "$PRIMARY_NAME" "$PRIMARY_VERSION")
+        for entry in json.load(open(sys.argv[2])):
+            norm = re.sub(r'[-_.]+', '_', entry['name']).lower()
+            if label.startswith(norm + '__'):
+                name = entry['name']
+                version = entry['version']
+                key = norm + '-' + version
+                wheel = wheel_index.get(key, '')
+                print(f'{name}\n{version}\n{wheel}')
+                break
+        " "$PRIMARY_LABEL" "$SUMMARY_FILE")
+            PRIMARY_NAME=$(echo "$PRIMARY_INFO" | sed -n '1p')
+            PRIMARY_VERSION=$(echo "$PRIMARY_INFO" | sed -n '2p')
+            PRIMARY_WHEEL=$(echo "$PRIMARY_INFO" | sed -n '3p')
             if [ -z "$PRIMARY_WHEEL" ]; then
                 echo "  WARNING: No matching wheel for ${PRIMARY_NAME}==${PRIMARY_VERSION}, skipping"
                 continue
