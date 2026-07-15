@@ -604,7 +604,7 @@ spec:
             PRIMARY_VERSION=$(echo "$PRIMARY_INFO" | sed -n '2p')
             PRIMARY_WHEEL=$(echo "$PRIMARY_INFO" | sed -n '3p')
             if [ -z "$PRIMARY_WHEEL" ]; then
-                echo "  WARNING: No matching wheel for ${PRIMARY_NAME}==${PRIMARY_VERSION}, skipping"
+                echo "  WARNING: No matching wheel for ${PRIMARY_LABEL}, skipping"
                 continue
             fi
             echo "  Installing ${PRIMARY_NAME}==${PRIMARY_VERSION}..."
