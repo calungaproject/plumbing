@@ -86,7 +86,7 @@ spec:
           readOnly: true
           subPath: ca-bundle.crt
     - name: build-wheels
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:ecea0862433bf801df8187081ec15d609231e6ad09c69f6ef1f73ee7c65a5f72
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:382f7d233803d4743a020b73f157b770d3dccd0a6d5e5a19b5e01249e595f462
       workingDir: /var/workdir
       volumeMounts:
         - mountPath: /mnt/trusted-ca
@@ -101,7 +101,7 @@ spec:
         - --package-settings-dir
         - $(params.PACKAGE_SETTINGS_DIR)
     - name: collect-build-files
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:ecea0862433bf801df8187081ec15d609231e6ad09c69f6ef1f73ee7c65a5f72
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:382f7d233803d4743a020b73f157b770d3dccd0a6d5e5a19b5e01249e595f462
       command:
         - collect-build-files
       args:
