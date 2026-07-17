@@ -5,6 +5,7 @@ set -euo pipefail
 WHEEL_SERVER_URL=""
 PACKAGE_SETTINGS_DIR=""
 MAX_JOBS=""
+CONSTRAINT_FILES=()
 PACKAGES=()
 BUILD_SEQUENCE_SUMMARIES=()
 
@@ -28,6 +29,8 @@ OPTIONS:
     --cache-wheel-server-url URL    Optional wheel cache server URL for faster builds
     --package-settings-dir DIR      Optional directory of per-package fromager settings
     --max-jobs N                    Maximum parallel jobs for builds (default: all CPUs)
+    -c, --constraint FILE           Constrain versions using the given constraints file.
+                                    This option can be used multiple times.
     --help                          Show this help message
 
 EXAMPLES:
@@ -78,6 +81,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             MAX_JOBS="$2"
+            shift 2
+            ;;
+        -c|--constraint)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --constraint requires a value" >&2
+                exit 1
+            fi
+            CONSTRAINT_FILES+=("$2")
             shift 2
             ;;
         -*)
@@ -158,13 +169,15 @@ for PACKAGE in "${PACKAGES[@]}"; do
         fromager_args+=(--jobs "$MAX_JOBS")
     fi
 
+    for f in "${CONSTRAINT_FILES[@]}"; do
+        fromager_args+=(--constraints-file "$f")
+    done
     fromager_args+=(bootstrap "${PACKAGE}")
 
     # Add wheel server URL if provided
     if [ -n "$WHEEL_SERVER_URL" ]; then
         fromager_args+=(--cache-wheel-server-url "$WHEEL_SERVER_URL")
     fi
-
     echo "Running: fromager ${fromager_args[*]}"
     fromager "${fromager_args[@]}"
 
@@ -184,7 +197,9 @@ for PACKAGE in "${PACKAGES[@]}"; do
     if [ -n "$MAX_JOBS" ]; then
         fromager_build_args+=(--jobs "$MAX_JOBS")
     fi
-
+    for f in "${CONSTRAINT_FILES[@]}"; do
+        fromager_build_args+=(--constraints-file "$f")
+    done
     fromager_build_args+=(build-sequence work-dir/build-order.json)
 
     if [ -n "$WHEEL_SERVER_URL" ]; then
