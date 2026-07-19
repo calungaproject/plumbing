@@ -1,6 +1,6 @@
---- a/faiss/python/setup.py
-+++ b/faiss/python/setup.py
-@@ -51,7 +51,7 @@ long_description="""
+--- a/faiss/faiss/python/setup.py
++++ b/faiss/faiss/python/setup.py
+@@ -73,7 +73,7 @@ long_description="""
  """
  setup(
 -    name='faiss',
