@@ -46,6 +46,13 @@ spec:
       description: Optional directory of per-package fromager settings (e.g. build_dir for monorepo packages)
       type: string
       default: /var/workdir/source/overrides/settings
+    - name: CONSTRAINT_FILES
+      description: >-
+        Paths to constraint files relative to source root
+        (e.g. ["overrides/constraints/torch.txt"]).
+        Passed as -c flags to build-wheels. Empty list disables constraints.
+      type: array
+      default: []
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -92,14 +99,32 @@ spec:
         - mountPath: /mnt/trusted-ca
           name: trusted-ca
           readOnly: true
-      command:
-        - build-wheels
       args:
+        - $(params.CONSTRAINT_FILES[*])
+        - --
         - $(params.PACKAGES[*])
-        - --cache-wheel-server-url
-        - $(params.WHEEL_SERVER_URL)
-        - --package-settings-dir
-        - $(params.PACKAGE_SETTINGS_DIR)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+        CONSTRAINT_ARGS=()
+        PACKAGE_ARGS=()
+        in_packages=false
+        for arg in "$@"; do
+          if [ "$arg" = "--" ]; then
+            in_packages=true
+            continue
+          fi
+          if [[ "$in_packages" == "true" ]]; then
+            PACKAGE_ARGS+=("$arg")
+          else
+            [ -n "$arg" ] && CONSTRAINT_ARGS+=(-c "/var/workdir/source/$arg")
+          fi
+        done
+        exec build-wheels \
+          "${CONSTRAINT_ARGS[@]}" \
+          --cache-wheel-server-url "$(params.WHEEL_SERVER_URL)" \
+          --package-settings-dir "$(params.PACKAGE_SETTINGS_DIR)" \
+          "${PACKAGE_ARGS[@]}"
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:06f0d935ec922269eeaeb20a532f842594be29f4df177582fce353d6444cdba0
       command:
