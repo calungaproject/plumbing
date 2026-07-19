@@ -26,6 +26,7 @@ import logging
 import multiprocessing
 import pathlib
 import platform as _platform
+import shutil
 import sys
 from collections.abc import Iterable
 
@@ -77,7 +78,21 @@ def _retag_wheel(
     pattern = f"faiss_cpu-*-{py_ver}-{py_ver}-linux_{machine}.whl"
     found = list(wheel_path.parent.glob(pattern))
     if not found:
-        msg = f"Retagged wheel not found in {wheel_path.parent} (pattern: {pattern})"
+        # faiss-wheels pyproject.toml names the package "faiss-cpu" but the
+        # cmake-built wheel may still be named "faiss-*" when pep517 runs from
+        # the cmake python build dir using the submodule's setup.py.
+        fallback = f"faiss-*-{py_ver}-{py_ver}-linux_{machine}.whl"
+        found = list(wheel_path.parent.glob(fallback))
+        if found:
+            renamed = found[0].parent / found[0].name.replace("faiss-", "faiss_cpu-", 1)
+            found[0].rename(renamed)
+            logger.info("faiss-cpu: renamed %s -> %s", found[0].name, renamed.name)
+            found = [renamed]
+    if not found:
+        msg = (
+            f"Retagged wheel not found in {wheel_path.parent} "
+            f"(tried primary pattern: {pattern}, fallback: faiss-*-{py_ver}-{py_ver}-linux_{machine}.whl)"
+        )
         raise RuntimeError(msg)
     logger.info("faiss-cpu: retagged -> %s", found[0].name)
     return found[0]
@@ -126,12 +141,16 @@ def build_wheel(  # noqa: PLR0913
     jobs = max(1, _max if _max is not None else multiprocessing.cpu_count())
     opt_level = _faiss_opt_level()
 
+    # faiss-wheels/faiss-wheels uses faiss as a git submodule at sdist_root_dir/faiss/
+    # The CMakeLists.txt is inside that submodule, not at the repo root.
+    faiss_src_dir = sdist_root_dir / "faiss" if (sdist_root_dir / "faiss" / "CMakeLists.txt").exists() else sdist_root_dir
+
     logger.info(
         "faiss-cpu: cmake PYTHON=OFF FAISS_OPT_LEVEL=%s -j%d", opt_level, jobs,
     )
     build_env.run(
         [
-            "cmake", str(sdist_root_dir), "-B", str(cmake_build),
+            "cmake", str(faiss_src_dir), "-B", str(cmake_build),
             "-DFAISS_ENABLE_GPU=OFF",
             "-DFAISS_ENABLE_PYTHON=OFF",
             "-DBUILD_TESTING=OFF",
@@ -159,7 +178,7 @@ def build_wheel(  # noqa: PLR0913
     )
     build_env.run(
         [
-            "cmake", str(sdist_root_dir), "-B", str(cmake_python_build),
+            "cmake", str(faiss_src_dir), "-B", str(cmake_python_build),
             "-DFAISS_ENABLE_GPU=OFF",
             "-DFAISS_ENABLE_PYTHON=ON",
             "-DBUILD_TESTING=OFF",
@@ -181,6 +200,18 @@ def build_wheel(  # noqa: PLR0913
     )
 
     cmake_python_dir = cmake_python_build / "faiss" / "python"
+    # Copy root pyproject.toml (name='faiss-cpu') into cmake build dir so
+    # pep517 produces faiss_cpu-*.dist-info, not faiss-*.dist-info.
+    root_pyproject = sdist_root_dir / "pyproject.toml"
+    if root_pyproject.exists():
+        shutil.copy2(root_pyproject, cmake_python_dir / "pyproject.toml")
+        logger.info("faiss-cpu: copied root pyproject.toml to %s", cmake_python_dir)
+    else:
+        logger.warning(
+            "faiss-cpu: root pyproject.toml not found at %s — "
+            "wheel may be named 'faiss-*' instead of 'faiss_cpu-*'",
+            root_pyproject,
+        )
     logger.info("faiss-cpu: PEP-517 wheel from %s", cmake_python_dir)
     wheel_path = wheels.pep517_build_wheel(
         ctx=ctx,
