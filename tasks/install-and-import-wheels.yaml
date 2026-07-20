@@ -342,6 +342,84 @@ spec:
         RESULTS_DIR="/tmp/wheel-test-results"
         mkdir -p "${RESULTS_DIR}"
 
+        # Build a wheel index: normalized_name-version -> wheel filename
+        python3.12 -c "
+        import json, os, re
+
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+
+        wheel_index = {}
+        for f in os.listdir('.'):
+            if not f.endswith('.whl'):
+                continue
+            parts = f.split('-')
+            if len(parts) >= 2:
+                key = normalize(parts[0]) + '-' + parts[1]
+                wheel_index[key] = f
+
+        json.dump(wheel_index, open('/tmp/wheel-index.json', 'w'))
+        print(f'Indexed {len(wheel_index)} wheel(s)')
+        "
+
+        # Identify wheels built from source by checking for sdist presence.
+        # Fromager bootstrap only creates sdists for packages it builds from
+        # source — packages found on the cache wheel server are downloaded as
+        # wheels directly. Three outcomes:
+        #   - no_sdists: no .tar.gz files — test everything (backward compat)
+        #   - all_cached: wheels present but no sdists — skip all tests
+        #   - has_built: sdists found — test only matching wheels
+        python3.12 -c "
+        import json, os, re
+
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+
+        sdist_pkgs = set()
+        for f in os.listdir('.'):
+            if not f.endswith('.tar.gz'):
+                continue
+            base = f[:-len('.tar.gz')]
+            name_part, _, version_part = base.rpartition('-')
+            if name_part:
+                sdist_pkgs.add(normalize(name_part))
+
+        wheel_index = json.load(open('/tmp/wheel-index.json'))
+        built = set()
+        for key, whl in wheel_index.items():
+            pkg_name = normalize(key.rsplit('-', 1)[0])
+            if pkg_name in sdist_pkgs:
+                built.add(whl)
+
+        if sdist_pkgs and built:
+            status = 'has_built'
+            print(f'Found {len(sdist_pkgs)} sdist(s), matched {len(built)} wheel(s) built from source')
+        elif len(wheel_index) > 0 and not sdist_pkgs:
+            status = 'all_cached'
+            print(f'All {len(wheel_index)} wheel(s) pulled from cache — no sdists found')
+        else:
+            status = 'no_sdists'
+            print('No sdists found — will test all wheels')
+
+        json.dump({'status': status, 'wheels': list(built)}, open('/tmp/built-wheels.json', 'w'))
+        "
+
+        BUILT_WHEELS_STATUS=$(python3.12 -c "import json; print(json.load(open('/tmp/built-wheels.json'))['status'])" 2>/dev/null || echo "no_sdists")
+
+        if [ "$BUILT_WHEELS_STATUS" = "all_cached" ]; then
+            echo ""
+            echo "All wheels were pulled from cache — no sdists found, nothing built from source."
+            echo "Skipping all import tests."
+            echo ""
+            echo "RESULT: PASSED"
+            exit 0
+        fi
+
+        BUILT_WHEELS_SET=""
+        if [ "$BUILT_WHEELS_STATUS" = "has_built" ]; then
+            BUILT_WHEELS_SET=$(python3.12 -c "import json; print(','.join(json.load(open('/tmp/built-wheels.json'))['wheels']))")
+        fi
+
         # Phase 1: Test each wheel in its own isolated venv.
         # Tracks which wheels are importable (not empty/data-only) and
         # whether any individual test failed.
@@ -349,6 +427,17 @@ spec:
 
         for WHEEL in "${whl_files[@]}"; do
             [ -f "$WHEEL" ] || continue
+
+            # Skip wheels without a matching sdist (not built from source)
+            if [ -n "$BUILT_WHEELS_SET" ]; then
+                if ! echo ",$BUILT_WHEELS_SET," | grep -q ",${WHEEL},"; then
+                    echo "=================================================="
+                    echo "SKIP (no sdist, cached): $WHEEL"
+                    RESULT_FILE="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
+                    python3.12 -c "import json,sys; print(json.dumps({'wheel':sys.argv[1],'status':'SKIP','reason':'no matching sdist (not built from source)','imports_tested':[]}))" "$WHEEL" > "$RESULT_FILE"
+                    continue
+                fi
+            fi
 
             echo "=================================================="
             echo "Testing $WHEEL..."
@@ -498,26 +587,6 @@ spec:
 
         echo "Found ${#SUMMARY_FILES[@]} build-sequence-summary file(s)"
 
-        # Build a wheel index: normalized_name-version -> wheel filename
-        python3.12 -c "
-        import json, os, re
-
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-
-        wheel_index = {}
-        for f in os.listdir('.'):
-            if not f.endswith('.whl'):
-                continue
-            parts = f.split('-')
-            if len(parts) >= 2:
-                key = normalize(parts[0]) + '-' + parts[1]
-                wheel_index[key] = f
-
-        json.dump(wheel_index, open('/tmp/wheel-index.json', 'w'))
-        print(f'Indexed {len(wheel_index)} wheel(s)')
-        "
-
         # Build reverse mapping: import name -> wheel filename(s).
         # Handles cases where import name != distribution name
         # (e.g. bs4 -> beautifulsoup4, PIL -> pillow).
@@ -562,7 +631,6 @@ spec:
         json.dump(import_to_wheel, open('/tmp/import-to-wheel.json', 'w'))
         print(f'Mapped {len(import_to_wheel)} import name(s) to wheels')
         "
-
         COMBINED_RESULTS_DIR="/tmp/wheel-test-results-combined"
         rm -rf "${COMBINED_RESULTS_DIR}"
         mkdir -p "${COMBINED_RESULTS_DIR}"
@@ -607,6 +675,33 @@ spec:
                 echo "  WARNING: No matching wheel for ${PRIMARY_LABEL}, skipping"
                 continue
             fi
+
+            # Skip entire group if no wheel in the group has a matching sdist
+            if [ -n "$BUILT_WHEELS_SET" ]; then
+                GROUP_HAS_BUILT=$(python3.12 -c "
+        import json, re, sys
+        def normalize(name):
+            return re.sub(r'[-_.]+', '_', name).lower()
+        built = set(sys.argv[2].split(','))
+        try:
+            entries = json.load(open(sys.argv[1]))
+            wheel_index = json.load(open('/tmp/wheel-index.json'))
+            for e in entries:
+                if not isinstance(e, dict): continue
+                key = normalize(e.get('name','')) + '-' + str(e.get('version',''))
+                whl = wheel_index.get(key, '')
+                if whl in built:
+                    print('yes'); sys.exit()
+        except Exception as exc:
+            print(f'WARNING: {exc}', file=sys.stderr)
+        print('no')
+        " "$SUMMARY_FILE" "$BUILT_WHEELS_SET")
+                if [ "$GROUP_HAS_BUILT" = "no" ]; then
+                    echo "  SKIP group (no wheels with sdist match)"
+                    continue
+                fi
+            fi
+
             echo "  Installing ${PRIMARY_NAME}==${PRIMARY_VERSION}..."
             rm -rf /tmp/test-venv-group
             python3.12 -m venv /tmp/test-venv-group
@@ -636,6 +731,13 @@ spec:
                 WHEEL="${INSTALLED_WHEELS[$WHEEL_IDX]}"
                 WHEEL_IDX=$((WHEEL_IDX + 1))
                 RESULT_FILE="${COMBINED_RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
+
+                # Skip wheels without a matching sdist (not built from source)
+                if [ -n "$BUILT_WHEELS_SET" ]; then
+                    if ! echo ",$BUILT_WHEELS_SET," | grep -q ",${WHEEL},"; then
+                        continue
+                    fi
+                fi
 
                 # Skip non-importable wheels already classified in phase 1
                 if [ -f "$RESULT_FILE" ]; then
