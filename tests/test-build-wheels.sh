@@ -10,7 +10,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILDER_DIR="$PROJECT_ROOT/builder"
 TEST_OUTPUT_DIR="$SCRIPT_DIR/test-output"
 CONTAINER_IMAGE="calunga-builder:test"
-IMAGE_PULLSPEC="quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:2cabbc13aa0f5dab989c133927158e35411ecc9bd40844706d2300bed42d1961"
+IMAGE_PULLSPEC="quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:06f0d935ec922269eeaeb20a532f842594be29f4df177582fce353d6444cdba0"
 
 # Colors for output
 RED='\033[0;31m'
