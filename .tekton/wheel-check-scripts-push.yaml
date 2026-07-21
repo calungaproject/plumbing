@@ -1,0 +1,118 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/calungaproject/plumbing?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch == "main" && ( "tasks/scripts/wheel-check/**.py".pathChanged() || ".tekton/wheel-check-scripts-push.yaml".pathChanged() )
+  creationTimestamp: null
+  labels:
+    appstudio.openshift.io/application: calunga-v2
+    appstudio.openshift.io/component: wheel-check-scripts
+    pipelines.appstudio.openshift.io/type: build
+  name: wheel-check-scripts-on-push
+  namespace: calunga-tenant
+spec:
+  params:
+    - name: git-url
+      value: '{{source_url}}'
+    - name: revision
+      value: '{{revision}}'
+    - name: deploy-configmap
+      value: "true"
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-wheel-check-scripts
+  workspaces:
+    - name: source
+      emptyDir: {}
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'
+  pipelineSpec:
+    params:
+      - name: git-url
+        type: string
+      - name: revision
+        type: string
+      - name: deploy-configmap
+        type: string
+        default: "false"
+    workspaces:
+      - name: source
+      - name: git-auth
+        optional: true
+    tasks:
+      - name: clone-and-test
+        params:
+          - name: git-url
+            value: $(params.git-url)
+          - name: revision
+            value: $(params.revision)
+          - name: deploy-configmap
+            value: $(params.deploy-configmap)
+        workspaces:
+          - name: source
+            workspace: source
+          - name: git-auth
+            workspace: git-auth
+        taskSpec:
+          params:
+            - name: git-url
+            - name: revision
+            - name: deploy-configmap
+          workspaces:
+            - name: source
+            - name: git-auth
+              optional: true
+          steps:
+            - name: clone
+              image: docker.io/alpine/git:2.47.2
+              script: |
+                #!/usr/bin/env sh
+                set -eu
+
+                if [ -d "$(workspaces.git-auth.path)" ] 2>/dev/null; then
+                  cp "$(workspaces.git-auth.path)/.gitconfig" "${HOME}/.gitconfig" 2>/dev/null || true
+                  cp "$(workspaces.git-auth.path)/.git-credentials" "${HOME}/.git-credentials" 2>/dev/null || true
+                fi
+
+                git clone "$(params.git-url)" "$(workspaces.source.path)/repo"
+                cd "$(workspaces.source.path)/repo"
+                git checkout "$(params.revision)"
+                echo "Cloned $(params.git-url) at $(git rev-parse --short HEAD)"
+
+            - name: test
+              image: docker.io/python:3.12-slim
+              script: |
+                #!/usr/bin/env sh
+                set -eu
+
+                pip install --no-cache-dir --quiet pytest==9.1.1
+                cd "$(workspaces.source.path)/repo"
+                python -m pytest tasks/scripts/wheel-check/ -v
+
+            - name: update-configmap
+              image: quay.io/openshift/origin-cli:4.18
+              script: |
+                #!/usr/bin/env sh
+                set -eu
+
+                if [ "$(params.deploy-configmap)" != "true" ]; then
+                  echo "Skipping ConfigMap update (deploy-configmap != true)"
+                  exit 0
+                fi
+
+                cd "$(workspaces.source.path)/repo"
+                kubectl create configmap wheel-check-scripts \
+                  --from-file=verify_import.py=tasks/scripts/wheel-check/verify_import.py \
+                  --from-file=wheel_helpers.py=tasks/scripts/wheel-check/wheel_helpers.py \
+                  --from-file=build_wheel_index.py=tasks/scripts/wheel-check/build_wheel_index.py \
+                  --from-file=build_import_map.py=tasks/scripts/wheel-check/build_import_map.py \
+                  --from-file=detect_built_wheels.py=tasks/scripts/wheel-check/detect_built_wheels.py \
+                  --dry-run=client -o yaml | kubectl apply -f -
+
+                echo "ConfigMap wheel-check-scripts updated successfully"
+status: {}
