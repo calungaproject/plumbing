@@ -13,9 +13,17 @@ spec:
     - description: The image used for smoke testing the built wheels
       name: TEST_IMAGE
       type: string
+    - description: Python version to use for testing (e.g. 3.12, 3.13)
+      name: PYTHON_VERSION
+      type: string
+      default: "3.12"
   volumes:
     - name: workdir
       emptyDir: {}
+    - name: wheel-check-scripts
+      configMap:
+        name: wheel-check-scripts
+        defaultMode: 0755
   stepTemplate:
     env:
       - name: SNAPSHOT
@@ -27,6 +35,9 @@ spec:
     volumeMounts:
       - name: workdir
         mountPath: /var/workdir
+      - name: wheel-check-scripts
+        mountPath: /opt/wheel-check
+        readOnly: true
   steps:
     - name: get-image-urls
       image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
@@ -59,274 +70,19 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
-        if command -v python3.12 >/dev/null 2>&1 && python3.12 -m venv --help >/dev/null 2>&1; then
-            echo "python3.12 and venv are already available, skipping installation"
+        PYTHON="python$(params.PYTHON_VERSION)"
+
+        if command -v "$PYTHON" >/dev/null 2>&1 && "$PYTHON" -m venv --help >/dev/null 2>&1; then
+            echo "$PYTHON and venv are already available, skipping installation"
         elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y python3.12
+            dnf install -y "$PYTHON"
         elif command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get install -y python3.12 python3.12-venv
+            apt-get update && apt-get install -y "$PYTHON" "${PYTHON}-venv"
         else
-            echo "ERROR: No supported package manager found and python3.12 is not installed"
+            echo "ERROR: No supported package manager found and $PYTHON is not installed"
             exit 1
         fi
-
-        cat <<'EOF' > /tmp/verify_import.py
-        import importlib
-        import json
-        import sys
-        import zipfile
-        from collections import defaultdict
-        from pathlib import Path, PurePosixPath
-
-
-        def inspect_wheel(wheel_path):
-            """Open a .whl as a zip and extract metadata for classification and import detection."""
-            with zipfile.ZipFile(wheel_path) as zf:
-                entries = zf.namelist()
-
-                dist_info_dir = None
-                for entry in entries:
-                    parts = PurePosixPath(entry).parts
-                    if parts and parts[0].endswith('.dist-info'):
-                        dist_info_dir = parts[0]
-                        break
-
-                top_level_txt = None
-                if dist_info_dir:
-                    tl_path = f"{dist_info_dir}/top_level.txt"
-                    if tl_path in entries:
-                        top_level_txt = zf.read(tl_path).decode('utf-8', errors='replace')
-
-                content_entries = []
-                for entry in entries:
-                    parts = PurePosixPath(entry).parts
-                    if not parts:
-                        continue
-                    if parts[0].endswith(('.dist-info', '.data')):
-                        continue
-                    if entry.endswith('/'):
-                        continue
-                    content_entries.append(entry)
-
-                source_exts = {'.py', '.so', '.pyd'}
-                has_source = any(
-                    PurePosixPath(e).suffix in source_exts or '.cpython-' in PurePosixPath(e).name
-                    for e in content_entries
-                )
-
-            return {
-                'dist_info_dir': dist_info_dir,
-                'content_entries': content_entries,
-                'top_level_txt': top_level_txt,
-                'has_source': has_source,
-            }
-
-
-        def parse_dist_info(dist_info_dir):
-            """Extract (dist_name, version) from a .dist-info directory name."""
-            base = dist_info_dir.removesuffix('.dist-info')
-            parts = base.split('-', 1)
-            if len(parts) == 2:
-                return parts[0].replace('_', '-').lower(), parts[1]
-            return base.replace('_', '-').lower(), 'unknown'
-
-
-        def classify_wheel(inspection):
-            """Return 'empty', 'data-only', or 'importable' based on wheel contents."""
-            if not inspection['content_entries']:
-                return 'empty'
-            if not inspection['has_source']:
-                return 'data-only'
-            return 'importable'
-
-
-        def detect_import_names(inspection):
-            """Determine importable module names from wheel zip entries.
-
-            Scans for regular packages (__init__.py), namespace packages,
-            top-level modules, and extension modules. Uses top_level.txt as
-            a supplementary hint only, validated against actual wheel contents.
-            """
-            content_entries = inspection['content_entries']
-
-            top_level_dirs = defaultdict(list)
-            top_level_files = []
-
-            for entry in content_entries:
-                parts = PurePosixPath(entry).parts
-                if not parts:
-                    continue
-                if len(parts) == 1:
-                    top_level_files.append(parts[0])
-                else:
-                    top_level_dirs[parts[0]].append(entry)
-
-            import_names = set()
-            namespace_imports = set()
-
-            for dir_name, files in top_level_dirs.items():
-                has_init = any(
-                    PurePosixPath(f).parts == (dir_name, '__init__.py')
-                    for f in files
-                )
-                if has_init:
-                    import_names.add(dir_name)
-
-            for dir_name, files in top_level_dirs.items():
-                if dir_name in import_names:
-                    continue
-                has_py = any(
-                    PurePosixPath(f).suffix in ('.py', '.so', '.pyd')
-                    or '.cpython-' in PurePosixPath(f).name
-                    for f in files
-                )
-                if has_py:
-                    for f in files:
-                        fp = PurePosixPath(f)
-                        if fp.name == '__init__.py' and len(fp.parts) >= 2:
-                            dotted = '.'.join(fp.parts[:-1])
-                            namespace_imports.add(dotted)
-                    if not any(ni.startswith(dir_name + '.') for ni in namespace_imports):
-                        import_names.add(dir_name)
-
-            filtered_ns = set()
-            for ni in sorted(namespace_imports, key=lambda x: x.count('.')):
-                parts = ni.split('.')
-                if not any('.'.join(parts[:i]) in filtered_ns for i in range(1, len(parts))):
-                    filtered_ns.add(ni)
-            namespace_imports = filtered_ns
-
-            for f in top_level_files:
-                if f.endswith('.py'):
-                    import_names.add(Path(f).stem)
-
-            for f in top_level_files:
-                if f.endswith('.so') or f.endswith('.pyd') or '.cpython-' in f:
-                    import_names.add(f.split('.')[0])
-
-            import_names.update(namespace_imports)
-
-            non_underscore = {
-                name for name in import_names
-                if not any(part.startswith('_') for part in name.split('.'))
-                and name != 'tests'
-                and not name.endswith('.libs')
-                and not name.startswith('pytest_')
-            }
-            if non_underscore:
-                import_names = non_underscore
-            else:
-                import_names = {
-                    name for name in import_names
-                    if name != 'tests'
-                    and not name.endswith('.libs')
-                }
-
-            if inspection['top_level_txt']:
-                all_top_dirs = set(top_level_dirs.keys())
-                all_top_files = {Path(f).stem for f in top_level_files if f.endswith('.py')}
-                all_top_files.update(
-                    f.split('.')[0] for f in top_level_files
-                    if f.endswith('.so') or f.endswith('.pyd') or '.cpython-' in f
-                )
-                known_names = all_top_dirs | all_top_files
-
-                for line in inspection['top_level_txt'].splitlines():
-                    tl_name = line.strip()
-                    if not tl_name:
-                        continue
-                    if '/' in tl_name or '\\' in tl_name:
-                        continue
-                    if tl_name == 'tests':
-                        continue
-                    if tl_name.startswith('_') and import_names:
-                        continue
-                    if tl_name in known_names and tl_name not in import_names:
-                        import_names.add(tl_name)
-
-            return import_names
-
-
-        def check_import(name):
-            """Try to import a module by name; return (success, message)."""
-            try:
-                importlib.import_module(name)
-                return True, f"Successfully imported {name}"
-            except ImportError as e:
-                return False, f"ImportError: {e}"
-            except Exception as e:
-                return False, f"{type(e).__name__}: {e}"
-
-
-        def main():
-            """Classify a wheel and verify its imports; output a single JSON result line."""
-            classify_only = '--classify-only' in sys.argv
-            args = [a for a in sys.argv[1:] if a != '--classify-only']
-
-            if len(args) != 1:
-                print(json.dumps({"status": "ERROR", "reason": "Usage: verify_import.py [--classify-only] <wheel>"}))
-                sys.exit(2)
-
-            wheel_path = Path(args[0])
-            if not wheel_path.exists():
-                print(json.dumps({"wheel": wheel_path.name, "status": "ERROR",
-                                  "reason": f"File not found: {wheel_path}"}))
-                sys.exit(2)
-
-            inspection = inspect_wheel(wheel_path)
-
-            dist_name, version = 'unknown', 'unknown'
-            if inspection['dist_info_dir']:
-                dist_name, version = parse_dist_info(inspection['dist_info_dir'])
-
-            category = classify_wheel(inspection)
-
-            if category == 'empty':
-                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
-                                  "version": version, "status": "SKIP",
-                                  "reason": "empty wheel (only dist-info, no source files)",
-                                  "imports_tested": []}))
-                sys.exit(0)
-
-            if category == 'data-only':
-                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
-                                  "version": version, "status": "SKIP",
-                                  "reason": "data-only package (no importable Python code)",
-                                  "imports_tested": []}))
-                sys.exit(0)
-
-            if classify_only:
-                sys.exit(10)
-
-            import_names = detect_import_names(inspection)
-
-            if not import_names:
-                print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
-                                  "version": version, "status": "FAIL",
-                                  "reason": "has source files but could not determine import names",
-                                  "imports_tested": []}))
-                sys.exit(1)
-
-            results = []
-            any_failed = False
-            for name in sorted(import_names):
-                success, message = check_import(name)
-                results.append({"name": name, "success": success, "message": message})
-                if not success:
-                    any_failed = True
-
-            status = "FAIL" if any_failed else "PASS"
-            print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
-                              "version": version, "status": status,
-                              "reason": "import failures" if any_failed else "",
-                              "imports_tested": results}))
-            sys.exit(1 if any_failed else 0)
-
-
-        if __name__ == '__main__':
-            main()
-        EOF
 
         echo "Changing directory to ${FILES_DIR}"
         cd "${FILES_DIR}"
@@ -342,69 +98,10 @@ spec:
         RESULTS_DIR="/tmp/wheel-test-results"
         mkdir -p "${RESULTS_DIR}"
 
-        # Build a wheel index: normalized_name-version -> wheel filename
-        python3.12 -c "
-        import json, os, re
+        $PYTHON /opt/wheel-check/build_wheel_index.py .
+        $PYTHON /opt/wheel-check/detect_built_wheels.py .
 
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-
-        wheel_index = {}
-        for f in os.listdir('.'):
-            if not f.endswith('.whl'):
-                continue
-            parts = f.split('-')
-            if len(parts) >= 2:
-                key = normalize(parts[0]) + '-' + parts[1]
-                wheel_index[key] = f
-
-        json.dump(wheel_index, open('/tmp/wheel-index.json', 'w'))
-        print(f'Indexed {len(wheel_index)} wheel(s)')
-        "
-
-        # Identify wheels built from source by checking for sdist presence.
-        # Fromager bootstrap only creates sdists for packages it builds from
-        # source — packages found on the cache wheel server are downloaded as
-        # wheels directly. Three outcomes:
-        #   - no_sdists: no .tar.gz files — test everything (backward compat)
-        #   - all_cached: wheels present but no sdists — skip all tests
-        #   - has_built: sdists found — test only matching wheels
-        python3.12 -c "
-        import json, os, re
-
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-
-        sdist_pkgs = set()
-        for f in os.listdir('.'):
-            if not f.endswith('.tar.gz'):
-                continue
-            base = f[:-len('.tar.gz')]
-            name_part, _, version_part = base.rpartition('-')
-            if name_part:
-                sdist_pkgs.add(normalize(name_part))
-
-        wheel_index = json.load(open('/tmp/wheel-index.json'))
-        built = set()
-        for key, whl in wheel_index.items():
-            pkg_name = normalize(key.rsplit('-', 1)[0])
-            if pkg_name in sdist_pkgs:
-                built.add(whl)
-
-        if sdist_pkgs and built:
-            status = 'has_built'
-            print(f'Found {len(sdist_pkgs)} sdist(s), matched {len(built)} wheel(s) built from source')
-        elif len(wheel_index) > 0 and not sdist_pkgs:
-            status = 'all_cached'
-            print(f'All {len(wheel_index)} wheel(s) pulled from cache — no sdists found')
-        else:
-            status = 'no_sdists'
-            print('No sdists found — will test all wheels')
-
-        json.dump({'status': status, 'wheels': list(built)}, open('/tmp/built-wheels.json', 'w'))
-        "
-
-        BUILT_WHEELS_STATUS=$(python3.12 -c "import json; print(json.load(open('/tmp/built-wheels.json'))['status'])" 2>/dev/null || echo "no_sdists")
+        BUILT_WHEELS_STATUS=$($PYTHON /opt/wheel-check/wheel_helpers.py read-built-status 2>/dev/null || echo "no_sdists")
 
         if [ "$BUILT_WHEELS_STATUS" = "all_cached" ]; then
             echo ""
@@ -417,7 +114,7 @@ spec:
 
         BUILT_WHEELS_SET=""
         if [ "$BUILT_WHEELS_STATUS" = "has_built" ]; then
-            BUILT_WHEELS_SET=$(python3.12 -c "import json; print(','.join(json.load(open('/tmp/built-wheels.json'))['wheels']))")
+            BUILT_WHEELS_SET=$($PYTHON /opt/wheel-check/wheel_helpers.py read-built-wheels)
         fi
 
         # Phase 1: Test each wheel in its own isolated venv.
@@ -434,7 +131,7 @@ spec:
                     echo "=================================================="
                     echo "SKIP (no sdist, cached): $WHEEL"
                     RESULT_FILE="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
-                    python3.12 -c "import json,sys; print(json.dumps({'wheel':sys.argv[1],'status':'SKIP','reason':'no matching sdist (not built from source)','imports_tested':[]}))" "$WHEEL" > "$RESULT_FILE"
+                    $PYTHON /opt/wheel-check/wheel_helpers.py write-skip "$WHEEL" "no matching sdist (not built from source)" > "$RESULT_FILE"
                     continue
                 fi
             fi
@@ -444,7 +141,7 @@ spec:
 
             RESULT_FILE="${RESULTS_DIR}/$(echo "$WHEEL" | tr '/' '_').json"
 
-            if python3.12 /tmp/verify_import.py --classify-only "${WHEEL}" > "$RESULT_FILE"; then
+            if $PYTHON /opt/wheel-check/verify_import.py --classify-only "${WHEEL}" > "$RESULT_FILE"; then
                 echo "SKIP: $WHEEL"
                 continue
             fi
@@ -453,18 +150,18 @@ spec:
 
             rm -rf /tmp/test-venv
             echo "Setting up virtual environment..."
-            python3.12 -m venv /tmp/test-venv
+            $PYTHON -m venv /tmp/test-venv
 
             echo "Installing wheel..."
             if ! /tmp/test-venv/bin/pip install --no-index --find-links . "${WHEEL}" 2>&1; then
                 echo "FAIL: Installation failed for $WHEEL"
-                python3.12 -c "import json,sys; print(json.dumps({'wheel':sys.argv[1],'status':'FAIL','reason':'pip install failed','imports_tested':[]}))" "$WHEEL" > "$RESULT_FILE"
+                $PYTHON /opt/wheel-check/wheel_helpers.py write-failure "$WHEEL" "pip install failed" > "$RESULT_FILE"
                 INDIVIDUAL_FAILED=true
                 continue
             fi
 
             echo "Verifying import..."
-            if /tmp/test-venv/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+            if /tmp/test-venv/bin/python /opt/wheel-check/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                 echo "PASS: $WHEEL"
             else
                 VERIFY_RC=$?
@@ -472,26 +169,13 @@ spec:
                     echo "ERROR: Script error for $WHEEL"
                     INDIVIDUAL_FAILED=true
                 else
-                    STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
+                    STATUS=$($PYTHON /opt/wheel-check/wheel_helpers.py read-status "$RESULT_FILE" 2>/dev/null || echo "FAIL")
                     if [ "$STATUS" = "SKIP" ]; then
                         echo "SKIP: $WHEEL"
                     else
                         echo "FAIL: $WHEEL"
                         INDIVIDUAL_FAILED=true
-                        python3.12 -c "
-        import json, sys
-        try:
-            with open(sys.argv[1]) as f:
-                d = json.load(f)
-            for t in d.get('imports_tested', []):
-                if not isinstance(t, dict) or t.get('success'):
-                    continue
-                name = t.get('name', '<unknown>')
-                message = t.get('message', '')
-                print(f'  {name}: {message}')
-        except Exception:
-            pass
-        " "$RESULT_FILE"
+                        $PYTHON /opt/wheel-check/wheel_helpers.py print-failures "$RESULT_FILE" --prefix "  "
                     fi
                 fi
             fi
@@ -512,17 +196,7 @@ spec:
 
         for RESULT_FILE in "${RESULTS_DIR}"/*.json; do
             [ -f "$RESULT_FILE" ] || continue
-            ROW=$(python3.12 -c "
-        import json, sys
-        try:
-            d = json.load(open(sys.argv[1]))
-            w = d.get('wheel','?')
-            s = d.get('status','ERROR')
-            r = d.get('reason','')
-        except Exception:
-            w, s, r = '?', 'ERROR', 'parse error'
-        print(f'{s}\t{w}\t{r}')
-        " "$RESULT_FILE" 2>/dev/null)
+            ROW=$($PYTHON /opt/wheel-check/wheel_helpers.py format-row "$RESULT_FILE" 2>/dev/null)
 
             R_STATUS="${ROW%%	*}"
             REST="${ROW#*	}"
@@ -532,20 +206,7 @@ spec:
             printf "%-60s %-8s %s\n" "$R_WHEEL" "$R_STATUS" "$R_REASON"
 
             if [ "$R_STATUS" = "FAIL" ]; then
-                python3.12 -c "
-        import json, sys
-        try:
-            with open(sys.argv[1]) as f:
-                d = json.load(f)
-            for t in d.get('imports_tested', []):
-                if not isinstance(t, dict) or t.get('success'):
-                    continue
-                name = t.get('name', '<unknown>')
-                message = t.get('message', '')
-                print(f'  -> {name}: {message}')
-        except Exception:
-            pass
-        " "$RESULT_FILE"
+                $PYTHON /opt/wheel-check/wheel_helpers.py print-failures "$RESULT_FILE" --prefix "  -> "
             fi
 
             case "$R_STATUS" in
@@ -587,50 +248,7 @@ spec:
 
         echo "Found ${#SUMMARY_FILES[@]} build-sequence-summary file(s)"
 
-        # Build reverse mapping: import name -> wheel filename(s).
-        # Handles cases where import name != distribution name
-        # (e.g. bs4 -> beautifulsoup4, PIL -> pillow).
-        python3.12 -c "
-        import json, os, re, zipfile
-        from pathlib import PurePosixPath
-
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-
-        import_to_wheel = {}
-        for f in sorted(os.listdir('.')):
-            if not f.endswith('.whl'):
-                continue
-            try:
-                names = set()
-                with zipfile.ZipFile(f) as zf:
-                    entries = zf.namelist()
-                    # Try top_level.txt first
-                    for entry in entries:
-                        if entry.endswith('/top_level.txt'):
-                            for line in zf.read(entry).decode('utf-8', errors='replace').splitlines():
-                                n = line.strip()
-                                if n and not n.startswith('#'):
-                                    names.add(n)
-                            break
-                    # Fall back to scanning directory structure
-                    if not names:
-                        for entry in entries:
-                            parts = PurePosixPath(entry).parts
-                            if not parts or parts[0].endswith(('.dist-info', '.data')):
-                                continue
-                            if len(parts) >= 2 and parts[1] == '__init__.py':
-                                names.add(parts[0])
-                            elif len(parts) == 1 and entry.endswith('.py'):
-                                names.add(PurePosixPath(entry).stem)
-                for n in names:
-                    import_to_wheel.setdefault(normalize(n), []).append(f)
-            except Exception:
-                pass
-
-        json.dump(import_to_wheel, open('/tmp/import-to-wheel.json', 'w'))
-        print(f'Mapped {len(import_to_wheel)} import name(s) to wheels')
-        "
+        $PYTHON /opt/wheel-check/build_import_map.py .
         COMBINED_RESULTS_DIR="/tmp/wheel-test-results-combined"
         rm -rf "${COMBINED_RESULTS_DIR}"
         mkdir -p "${COMBINED_RESULTS_DIR}"
@@ -654,20 +272,7 @@ spec:
             echo "Group ${GROUP_INDEX}: ${PRIMARY_LABEL}"
             echo "=================================================="
 
-            PRIMARY_INFO=$(python3.12 -c "
-        import json, re, sys
-        label = re.sub(r'[-.]', '_', sys.argv[1]).lower()
-        wheel_index = json.load(open('/tmp/wheel-index.json'))
-        for entry in json.load(open(sys.argv[2])):
-            norm = re.sub(r'[-_.]+', '_', entry['name']).lower()
-            if label.startswith(norm + '__'):
-                name = entry['name']
-                version = entry['version']
-                key = norm + '-' + version
-                wheel = wheel_index.get(key, '')
-                print(f'{name}\n{version}\n{wheel}')
-                break
-        " "$PRIMARY_LABEL" "$SUMMARY_FILE")
+            PRIMARY_INFO=$($PYTHON /opt/wheel-check/wheel_helpers.py lookup-primary "$PRIMARY_LABEL" "$SUMMARY_FILE" /tmp/wheel-index.json)
             PRIMARY_NAME=$(echo "$PRIMARY_INFO" | sed -n '1p')
             PRIMARY_VERSION=$(echo "$PRIMARY_INFO" | sed -n '2p')
             PRIMARY_WHEEL=$(echo "$PRIMARY_INFO" | sed -n '3p')
@@ -678,24 +283,7 @@ spec:
 
             # Skip entire group if no wheel in the group has a matching sdist
             if [ -n "$BUILT_WHEELS_SET" ]; then
-                GROUP_HAS_BUILT=$(python3.12 -c "
-        import json, re, sys
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-        built = set(sys.argv[2].split(','))
-        try:
-            entries = json.load(open(sys.argv[1]))
-            wheel_index = json.load(open('/tmp/wheel-index.json'))
-            for e in entries:
-                if not isinstance(e, dict): continue
-                key = normalize(e.get('name','')) + '-' + str(e.get('version',''))
-                whl = wheel_index.get(key, '')
-                if whl in built:
-                    print('yes'); sys.exit()
-        except Exception as exc:
-            print(f'WARNING: {exc}', file=sys.stderr)
-        print('no')
-        " "$SUMMARY_FILE" "$BUILT_WHEELS_SET")
+                GROUP_HAS_BUILT=$($PYTHON /opt/wheel-check/wheel_helpers.py group-has-built "$SUMMARY_FILE" "$BUILT_WHEELS_SET")
                 if [ "$GROUP_HAS_BUILT" = "no" ]; then
                     echo "  SKIP group (no wheels with sdist match)"
                     continue
@@ -704,25 +292,14 @@ spec:
 
             echo "  Installing ${PRIMARY_NAME}==${PRIMARY_VERSION}..."
             rm -rf /tmp/test-venv-group
-            python3.12 -m venv /tmp/test-venv-group
+            $PYTHON -m venv /tmp/test-venv-group
             if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1; then
                 echo "  WARNING: Group install failed for ${PRIMARY_LABEL}, skipping"
                 continue
             fi
 
             # Get installed packages and match to wheel files in artifact
-            readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | python3.12 -c "
-        import json, re, sys
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-        wheel_index = json.load(open('/tmp/wheel-index.json'))
-        installed = json.load(sys.stdin)
-        for pkg in installed:
-            key = normalize(pkg['name']) + '-' + pkg['version']
-            whl = wheel_index.get(key)
-            if whl:
-                print(whl)
-        ")
+            readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | $PYTHON /opt/wheel-check/wheel_helpers.py match-installed /tmp/wheel-index.json)
 
             GROUP_FAILED=false
             TESTED_IN_GROUP=" "
@@ -741,14 +318,14 @@ spec:
 
                 # Skip non-importable wheels already classified in phase 1
                 if [ -f "$RESULT_FILE" ]; then
-                    PREV_STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status',''))" "$RESULT_FILE" 2>/dev/null || true)
+                    PREV_STATUS=$($PYTHON /opt/wheel-check/wheel_helpers.py read-status "$RESULT_FILE" 2>/dev/null || true)
                     if [ "$PREV_STATUS" = "SKIP" ]; then
                         continue
                     fi
                 fi
 
                 # Classify: skip non-importable wheels
-                if python3.12 /tmp/verify_import.py --classify-only "${WHEEL}" > /dev/null 2>&1; then
+                if $PYTHON /opt/wheel-check/verify_import.py --classify-only "${WHEEL}" > /dev/null 2>&1; then
                     continue
                 fi
 
@@ -759,20 +336,13 @@ spec:
 
                 echo "  Testing import (group ${GROUP_INDEX}): $WHEEL..."
 
-                PREV_UNDECLARED=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('undeclared_dep',''))" "$RESULT_FILE" 2>/dev/null || true)
+                PREV_UNDECLARED=$($PYTHON /opt/wheel-check/wheel_helpers.py read-field "$RESULT_FILE" undeclared_dep 2>/dev/null || true)
 
-                if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                if /tmp/test-venv-group/bin/python /opt/wheel-check/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                     echo "  PASS: $WHEEL"
                     TESTED_IN_GROUP="${TESTED_IN_GROUP}${WHEEL} "
                     if [ -n "$PREV_UNDECLARED" ]; then
-                        python3.12 -c "
-        import json, sys
-        with open(sys.argv[1]) as f:
-            d = json.load(f)
-        d['undeclared_dep'] = sys.argv[2]
-        with open(sys.argv[1], 'w') as f:
-            json.dump(d, f)
-        " "$RESULT_FILE" "$PREV_UNDECLARED"
+                        $PYTHON /opt/wheel-check/wheel_helpers.py annotate-dep "$RESULT_FILE" "$PREV_UNDECLARED"
                     fi
                 else
                     VERIFY_RC=$?
@@ -782,7 +352,7 @@ spec:
                         continue
                     fi
 
-                    STATUS=$(python3.12 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','FAIL'))" "$RESULT_FILE" 2>/dev/null || echo "FAIL")
+                    STATUS=$($PYTHON /opt/wheel-check/wheel_helpers.py read-status "$RESULT_FILE" 2>/dev/null || echo "FAIL")
                     if [ "$STATUS" = "SKIP" ]; then
                         echo "  SKIP: $WHEEL"
                         continue
@@ -797,44 +367,13 @@ spec:
                     FOUND_DEPS=""
                     FALLBACK_RESOLVED=false
                     while true; do
-                        MISSING_MODULE=$(python3.12 -c "
-        import json, sys
-        d = json.load(open(sys.argv[1]))
-        for t in d.get('imports_tested', []):
-            if isinstance(t, dict) and not t.get('success', True):
-                msg = t.get('message', '')
-                if 'No module named' in msg:
-                    mod = msg.split(\"'\")[1] if \"'\" in msg else ''
-                    if mod:
-                        print(mod.split('.')[0])
-                        break
-        " "$RESULT_FILE" 2>/dev/null || true)
+                        MISSING_MODULE=$($PYTHON /opt/wheel-check/wheel_helpers.py extract-missing "$RESULT_FILE" 2>/dev/null || true)
 
                         if [ -z "$MISSING_MODULE" ]; then
                             break
                         fi
 
-                        MISSING_WHEEL=$(python3.12 -c "
-        import re, sys, os, json
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-        target = normalize(sys.argv[1])
-        tried = set(sys.argv[2].split(',')) if sys.argv[2] else set()
-        # Check import-to-wheel mapping first (handles import != dist name)
-        try:
-            import_map = json.load(open('/tmp/import-to-wheel.json'))
-            for whl in import_map.get(target, []):
-                if whl not in tried:
-                    print(whl)
-                    sys.exit(0)
-        except Exception:
-            pass
-        # Fallback: match by distribution name
-        for f in sorted(os.listdir('.')):
-            if f.endswith('.whl') and normalize(f.split('-')[0]) == target and f not in tried:
-                print(f)
-                break
-        " "$MISSING_MODULE" "$TRIED_WHEELS" 2>/dev/null || true)
+                        MISSING_WHEEL=$($PYTHON /opt/wheel-check/wheel_helpers.py find-missing "$MISSING_MODULE" "$TRIED_WHEELS" /tmp/import-to-wheel.json 2>/dev/null || true)
 
                         if [ -z "$MISSING_WHEEL" ]; then
                             break
@@ -847,7 +386,7 @@ spec:
                         # so pip can resolve all constraints holistically
                         echo "  Retrying with undeclared dep(s): ${FOUND_DEPS}"
                         rm -rf /tmp/test-venv-group
-                        python3.12 -m venv /tmp/test-venv-group
+                        $PYTHON -m venv /tmp/test-venv-group
                         if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . \
                             "${PRIMARY_NAME}==${PRIMARY_VERSION}" ${FOUND_DEPS} 2>&1; then
                             echo "  WARNING: Install failed with deps: ${FOUND_DEPS}"
@@ -855,30 +394,12 @@ spec:
                         fi
 
                         # Refresh installed wheels list from clean install
-                        readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | python3.12 -c "
-        import json, re, sys
-        def normalize(name):
-            return re.sub(r'[-_.]+', '_', name).lower()
-        wheel_index = json.load(open('/tmp/wheel-index.json'))
-        installed = json.load(sys.stdin)
-        for pkg in installed:
-            key = normalize(pkg['name']) + '-' + pkg['version']
-            whl = wheel_index.get(key)
-            if whl:
-                print(whl)
-        ")
+                        readarray -t INSTALLED_WHEELS < <(/tmp/test-venv-group/bin/pip list --format=json 2>/dev/null | $PYTHON /opt/wheel-check/wheel_helpers.py match-installed /tmp/wheel-index.json)
                         WHEEL_IDX=0
 
-                        if /tmp/test-venv-group/bin/python /tmp/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
+                        if /tmp/test-venv-group/bin/python /opt/wheel-check/verify_import.py "${WHEEL}" > "$RESULT_FILE"; then
                             echo "  PASS: $WHEEL (with undeclared deps: ${UNDECLARED_DEPS})"
-                            python3.12 -c "
-        import json, sys
-        with open(sys.argv[1]) as f:
-            d = json.load(f)
-        d['undeclared_dep'] = sys.argv[2]
-        with open(sys.argv[1], 'w') as f:
-            json.dump(d, f)
-        " "$RESULT_FILE" "$UNDECLARED_DEPS"
+                            $PYTHON /opt/wheel-check/wheel_helpers.py annotate-dep "$RESULT_FILE" "$UNDECLARED_DEPS"
                             TESTED_IN_GROUP="${TESTED_IN_GROUP}${WHEEL} "
                             FALLBACK_RESOLVED=true
                             break
@@ -896,7 +417,7 @@ spec:
 
                     # Restore group venv so remaining wheels aren't poisoned
                     rm -rf /tmp/test-venv-group
-                    python3.12 -m venv /tmp/test-venv-group
+                    $PYTHON -m venv /tmp/test-venv-group
                     if ! /tmp/test-venv-group/bin/pip install --no-index --find-links . \
                         "${PRIMARY_NAME}==${PRIMARY_VERSION}" 2>&1; then
                         echo "  WARNING: Could not restore group venv for ${PRIMARY_LABEL}, skipping remaining wheels"
@@ -905,20 +426,7 @@ spec:
 
                     echo "  FAIL: $WHEEL"
                     GROUP_FAILED=true
-                    python3.12 -c "
-        import json, sys
-        try:
-            with open(sys.argv[1]) as f:
-                d = json.load(f)
-            for t in d.get('imports_tested', []):
-                if not isinstance(t, dict) or t.get('success'):
-                    continue
-                name = t.get('name', '<unknown>')
-                message = t.get('message', '')
-                print(f'    -> {name}: {message}')
-        except Exception:
-            pass
-        " "$RESULT_FILE"
+                    $PYTHON /opt/wheel-check/wheel_helpers.py print-failures "$RESULT_FILE" --prefix "    -> "
                 fi
             done
 
@@ -942,20 +450,7 @@ spec:
 
         for RESULT_FILE in "${COMBINED_RESULTS_DIR}"/*.json; do
             [ -f "$RESULT_FILE" ] || continue
-            ROW=$(python3.12 -c "
-        import json, sys
-        try:
-            d = json.load(open(sys.argv[1]))
-            w = d.get('wheel','?')
-            s = d.get('status','ERROR')
-            r = d.get('reason','')
-            dep = d.get('undeclared_dep','')
-            if dep:
-                r = f'undeclared dep: {dep}' if not r else f'{r} (undeclared dep: {dep})'
-        except Exception:
-            w, s, r = '?', 'ERROR', 'parse error'
-        print(f'{s}\t{w}\t{r}')
-        " "$RESULT_FILE" 2>/dev/null)
+            ROW=$($PYTHON /opt/wheel-check/wheel_helpers.py format-row "$RESULT_FILE" 2>/dev/null)
 
             R_STATUS="${ROW%%	*}"
             REST="${ROW#*	}"
@@ -965,20 +460,7 @@ spec:
             printf "%-60s %-8s %s\n" "$R_WHEEL" "$R_STATUS" "$R_REASON"
 
             if [ "$R_STATUS" = "FAIL" ]; then
-                python3.12 -c "
-        import json, sys
-        try:
-            with open(sys.argv[1]) as f:
-                d = json.load(f)
-            for t in d.get('imports_tested', []):
-                if not isinstance(t, dict) or t.get('success'):
-                    continue
-                name = t.get('name', '<unknown>')
-                message = t.get('message', '')
-                print(f'  -> {name}: {message}')
-        except Exception:
-            pass
-        " "$RESULT_FILE"
+                $PYTHON /opt/wheel-check/wheel_helpers.py print-failures "$RESULT_FILE" --prefix "  -> "
             fi
 
             case "$R_STATUS" in
