@@ -10,9 +10,10 @@ metadata:
     app.kubernetes.io/version: "0.1"
 spec:
   description: >-
-    Build npm Trusted Libraries packages from onboarding recipes and push
-    collected tarballs as an OCI artifact to Quay (mirrors build-python-wheels).
-    Optional Pulp Stage publish when PUBLISH_TO_PULP=true.
+    Build npm Trusted Libraries packages from onboarding recipes, generate a
+    CycloneDX SBOM, and push an OCI artifact to Quay (mirrors build-python-wheels:
+    SBOM at build; attestations at release). Optional Pulp Stage when
+    PUBLISH_TO_PULP=true.
   params:
     - name: PACKAGES
       description: >-
@@ -117,18 +118,19 @@ spec:
         requests:
           cpu: "1"
           memory: 512Mi
-    - name: embed-compliance
+    - name: generate-sbom
       image: $(params.BUILDER_IMAGE)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        # Phase 1 stub: compliance metadata is computed in a later iteration.
-        echo "[embed-compliance] stub — tl-compliance.json / artifact.json not embedded yet"
+        ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
+        # Embed CycloneDX into every collected .tgz (main + platform), like SPDX-in-wheel.
+        generate-npm-sbom "${ARTIFACT_ROOT}"
       computeResources:
         limits:
-          memory: 512Mi
+          memory: 1Gi
         requests:
-          cpu: "100m"
+          cpu: "250m"
           memory: 256Mi
     - name: create-oci-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b

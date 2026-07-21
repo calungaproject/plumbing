@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Generate and sign SLSA provenance attestations for npm package tarballs.
+# Release-phase helper (mirrors generate-and-sign-attestations for wheels).
+# Production path will be a release-service-catalog task like rh-sign-python-wheels
+# using AWS KMS; this script is the shared/local implementation.
+#
+# Modeled after generate-and-sign-attestations and rh-sign-python-wheels
+# (AWS KMS + SLSA v1). Outputs cosign DSSE envelopes as <tarball>.att
+# (npm has no PEP 740 equivalent).
+#
+# Signing material (first match wins):
+#   1. COSIGN_KEY_PATH or /etc/cosign-secret/cosign.key  (local key file)
+#   2. /etc/cosign-secret/SIGN_KEY + AWS_*               (AWS KMS, release path)
+#
+# Env:
+#   FILES_DIR              Directory of collected .tgz (required)
+#   REQUIRE_ATTESTATIONS   If "true", fail when no signing material (default: false)
+#   BUILD_TYPE             SLSA buildType URI (default: NpmPackageBuild@v1)
+set -euo pipefail
+
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+REQUIRE_ATTESTATIONS="${REQUIRE_ATTESTATIONS:-false}"
+BUILD_TYPE="${BUILD_TYPE:-https://konflux-ci.dev/NpmPackageBuild@v1}"
+BUILDER_ID="${BUILDER_ID:-https://konflux-ci.dev/calunga}"
+COSIGN_KEY_PATH="${COSIGN_KEY_PATH:-/etc/cosign-secret/cosign.key}"
+SECRET_DIR="${COSIGN_SECRET_DIR:-/etc/cosign-secret}"
+
+if [[ ! -d "${FILES_DIR}" ]]; then
+    echo "ERROR: FILES_DIR does not exist: ${FILES_DIR}" >&2
+    exit 1
+fi
+
+tgz_files=()
+while IFS= read -r f; do
+    [[ -n "${f}" ]] && tgz_files+=("$f")
+done < <(find "${FILES_DIR}" -type f -name '*.tgz' | LC_ALL=C sort)
+if [[ ${#tgz_files[@]} -eq 0 ]]; then
+    echo "[generate-and-sign-npm-attestations] no .tgz files — skipping"
+    exit 0
+fi
+
+if ! command -v cosign >/dev/null 2>&1; then
+    echo "Installing cosign..."
+    curl -sLO https://github.com/sigstore/cosign/releases/download/v2.2.4/cosign-linux-amd64
+    chmod +x cosign-linux-amd64
+    mv cosign-linux-amd64 /usr/local/bin/cosign
+fi
+
+echo "Cosign version:"
+cosign version
+
+SIGN_MODE=""
+declare -a COSIGN_KEY_ARGS=()
+declare -a REKOR_ARGS=("--tlog-upload=false")
+
+if [[ -f "${COSIGN_KEY_PATH}" ]]; then
+    SIGN_MODE="keyfile"
+    COSIGN_KEY_ARGS=(--key "${COSIGN_KEY_PATH}")
+    export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
+elif [[ -f "${SECRET_DIR}/SIGN_KEY" ]]; then
+    SIGN_MODE="kms"
+    for key in AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+        if [[ -f "${SECRET_DIR}/${key}" ]]; then
+            export "${key}=$(cat "${SECRET_DIR}/${key}")"
+        fi
+    done
+    SIGN_KEY="$(cat "${SECRET_DIR}/SIGN_KEY")"
+    COSIGN_KEY_ARGS=(--key "${SIGN_KEY}")
+    if [[ -s "${SECRET_DIR}/REKOR_URL" ]]; then
+        REKOR_ARGS=(-y --rekor-url="$(cat "${SECRET_DIR}/REKOR_URL")")
+    fi
+fi
+
+if [[ -z "${SIGN_MODE}" ]]; then
+    msg="No cosign signing material at ${COSIGN_KEY_PATH} or ${SECRET_DIR}/SIGN_KEY"
+    if [[ "${REQUIRE_ATTESTATIONS}" == "true" ]]; then
+        echo "ERROR: ${msg}" >&2
+        exit 1
+    fi
+    echo "WARNING: ${msg} — skipping attestation (REQUIRE_ATTESTATIONS=${REQUIRE_ATTESTATIONS})"
+    exit 0
+fi
+
+echo "=== npm attestation generation (${SIGN_MODE}) ==="
+RELEASE_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "Timestamp: ${RELEASE_TIME}"
+echo "Files directory: ${FILES_DIR}"
+
+ATT_COUNT=0
+SIGNED_COUNT=0
+
+cd "${FILES_DIR}"
+ls -lah
+
+for TGZ in "${tgz_files[@]}"; do
+    [[ -f "${TGZ}" ]] || continue
+
+    rel="${TGZ#${FILES_DIR}/}"
+    rel="${rel#/}"
+
+    echo ""
+    echo "Processing: ${rel}"
+    TGZ_SHA256="$(sha256sum "${TGZ}" | cut -d' ' -f1)"
+    echo "  SHA256: ${TGZ_SHA256}"
+
+    PREDICATE_FILE="$(mktemp)"
+    jq -n \
+        --arg release_time "${RELEASE_TIME}" \
+        --arg build_type "${BUILD_TYPE}" \
+        --arg builder_id "${BUILDER_ID}" \
+        '{
+            buildDefinition: {
+                buildType: $build_type,
+                externalParameters: {},
+                resolvedDependencies: []
+            },
+            runDetails: {
+                builder: { id: $builder_id },
+                metadata: { finishedOn: $release_time }
+            }
+        }' > "${PREDICATE_FILE}"
+
+    ATT_FILE="${TGZ}.att"
+    DSSE_FILE="$(mktemp)"
+
+    echo "Signing attestation with cosign (${SIGN_MODE})"
+    if cosign attest-blob "${TGZ}" \
+        --predicate="${PREDICATE_FILE}" \
+        --type=https://slsa.dev/provenance/v1 \
+        "${COSIGN_KEY_ARGS[@]}" \
+        --yes \
+        "${REKOR_ARGS[@]}" \
+        --output-file="${DSSE_FILE}"
+    then
+        cp "${DSSE_FILE}" "${ATT_FILE}"
+        echo "Created DSSE attestation: ${ATT_FILE}"
+        SIGNED_COUNT=$((SIGNED_COUNT + 1))
+    else
+        echo "ERROR: Failed to sign attestation for ${TGZ}" >&2
+        rm -f "${PREDICATE_FILE}" "${DSSE_FILE}"
+        exit 1
+    fi
+
+    ATT_COUNT=$((ATT_COUNT + 1))
+    rm -f "${PREDICATE_FILE}" "${DSSE_FILE}"
+done
+
+echo ""
+echo "=========================================="
+echo "Attestation Generation Summary:"
+echo "  Total attestations: ${ATT_COUNT}"
+echo "  Signed (DSSE .att): ${SIGNED_COUNT}"
+echo "=========================================="
+ls -lah
