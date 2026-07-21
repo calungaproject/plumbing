@@ -151,6 +151,15 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 
 
+FROM build_base AS build_arrow
+COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export ARROW_VERSION=25.0.0 && \
+    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
+    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
+
+
 FROM build_base AS build_libjpeg_turbo
 COPY build_scripts/build-libjpeg-turbo.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
@@ -283,6 +292,7 @@ COPY --from=build_libxslt /manylinux-buildfs /
 COPY --from=build_libffi /manylinux-buildfs /
 COPY --from=build_openblas /manylinux-buildfs /
 COPY --from=build_libomp /manylinux-buildfs /
+COPY --from=build_arrow /manylinux-buildfs /
 ARG MANYLINUX_DISABLE_CLANG_FOR_CPYTHON
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-cpython.sh thomas@python.org https://accounts.google.com 3.12.12
@@ -300,6 +310,7 @@ COPY --from=build_libxslt /manylinux-buildfs /
 COPY --from=build_libffi /manylinux-buildfs /
 COPY --from=build_openblas /manylinux-buildfs /
 COPY --from=build_libomp /manylinux-buildfs /
+COPY --from=build_arrow /manylinux-buildfs /
 
 
 FROM runtime_base
@@ -320,6 +331,7 @@ COPY --from=build_libxslt /manylinux-rootfs /
 COPY --from=build_libffi /manylinux-rootfs /
 COPY --from=build_openblas /manylinux-rootfs /
 COPY --from=build_libomp /manylinux-rootfs /
+COPY --from=build_arrow /manylinux-rootfs /
 RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
     ldconfig
 
