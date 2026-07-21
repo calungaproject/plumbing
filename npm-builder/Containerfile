@@ -60,7 +60,7 @@ RUN chmod +x /tmp/install-rust-toolset.sh && \
 RUN useradd -m -u 1001 -s /bin/bash builder
 
 COPY --chmod=755 scripts/shasum /usr/local/bin/shasum
-COPY --chmod=755 scripts/build-npm-package scripts/build-npm-packages scripts/collect-npm-artifacts scripts/collect-npm-package-outputs scripts/record-npm-packages-built scripts/npm-workdir-load.sh scripts/npm-publish-pulp /usr/local/bin/
+COPY --chmod=755 scripts/build-npm-package scripts/build-npm-packages scripts/collect-npm-artifacts scripts/collect-npm-package-outputs scripts/generate-npm-sbom scripts/record-npm-packages-built scripts/npm-workdir-load.sh scripts/npm-publish-pulp /usr/local/bin/
 COPY --chmod=644 scripts/npm-workdir-env.sh /usr/local/lib/npm-builder/
 ENV NPM_BUILDER_LIB=/usr/local/lib/npm-builder
 

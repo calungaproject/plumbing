@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Embed a CycloneDX 1.5 SBOM into each collected npm package tarball.
+# Mirrors Python's build-time SPDX-in-wheel: every published artifact (main and
+# platform/binary packages) gets package/sboms/<name>-<version>.cdx.json.
+#
+# Usage: generate-npm-sbom [artifact-dir]
+# Default: ARTIFACT_ROOT (or ./artifact)
+set -euo pipefail
+
+ARTIFACT_DIR="${1:-${ARTIFACT_ROOT:-./artifact}}"
+
+if [[ ! -d "${ARTIFACT_DIR}" ]]; then
+    echo "[generate-npm-sbom] missing artifact dir: ${ARTIFACT_DIR}" >&2
+    exit 1
+fi
+
+tgz_files=()
+while IFS= read -r f; do
+    [[ -n "${f}" ]] && tgz_files+=("$f")
+done < <(find "${ARTIFACT_DIR}" -type f -name '*.tgz' | LC_ALL=C sort)
+
+if [[ ${#tgz_files[@]} -eq 0 ]]; then
+    echo "[generate-npm-sbom] no .tgz files — nothing to embed"
+    exit 0
+fi
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "${tmpdir}"' EXIT
+
+sbom_basename() {
+    # @calunga/foo → calunga-foo; plain name unchanged
+    local name="$1" version="$2"
+    local safe
+    safe="$(echo "${name}" | sed -e 's|^@||' -e 's|/|-|g')"
+    echo "${safe}-${version}.cdx.json"
+}
+
+npm_purl() {
+    local name="$1" version="$2"
+    if [[ "${name}" == @*/* ]]; then
+        local scope="${name%%/*}"
+        local unscoped="${name#*/}"
+        echo "pkg:npm/%40${scope#@}/${unscoped}@${version}"
+    else
+        echo "pkg:npm/${name}@${version}"
+    fi
+}
+
+embedded=0
+for tgz in "${tgz_files[@]}"; do
+    [[ -f "${tgz}" ]] || continue
+
+    rel="${tgz#${ARTIFACT_DIR}/}"
+    rel="${rel#/}"
+    extract_dir="${tmpdir}/extract-$((embedded))"
+    mkdir -p "${extract_dir}"
+
+    echo "[generate-npm-sbom] embedding SBOM into ${rel}"
+    tar -xzf "${tgz}" -C "${extract_dir}"
+
+    pkg_dir="${extract_dir}/package"
+    pkg_json="${pkg_dir}/package.json"
+    if [[ ! -f "${pkg_json}" ]]; then
+        echo "[generate-npm-sbom] ERROR: ${rel} missing package/package.json" >&2
+        exit 1
+    fi
+
+    name="$(jq -r '.name // empty' "${pkg_json}")"
+    version="$(jq -r '.version // empty' "${pkg_json}")"
+    if [[ -z "${name}" || -z "${version}" ]]; then
+        echo "[generate-npm-sbom] ERROR: ${rel} package.json missing name/version" >&2
+        exit 1
+    fi
+
+    sbom_file="$(sbom_basename "${name}" "${version}")"
+    sbom_rel="sboms/${sbom_file}"
+    mkdir -p "${pkg_dir}/sboms"
+    purl="$(npm_purl "${name}" "${version}")"
+
+    jq -n \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg name "${name}" \
+        --arg version "${version}" \
+        --arg purl "${purl}" \
+        '{
+            bomFormat: "CycloneDX",
+            specVersion: "1.5",
+            version: 1,
+            metadata: {
+                timestamp: $ts,
+                tools: [{ vendor: "calunga", name: "generate-npm-sbom", version: "0.1" }],
+                component: {
+                    type: "library",
+                    name: $name,
+                    version: $version,
+                    purl: $purl
+                }
+            },
+            components: [
+                {
+                    type: "library",
+                    name: $name,
+                    version: $version,
+                    purl: $purl
+                }
+            ]
+        }' > "${pkg_dir}/${sbom_rel}"
+
+    # Ensure package.json files includes the SBOM path (npm pack / publish allowlist).
+    jq --arg sbom "${sbom_rel}" '
+        .files = ((.files // []) + [$sbom] | unique | sort)
+    ' "${pkg_json}" > "${pkg_json}.next"
+    mv "${pkg_json}.next" "${pkg_json}"
+
+    # Repack in place (npm-style package/ root).
+    pack_root="$(mktemp -d "${tmpdir}/pack.XXXXXX")"
+    mkdir -p "${pack_root}/package"
+    cp -a "${pkg_dir}/." "${pack_root}/package/"
+    tar --create --gzip --file "${tgz}" --directory "${pack_root}" package
+
+    echo "[generate-npm-sbom] embedded ${sbom_rel} in ${rel}"
+    embedded=$((embedded + 1))
+done
+
+echo "[generate-npm-sbom] embedded SBOM into ${embedded} tarball(s)"

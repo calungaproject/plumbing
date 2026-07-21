@@ -74,12 +74,15 @@ quay.io/redhat-user-workloads/calunga-tenant/npm-builder:<tag>
 | `build-npm-package` | Run entrypoint + smoke for one manifest |
 | `build-npm-packages` | Build multiple package dirs (Tekton `PACKAGES` args) |
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
+| `generate-npm-sbom` | Embed CycloneDX into each collected `.tgz` (`package/sboms/*.cdx.json`) |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
 | `build_scripts/install-gcc-toolset.sh` | Install gcc-toolset from `gcc-toolset.lock` |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |
 | `hack/update-rust-toolset-lock.sh` | Refresh `rust-toolset.lock` from UBI |
 
-Publishing to Quay (OCI artifact), optional Pulp, and cosign are handled in **Tekton steps**, not in these scripts.
+Publishing to Quay (OCI artifact) and optional Pulp are handled in **Tekton steps**.
+Package attestations are **release-phase** (like Python `rh-sign-python-wheels`); see
+`utils/scripts/generate-and-sign-npm-attestations`.
 
 ## Local build
 
