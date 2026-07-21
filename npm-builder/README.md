@@ -14,6 +14,7 @@ downloads from `static.rust-lang.org`.
 | Node.js 20 LTS | AppStream `nodejs:20` module | stream `20` |
 | Go | AppStream `golang` | distro default |
 | **C/C++ (node-gyp)** | **gcc-toolset-14** (CodeReady Builder) | toolset version in [`gcc-toolset.lock`](./gcc-toolset.lock); C++20 on UBI 8 glibc |
+| **SBOM** | **Syft** from `registry.redhat.io/rh-syft-tech-preview/syft-rhel9` (digest-pinned via `SYFT_IMAGE`, same as [tssc-dev-multi-ci](https://github.com/redhat-appstudio/tssc-dev-multi-ci/blob/main/Dockerfile)) | SPDX JSON → `package/sboms/redhat.spdx.json` (same name as Python wheels) |
 | **Rust** | AppStream **`rust-toolset`** module | **exact RPM VR** in [`rust-toolset.lock`](./rust-toolset.lock) |
 | node-gyp deps | `python3`, `openssl-devel`, stock `make`, etc. | stock gcc remains installed; **`CC`/`CXX`** point at toolset |
 
@@ -67,6 +68,21 @@ Built by Konflux component `npm-builder` under application `calunga-v2`:
 quay.io/redhat-user-workloads/calunga-tenant/npm-builder:<tag>
 ```
 
+### `registry.redhat.io` pull secret (required for Syft)
+
+The Containerfile `COPY --from`s Syft from `registry.redhat.io`, same pattern as
+[tssc-dev-multi-ci](https://github.com/redhat-appstudio/tssc-dev-multi-ci/blob/main/Dockerfile).
+That registry is authenticated — without a pull secret, buildah fails with
+`invalid username/password` / `Please login to the Red Hat Registry`.
+
+1. Create a [registry service account](https://access.redhat.com/terms-based-registry/accounts).
+2. In Konflux (`calunga-tenant` → Secrets), add an **Image pull secret** for
+   `registry.redhat.io` with those credentials.
+3. Link it to component **`npm-builder`** (or all components) so it attaches to
+   `build-pipeline-npm-builder`. No PipelineRun YAML change is needed.
+
+Local builds: `podman login registry.redhat.io` before `docker`/`podman` build.
+
 ## Scripts
 
 | Script | Role |
@@ -74,7 +90,7 @@ quay.io/redhat-user-workloads/calunga-tenant/npm-builder:<tag>
 | `build-npm-package` | Run entrypoint + smoke for one manifest |
 | `build-npm-packages` | Build multiple package dirs (Tekton `PACKAGES` args) |
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
-| `generate-npm-sbom` | Embed CycloneDX into each collected `.tgz` (`package/sboms/*.cdx.json`) |
+| `generate-npm-sbom` | Syft → SPDX JSON embedded as `package/sboms/redhat.spdx.json` (Python parity) |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
 | `build_scripts/install-gcc-toolset.sh` | Install gcc-toolset from `gcc-toolset.lock` |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |
@@ -96,4 +112,5 @@ docker run --rm npm-builder g++ --version
 docker run --rm npm-builder bash -c 'echo | g++ -std=c++20 -x c++ - -o /dev/null -'
 docker run --rm npm-builder rustc --version
 docker run --rm npm-builder cargo --version
+docker run --rm npm-builder syft version
 ```

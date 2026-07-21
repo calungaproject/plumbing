@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
-# Embed a CycloneDX 1.5 SBOM into each collected npm package tarball.
-# Mirrors Python's build-time SPDX-in-wheel: every published artifact (main and
-# platform/binary packages) gets package/sboms/<name>-<version>.cdx.json.
+# Embed an SPDX SBOM into each collected npm package tarball using Syft.
+# Parity with Python wheels: package/sboms/redhat.spdx.json (Fromager → redhat.spdx.json).
+#
+# Long-term tool: Syft (Anchore) — SPDX-JSON output, works for main + platform
+# packages, no lockfile required, common in Konflux/RHTAS pipelines.
 #
 # Usage: generate-npm-sbom [artifact-dir]
 # Default: ARTIFACT_ROOT (or ./artifact)
 set -euo pipefail
 
 ARTIFACT_DIR="${1:-${ARTIFACT_ROOT:-./artifact}}"
+SBOM_REL="sboms/redhat.spdx.json"
+
+# Avoid Syft calling out for update checks during factory builds.
+export SYFT_CHECK_FOR_APP_UPDATE="${SYFT_CHECK_FOR_APP_UPDATE:-false}"
 
 if [[ ! -d "${ARTIFACT_DIR}" ]]; then
     echo "[generate-npm-sbom] missing artifact dir: ${ARTIFACT_DIR}" >&2
+    exit 1
+fi
+
+if ! command -v syft >/dev/null 2>&1; then
+    echo "[generate-npm-sbom] ERROR: syft not found on PATH (expected in npm-builder image)" >&2
     exit 1
 fi
 
@@ -27,25 +38,6 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT
 
-sbom_basename() {
-    # @calunga/foo → calunga-foo; plain name unchanged
-    local name="$1" version="$2"
-    local safe
-    safe="$(echo "${name}" | sed -e 's|^@||' -e 's|/|-|g')"
-    echo "${safe}-${version}.cdx.json"
-}
-
-npm_purl() {
-    local name="$1" version="$2"
-    if [[ "${name}" == @*/* ]]; then
-        local scope="${name%%/*}"
-        local unscoped="${name#*/}"
-        echo "pkg:npm/%40${scope#@}/${unscoped}@${version}"
-    else
-        echo "pkg:npm/${name}@${version}"
-    fi
-}
-
 embedded=0
 for tgz in "${tgz_files[@]}"; do
     [[ -f "${tgz}" ]] || continue
@@ -55,7 +47,7 @@ for tgz in "${tgz_files[@]}"; do
     extract_dir="${tmpdir}/extract-$((embedded))"
     mkdir -p "${extract_dir}"
 
-    echo "[generate-npm-sbom] embedding SBOM into ${rel}"
+    echo "[generate-npm-sbom] embedding SPDX SBOM into ${rel}"
     tar -xzf "${tgz}" -C "${extract_dir}"
 
     pkg_dir="${extract_dir}/package"
@@ -72,42 +64,21 @@ for tgz in "${tgz_files[@]}"; do
         exit 1
     fi
 
-    sbom_file="$(sbom_basename "${name}" "${version}")"
-    sbom_rel="sboms/${sbom_file}"
     mkdir -p "${pkg_dir}/sboms"
-    purl="$(npm_purl "${name}" "${version}")"
+    sbom_path="${pkg_dir}/${SBOM_REL}"
 
-    jq -n \
-        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        --arg name "${name}" \
-        --arg version "${version}" \
-        --arg purl "${purl}" \
-        '{
-            bomFormat: "CycloneDX",
-            specVersion: "1.5",
-            version: 1,
-            metadata: {
-                timestamp: $ts,
-                tools: [{ vendor: "calunga", name: "generate-npm-sbom", version: "0.1" }],
-                component: {
-                    type: "library",
-                    name: $name,
-                    version: $version,
-                    purl: $purl
-                }
-            },
-            components: [
-                {
-                    type: "library",
-                    name: $name,
-                    version: $version,
-                    purl: $purl
-                }
-            ]
-        }' > "${pkg_dir}/${sbom_rel}"
+    # Scan the package tree (npm metadata + files). SPDX 2.3 JSON.
+    syft scan "dir:${pkg_dir}" \
+        -o "spdx-json=${sbom_path}" \
+        --quiet
+
+    [[ -s "${sbom_path}" ]] || {
+        echo "[generate-npm-sbom] ERROR: syft did not write ${SBOM_REL} for ${rel}" >&2
+        exit 1
+    }
 
     # Ensure package.json files includes the SBOM path (npm pack / publish allowlist).
-    jq --arg sbom "${sbom_rel}" '
+    jq --arg sbom "${SBOM_REL}" '
         .files = ((.files // []) + [$sbom] | unique | sort)
     ' "${pkg_json}" > "${pkg_json}.next"
     mv "${pkg_json}.next" "${pkg_json}"
@@ -118,8 +89,8 @@ for tgz in "${tgz_files[@]}"; do
     cp -a "${pkg_dir}/." "${pack_root}/package/"
     tar --create --gzip --file "${tgz}" --directory "${pack_root}" package
 
-    echo "[generate-npm-sbom] embedded ${sbom_rel} in ${rel}"
+    echo "[generate-npm-sbom] embedded ${SBOM_REL} in ${rel} (${name}@${version})"
     embedded=$((embedded + 1))
 done
 
-echo "[generate-npm-sbom] embedded SBOM into ${embedded} tarball(s)"
+echo "[generate-npm-sbom] embedded SPDX SBOM into ${embedded} tarball(s) via syft $(syft version 2>/dev/null | head -1 || true)"
