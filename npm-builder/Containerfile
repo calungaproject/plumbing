@@ -2,6 +2,10 @@
 # Used by Konflux build-npm-package tasks; onboarder recipes run via build-npm-package.
 # Keep ARG BASEIMAGE in sync with baseimage.lock.
 ARG BASEIMAGE=registry.access.redhat.com/ubi8/ubi@sha256:28a85f76ad1ea0a46a81a934b02fff48d75541f77777be403d48b6bb99a363ad
+# Syft: Red Hat tech-preview image (SPDX SBOM; pin intentionally).
+ARG SYFT_IMAGE=registry.redhat.io/rh-syft-tech-preview/syft-rhel9:1.29.0-1756223792@sha256:15ed82f0b5311a570ccb8ea02135d9776c6d61e545c51b256b3fc5b5db20ba67
+
+FROM ${SYFT_IMAGE} AS syft-bin
 
 FROM ${BASEIMAGE}
 
@@ -56,6 +60,8 @@ RUN chmod +x /tmp/install-rust-toolset.sh && \
     rm -f /tmp/install-rust-toolset.sh /tmp/rust-toolset.lock && \
     dnf clean all && \
     rm -rf /var/cache/dnf
+
+COPY --from=syft-bin /usr/local/bin/syft /usr/local/bin/syft
 
 RUN useradd -m -u 1001 -s /bin/bash builder
 

@@ -10,10 +10,10 @@ metadata:
     app.kubernetes.io/version: "0.1"
 spec:
   description: >-
-    Build npm Trusted Libraries packages from onboarding recipes, generate a
-    CycloneDX SBOM, and push an OCI artifact to Quay (mirrors build-python-wheels:
-    SBOM at build; attestations at release). Optional Pulp Stage when
-    PUBLISH_TO_PULP=true.
+    Build npm Trusted Libraries packages from onboarding recipes, generate an
+    SPDX SBOM (Syft → redhat.spdx.json), and push an OCI artifact to Quay
+    (mirrors build-python-wheels: SBOM at build; attestations at release).
+    Optional Pulp Stage when PUBLISH_TO_PULP=true.
   params:
     - name: PACKAGES
       description: >-
@@ -124,7 +124,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         ARTIFACT_ROOT="${ARTIFACT_ROOT:-${WORKDIR_ROOT}/artifact}"
-        # Embed CycloneDX into every collected .tgz (main + platform), like SPDX-in-wheel.
+        # Embed SPDX (Syft → package/sboms/redhat.spdx.json) into every collected .tgz.
         generate-npm-sbom "${ARTIFACT_ROOT}"
       computeResources:
         limits:
