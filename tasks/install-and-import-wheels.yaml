@@ -21,9 +21,7 @@ spec:
     - name: workdir
       emptyDir: {}
     - name: wheel-check-scripts
-      configMap:
-        name: wheel-check-scripts
-        defaultMode: 0755
+      emptyDir: {}
   stepTemplate:
     env:
       - name: SNAPSHOT
@@ -37,8 +35,32 @@ spec:
         mountPath: /var/workdir
       - name: wheel-check-scripts
         mountPath: /opt/wheel-check
-        readOnly: true
   steps:
+    - name: clone-scripts
+      image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        REPO="https://github.com/calungaproject/plumbing.git"
+        SCRIPTS_PATH="tasks/scripts/wheel-check"
+
+        cd /tmp
+        git clone --depth=1 --filter=blob:none --sparse "$REPO" plumbing
+        cd plumbing
+        git sparse-checkout set "$SCRIPTS_PATH"
+
+        for f in ${SCRIPTS_PATH}/*.py; do
+            case "$(basename "$f")" in test_*) continue;; esac
+            cp "$f" /opt/wheel-check/
+        done
+
+        echo "Cloned wheel-check scripts:"
+        ls -la /opt/wheel-check/
+
+        cd /tmp
+        rm -rf plumbing
+
     - name: get-image-urls
       image: quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9
       script: |
