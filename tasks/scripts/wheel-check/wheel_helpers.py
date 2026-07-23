@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""CLI subcommands for wheel-check: result parsing, wheel index lookups, and sdist filtering."""
 import json
 import os
 import re
@@ -11,14 +12,16 @@ def normalize(name):
 
 def read_result_status(path):
     try:
-        return json.load(open(path)).get('status', 'FAIL')
+        with open(path) as f:
+            return json.load(f).get('status', 'FAIL')
     except Exception:
         return 'FAIL'
 
 
 def read_field(path, field):
     try:
-        return json.load(open(path)).get(field, '')
+        with open(path) as f:
+            return json.load(f).get(field, '')
     except Exception:
         return ''
 
@@ -39,7 +42,8 @@ def print_failed_imports(path, prefix='  '):
 
 def format_summary_row(path):
     try:
-        d = json.load(open(path))
+        with open(path) as f:
+            d = json.load(f)
         w = d.get('wheel', '?')
         s = d.get('status', 'ERROR')
         r = d.get('reason', '')
@@ -61,7 +65,8 @@ def annotate_dep(path, dep_string):
 
 
 def match_installed_wheels(wheel_index_path):
-    wheel_index = json.load(open(wheel_index_path))
+    with open(wheel_index_path) as f:
+        wheel_index = json.load(f)
     installed = json.load(sys.stdin)
     for pkg in installed:
         key = normalize(pkg['name']) + '-' + pkg['version']
@@ -71,14 +76,16 @@ def match_installed_wheels(wheel_index_path):
 
 
 def lookup_wheel(wheel_index_path, name, version):
-    wheel_index = json.load(open(wheel_index_path))
+    with open(wheel_index_path) as f:
+        wheel_index = json.load(f)
     key = normalize(name) + '-' + version
     print(wheel_index.get(key, ''))
 
 
 def extract_missing_module(path):
     try:
-        d = json.load(open(path))
+        with open(path) as f:
+            d = json.load(f)
         for t in d.get('imports_tested', []):
             if isinstance(t, dict) and not t.get('success', True):
                 msg = t.get('message', '')
@@ -95,16 +102,19 @@ def find_missing_wheel(module, tried_csv, import_map_path):
     target = normalize(module)
     tried = set(tried_csv.split(',')) if tried_csv else set()
     try:
-        import_map = json.load(open(import_map_path))
+        with open(import_map_path) as f:
+            import_map = json.load(f)
         for whl in import_map.get(target, []):
             if whl not in tried:
                 print(whl)
                 return
     except Exception:
         pass
-    for f in sorted(os.listdir('.')):
-        if f.endswith('.whl') and normalize(f.split('-')[0]) == target and f not in tried:
-            print(f)
+    for fname in sorted(os.listdir('.')):
+        if (fname.endswith('.whl')
+                and normalize(fname.split('-')[0]) == target
+                and fname not in tried):
+            print(fname)
             return
 
 
@@ -126,25 +136,29 @@ def write_skip_result(wheel_name, reason):
     }))
 
 
-def read_built_status():
+def read_built_status(path='/tmp/built-wheels.json'):
     try:
-        return json.load(open('/tmp/built-wheels.json'))['status']
+        with open(path) as f:
+            return json.load(f)['status']
     except Exception:
         return 'no_sdists'
 
 
-def read_built_wheels():
+def read_built_wheels(path='/tmp/built-wheels.json'):
     try:
-        return ','.join(json.load(open('/tmp/built-wheels.json'))['wheels'])
+        with open(path) as f:
+            return ','.join(json.load(f)['wheels'])
     except Exception:
         return ''
 
 
-def group_has_built(summary_path, built_wheels_csv):
-    built = set(built_wheels_csv.split(','))
+def group_has_built(summary_path, built_wheels_csv, wheel_index_path='/tmp/wheel-index.json'):
+    built = set(built_wheels_csv.split(',')) if built_wheels_csv else set()
     try:
-        entries = json.load(open(summary_path))
-        wheel_index = json.load(open('/tmp/wheel-index.json'))
+        with open(summary_path) as f:
+            entries = json.load(f)
+        with open(wheel_index_path) as f:
+            wheel_index = json.load(f)
         for e in entries:
             if not isinstance(e, dict):
                 continue
@@ -159,11 +173,16 @@ def group_has_built(summary_path, built_wheels_csv):
 
 
 def lookup_primary(label_raw, summary_path, wheel_index_path):
-    label = re.sub(r'[-.]', '_', label_raw).lower()
-    wheel_index = json.load(open(wheel_index_path))
-    for entry in json.load(open(summary_path)):
+    if '__' not in label_raw:
+        return
+    label_name = normalize(label_raw.split('__', 1)[0])
+    with open(wheel_index_path) as f:
+        wheel_index = json.load(f)
+    with open(summary_path) as f:
+        entries = json.load(f)
+    for entry in entries:
         norm = normalize(entry['name'])
-        if label.startswith(norm + '__'):
+        if label_name == norm:
             name = entry['name']
             version = entry['version']
             key = norm + '-' + version
