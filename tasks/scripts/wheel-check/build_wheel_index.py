@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Build a name-version to filename index from wheel files in a directory."""
 import json
 import os
 import sys
@@ -19,7 +20,8 @@ def main(wheels_dir=None, output_path='/tmp/wheel-index.json'):
         if len(parts) >= 2:
             key = normalize(parts[0]) + '-' + parts[1]
             wheel_index[key] = f
-    json.dump(wheel_index, open(output_path, 'w'))
+    with open(output_path, 'w') as f:
+        json.dump(wheel_index, f)
     print(f'Indexed {len(wheel_index)} wheel(s)')
     return wheel_index
 

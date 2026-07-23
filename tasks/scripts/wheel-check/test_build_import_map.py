@@ -29,16 +29,14 @@ def _make_wheel(dir_path, name, version, files, top_level_txt=None):
 class TestBuildImportMap(unittest.TestCase):
     def _run_in_dir(self, wheels):
         """Create wheels in a temp dir and call main() directly."""
-        tmpdir = tempfile.mkdtemp()
-        output_path = os.path.join(tmpdir, 'import-to-wheel.json')
-        whl_names = []
-        for w in wheels:
-            whl_names.append(_make_wheel(tmpdir, **w))
-        imap = main(wheels_dir=tmpdir, output_path=output_path)
-        written = json.load(open(output_path))
-        for f in os.listdir(tmpdir):
-            os.unlink(os.path.join(tmpdir, f))
-        os.rmdir(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, 'import-to-wheel.json')
+            whl_names = []
+            for w in wheels:
+                whl_names.append(_make_wheel(tmpdir, **w))
+            imap = main(wheels_dir=tmpdir, output_path=output_path)
+            with open(output_path) as f:
+                written = json.load(f)
         return imap, written, whl_names
 
     def test_single_package(self):
@@ -106,16 +104,14 @@ class TestBuildImportMap(unittest.TestCase):
         self.assertEqual(imap['beta'], [names[0]])
 
     def test_writes_to_output_path(self):
-        tmpdir = tempfile.mkdtemp()
-        output_path = os.path.join(tmpdir, 'custom-map.json')
-        _make_wheel(tmpdir, 'pkg', '1.0', {'pkg/__init__.py': ''})
-        main(wheels_dir=tmpdir, output_path=output_path)
-        self.assertTrue(os.path.exists(output_path))
-        written = json.load(open(output_path))
-        self.assertIn('pkg', written)
-        for f in os.listdir(tmpdir):
-            os.unlink(os.path.join(tmpdir, f))
-        os.rmdir(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, 'custom-map.json')
+            _make_wheel(tmpdir, 'pkg', '1.0', {'pkg/__init__.py': ''})
+            main(wheels_dir=tmpdir, output_path=output_path)
+            self.assertTrue(os.path.exists(output_path))
+            with open(output_path) as f:
+                written = json.load(f)
+            self.assertIn('pkg', written)
 
 
 if __name__ == '__main__':

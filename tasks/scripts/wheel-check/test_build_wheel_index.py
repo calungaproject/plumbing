@@ -13,16 +13,13 @@ from build_wheel_index import main
 class TestBuildWheelIndex(unittest.TestCase):
     def _run_in_dir(self, wheel_files):
         """Create a temp dir with fake wheel files and call main() directly."""
-        tmpdir = tempfile.mkdtemp()
-        output_path = os.path.join(tmpdir, 'wheel-index.json')
-        for name in wheel_files:
-            open(os.path.join(tmpdir, name), 'w').close()
-        index = main(wheels_dir=tmpdir, output_path=output_path)
-        written = json.load(open(output_path))
-        for name in wheel_files:
-            os.unlink(os.path.join(tmpdir, name))
-        os.unlink(output_path)
-        os.rmdir(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, 'wheel-index.json')
+            for name in wheel_files:
+                Path(os.path.join(tmpdir, name)).touch()
+            index = main(wheels_dir=tmpdir, output_path=output_path)
+            with open(output_path) as f:
+                written = json.load(f)
         return index, written
 
     def test_single_wheel(self):
@@ -69,16 +66,14 @@ class TestBuildWheelIndex(unittest.TestCase):
         )
 
     def test_writes_to_output_path(self):
-        tmpdir = tempfile.mkdtemp()
-        output_path = os.path.join(tmpdir, 'custom-index.json')
-        open(os.path.join(tmpdir, 'a-1.0-py3-none-any.whl'), 'w').close()
-        main(wheels_dir=tmpdir, output_path=output_path)
-        self.assertTrue(os.path.exists(output_path))
-        written = json.load(open(output_path))
-        self.assertIn('a-1.0', written)
-        os.unlink(os.path.join(tmpdir, 'a-1.0-py3-none-any.whl'))
-        os.unlink(output_path)
-        os.rmdir(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, 'custom-index.json')
+            Path(os.path.join(tmpdir, 'a-1.0-py3-none-any.whl')).touch()
+            main(wheels_dir=tmpdir, output_path=output_path)
+            self.assertTrue(os.path.exists(output_path))
+            with open(output_path) as f:
+                written = json.load(f)
+            self.assertIn('a-1.0', written)
 
 
 if __name__ == '__main__':

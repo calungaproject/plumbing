@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Install a wheel via pip and verify its top-level imports succeed."""
 import importlib
 import json
 import sys
@@ -191,7 +193,10 @@ def main():
     args = [a for a in sys.argv[1:] if a != '--classify-only']
 
     if len(args) != 1:
-        print(json.dumps({"status": "ERROR", "reason": "Usage: verify_import.py [--classify-only] <wheel>"}))
+        print(json.dumps({
+            "status": "ERROR",
+            "reason": "Usage: verify_import.py [--classify-only] <wheel>",
+        }))
         sys.exit(2)
 
     wheel_path = Path(args[0])
