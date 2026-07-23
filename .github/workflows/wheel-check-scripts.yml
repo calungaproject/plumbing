@@ -1,0 +1,32 @@
+name: Wheel Check Scripts
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'tasks/scripts/wheel-check/**.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install pytest
+      run: pip install pytest
+
+    - name: Run tests
+      working-directory: tasks/scripts/wheel-check
+      run: python -m pytest test_*.py -v
