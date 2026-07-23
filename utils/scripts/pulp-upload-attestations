@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# Upload attestations to Pulp for packages that already exist but are
+# missing provenance. This is a one-time remediation script for the
+# June 24 bulk-upload incident where packages were pushed without
+# attestations.
+#
+# This script does NOT upload wheels — it only uploads .attestation
+# files via the Pulp provenance content API.
+#
+# Expected env vars (same as pulp-upload):
+#   FILES_DIR, PULP_BASE_URL, PULP_API_ROOT, PULP_DOMAIN,
+#   PULP_REPOSITORY, TWINE_USERNAME, TWINE_PASSWORD
+set -euo pipefail
+
+cd "${FILES_DIR}"
+ls -la .
+
+PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
+
+REPO_JSON=$( curl --fail --silent --retry 3 --max-time 30 "${PULP_QUERY_BASE}repositories/python/python/" )
+PULP_REPOSITORY_VERSION=$( echo "$REPO_JSON" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
+PULP_REPOSITORY_HREF=$( echo "$REPO_JSON" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .pulp_href" )
+
+shopt -s nullglob
+
+uploaded=()
+skipped_has_provenance=()
+skipped_not_in_pulp=()
+skipped_no_attestation=()
+failed=()
+
+for file in *.whl *.tar.gz; do
+    if [[ ! -f "${file}.attestation" ]]; then
+        echo "Skipping $file - no attestation file"
+        skipped_no_attestation+=("$file")
+        continue
+    fi
+
+    PACKAGE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 -G \
+        "${PULP_QUERY_BASE}content/python/packages/" --data-urlencode "filename=${file}" \
+        --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" )
+    WHEEL_EXISTS=$( echo "$PACKAGE_RESPONSE" | jq '.results | length != 0' )
+
+    if ! $WHEEL_EXISTS; then
+        echo "Skipping ${file} - not found in Pulp"
+        skipped_not_in_pulp+=("$file")
+        continue
+    fi
+
+    PACKAGE_HREF=$( echo "$PACKAGE_RESPONSE" | jq -r '.results[0].pulp_href' )
+
+    PROVENANCE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 -G \
+        "${PULP_QUERY_BASE}content/python/provenance/" \
+        --data-urlencode "package=${PACKAGE_HREF}" \
+        --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" 2>/dev/null ) || true
+    if [ -z "$PROVENANCE_RESPONSE" ]; then
+        echo "WARNING: Could not check provenance for ${file}, attempting upload anyway"
+        HAS_PROVENANCE=false
+    else
+        HAS_PROVENANCE=$( echo "$PROVENANCE_RESPONSE" | jq '.results | length != 0' )
+    fi
+
+    if $HAS_PROVENANCE; then
+        echo "Skipping ${file} - already has provenance"
+        skipped_has_provenance+=("$file")
+        continue
+    fi
+
+    echo "Uploading attestation for ${file}..."
+    if curl --fail --retry 3 --max-time 60 \
+        -u "${TWINE_USERNAME}:${TWINE_PASSWORD}" \
+        -X POST \
+        -F "file=@${file}.attestation" \
+        -F "package=${PACKAGE_HREF}" \
+        -F "repository=${PULP_REPOSITORY_HREF}" \
+        "${PULP_QUERY_BASE}content/python/provenance/"; then
+        echo "Uploaded attestation for ${file}"
+        uploaded+=("$file")
+    else
+        echo "ERROR: Failed to upload attestation for ${file}"
+        failed+=("$file")
+    fi
+done
+
+echo ""
+echo "=============================="
+echo "  Attestation Upload Summary"
+echo "=============================="
+echo ""
+echo "Uploaded attestation (${#uploaded[@]}):"
+for f in "${uploaded[@]+"${uploaded[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Skipped - already has provenance (${#skipped_has_provenance[@]}):"
+for f in "${skipped_has_provenance[@]+"${skipped_has_provenance[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Skipped - not in Pulp (${#skipped_not_in_pulp[@]}):"
+for f in "${skipped_not_in_pulp[@]+"${skipped_not_in_pulp[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Skipped - no attestation file (${#skipped_no_attestation[@]}):"
+for f in "${skipped_no_attestation[@]+"${skipped_no_attestation[@]}"}"; do
+    echo "  - $f"
+done
+echo ""
+echo "Failed (${#failed[@]}):"
+for f in "${failed[@]+"${failed[@]}"}"; do
+    echo "  - $f"
+done
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+    echo ""
+    echo "ERROR: ${#failed[@]} attestation upload(s) failed"
+    exit 1
+fi
