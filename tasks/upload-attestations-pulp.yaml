@@ -132,7 +132,7 @@ spec:
         - name: sourceDataArtifact
           value: $(params.sourceDataArtifact)
     - name: upload-attestations
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:48c6eff749812d5757933f2f16448866923e15c7d8f5ff88539760b0cc290ba1
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-utils@sha256:17ac4f8d709b2c69f5a6c01dc53155c421c4216441e18719323291c813d748d0
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
