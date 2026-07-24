@@ -94,9 +94,9 @@ spec:
         - name: subdirectory
           value: $(context.pipelineRun.uid)
         - name: taskGitUrl
-          value: $(params.taskGitUrl)
+          value: https://github.com/konflux-ci/release-service-catalog.git
         - name: taskGitRevision
-          value: $(params.taskGitRevision)
+          value: production
         - name: ociStorage
           value: $(tasks.config.results.ociStorage)
 
@@ -122,9 +122,9 @@ spec:
         - name: SNAPSHOT_PATH
           value: $(workspaces.data.path)/$(tasks.collect-data.results.snapshotSpec)
         - name: taskGitUrl
-          value: $(params.taskGitUrl)
+          value: https://github.com/konflux-ci/release-service-catalog.git
         - name: taskGitRevision
-          value: $(params.taskGitRevision)
+          value: production
         - name: sourceDataArtifact
           value: "$(tasks.collect-data.results.sourceDataArtifact)"
         - name: ociStorage
@@ -150,9 +150,9 @@ spec:
         - name: ociStorage
           value: $(tasks.config.results.ociStorage)
         - name: taskGitUrl
-          value: $(params.taskGitUrl)
+          value: https://github.com/konflux-ci/release-service-catalog.git
         - name: taskGitRevision
-          value: $(params.taskGitRevision)
+          value: production
         - name: dataDir
           value: /var/workdir/content
         - name: dataPath
@@ -183,9 +183,9 @@ spec:
         - name: ociStorage
           value: $(tasks.config.results.ociStorage)
         - name: taskGitUrl
-          value: $(params.taskGitUrl)
+          value: https://github.com/konflux-ci/release-service-catalog.git
         - name: taskGitRevision
-          value: $(params.taskGitRevision)
+          value: production
       runAfter:
         - extract-py-artifacts
 
@@ -219,9 +219,9 @@ spec:
         - name: dataDir
           value: /var/workdir/content
         - name: taskGitUrl
-          value: $(params.taskGitUrl)
+          value: https://github.com/konflux-ci/release-service-catalog.git
         - name: taskGitRevision
-          value: $(params.taskGitRevision)
+          value: production
         - name: ociStorage
           value: $(tasks.config.results.ociStorage)
       runAfter:
