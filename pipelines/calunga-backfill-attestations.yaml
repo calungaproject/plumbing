@@ -75,9 +75,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/konflux-ci/release-service-catalog.git
           - name: revision
-            value: $(params.taskGitRevision)
+            value: production
           - name: pathInRepo
             value: tasks/managed/collect-data/collect-data.yaml
       params:
@@ -105,9 +105,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/konflux-ci/release-service-catalog.git
           - name: revision
-            value: $(params.taskGitRevision)
+            value: production
           - name: pathInRepo
             value: tasks/managed/reduce-snapshot/reduce-snapshot.yaml
       params:
@@ -137,9 +137,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/konflux-ci/release-service-catalog.git
           - name: revision
-            value: $(params.taskGitRevision)
+            value: production
           - name: pathInRepo
             value: tasks/managed/extract-py-artifacts/extract-py-artifacts.yaml
       params:
@@ -170,9 +170,9 @@ spec:
         resolver: "git"
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/konflux-ci/release-service-catalog.git
           - name: revision
-            value: $(params.taskGitRevision)
+            value: production
           - name: pathInRepo
             value: tasks/managed/rh-sign-python-wheels/rh-sign-python-wheels.yaml
       params:
