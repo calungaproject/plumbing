@@ -24,6 +24,12 @@ check_sha256sum "${ARROW_ROOT}.tar.gz" "${ARROW_HASH}"
 tar xfz "${ARROW_ROOT}.tar.gz"
 pushd "${ARROW_ROOT}/cpp"
 
+cmake_extra_args=()
+target_arch="${AUDITWHEEL_ARCH:?AUDITWHEEL_ARCH must be set}"
+if [[ "$target_arch" == "x86_64" ]]; then
+    cmake_extra_args+=( -DBOOST_UUID_LINK_LIBATOMIC=OFF )
+fi
+
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
@@ -46,7 +52,8 @@ cmake -S . -B build \
     -DARROW_WITH_UTF8PROC=ON \
     -DARROW_DEPENDENCY_SOURCE=BUNDLED \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
-    -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" > /dev/null
+    -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
+    "${cmake_extra_args[@]}" > /dev/null
 
 cmake --build build --parallel "$(nproc)" > /dev/null
 DESTDIR=/manylinux-rootfs cmake --install build > /dev/null
