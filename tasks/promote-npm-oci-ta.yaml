@@ -1,0 +1,237 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: promote-npm-oci-ta
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: npm, konflux, trusted-libraries
+  labels:
+    app.kubernetes.io/version: "0.1"
+spec:
+  description: >-
+    Promote a PR npm OCI artifact (on-pr-<sha>.npm) to a durable snapshot tag
+    (<sha>.npm): oras pull → verify embedded SPDX SBOM → assess compliance
+    against the public TL npm registry (*.tl-compliance.json) → oras push.
+    No rebuild. Verify/compliance scripts live in the npm-builder image.
+  params:
+    - name: SOURCE_IMAGE
+      description: >-
+        Quay OCI reference for the PR artifact to promote
+        (e.g. …/calunga-npm-registry-main:on-pr-<sha>.npm)
+      type: string
+    - name: IMAGE
+      description: >-
+        Durable Quay OCI reference to push
+        (e.g. …/calunga-npm-registry-main:<sha>.npm)
+      type: string
+    - name: BUILDER_IMAGE
+      description: Pinned npm-builder image (hosts verify-npm-sbom / assess-npm-compliance)
+      type: string
+    - name: SOURCE_ARTIFACT
+      description: Trusted Artifact URI with the onboarding repo checkout (manifests)
+      type: string
+    - name: PACKAGES
+      description: >-
+        Package directories whose manifests supply requires_tl_packages
+        (e.g. ["packages/express/5.2.1"])
+      type: array
+    - name: TL_NPM_REGISTRY_URL
+      description: Public TL npm registry base URL (read-only; no credentials)
+      type: string
+      default: https://packages.redhat.com/api/pulp-content/public-trusted-libraries/javascript
+    - name: IMAGE_EXPIRES_AFTER
+      description: >-
+        Delete image tag after specified time. Empty means keep the tag.
+        Durable snapshots should leave this empty.
+      type: string
+      default: ""
+    - name: WORKDIR_ROOT
+      description: Writable emptyDir mount for pull / stage / push
+      type: string
+      default: /var/workdir
+    - name: caTrustConfigMapKey
+      type: string
+      default: ca-bundle.crt
+    - name: caTrustConfigMapName
+      type: string
+      default: trusted-ca
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the durable OCI artifact just pushed
+    - name: IMAGE_URL
+      description: OCI artifact repository and tag
+    - name: IMAGE_REF
+      description: OCI artifact reference (image@digest)
+    - name: SOURCE_IMAGE
+      description: Source (on-pr) OCI reference that was promoted
+  volumes:
+    - name: trusted-ca
+      configMap:
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        name: $(params.caTrustConfigMapName)
+        optional: true
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    env:
+      - name: WORKDIR_ROOT
+        value: $(params.WORKDIR_ROOT)
+      - name: ARTIFACT_ROOT
+        value: $(params.WORKDIR_ROOT)/artifact
+      - name: SOURCE_ROOT
+        value: $(params.WORKDIR_ROOT)/source
+    volumeMounts:
+      - mountPath: $(params.WORKDIR_ROOT)
+        name: workdir
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:2712c8a6453fc9db5fc4c2d9d952554a4eea46d2fdba47a272b79fa07f8c8c40
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=$(params.WORKDIR_ROOT)/source
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+
+    - name: pull-on-pr-artifact
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      workingDir: $(params.WORKDIR_ROOT)
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: SOURCE_IMAGE
+          value: $(params.SOURCE_IMAGE)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "[$(date --utc -Ins)] Pulling on-pr npm OCI artifact: ${SOURCE_IMAGE}"
+
+        select-oci-auth "${SOURCE_IMAGE}" > auth.json
+        AUTHFILE="$(realpath auth.json)"
+
+        mkdir -p "${ARTIFACT_ROOT}"
+        if ! retry oras pull --registry-config "${AUTHFILE}" "${SOURCE_IMAGE}" -o "${ARTIFACT_ROOT}"
+        then
+          echo "Failed to pull ${SOURCE_IMAGE}" >&2
+          echo "Promote requires a green on-pr build for this SHA at the SOURCE_IMAGE tag." >&2
+          exit 1
+        fi
+
+        echo -n "${SOURCE_IMAGE}" | tee "$(results.SOURCE_IMAGE.path)"
+        ls -la "${ARTIFACT_ROOT}"
+        echo "[$(date --utc -Ins)] End pull-on-pr-artifact"
+      computeResources:
+        limits:
+          memory: 1Gi
+        requests:
+          cpu: "500m"
+          memory: 512Mi
+
+    - name: verify-sbom
+      image: $(params.BUILDER_IMAGE)
+      command:
+        - verify-npm-sbom
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: "100m"
+          memory: 128Mi
+
+    - name: assess-compliance
+      image: $(params.BUILDER_IMAGE)
+      env:
+        - name: TL_NPM_REGISTRY_URL
+          value: $(params.TL_NPM_REGISTRY_URL)
+      # Pass PACKAGES as discrete argv entries (avoids bash word-splitting/globbing).
+      # Network required: public Pulp npm metadata (no credentials).
+      command:
+        - assess-npm-compliance
+      args:
+        - $(params.WORKDIR_ROOT)/artifact
+        - $(params.WORKDIR_ROOT)/source
+        - $(params.PACKAGES[*])
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          cpu: "100m"
+          memory: 256Mi
+
+    - name: create-oci-artifact
+      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      workingDir: $(params.WORKDIR_ROOT)
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+      env:
+        - name: IMAGE
+          value: $(params.IMAGE)
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.IMAGE_EXPIRES_AFTER)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "[$(date --utc -Ins)] Pushing durable npm OCI snapshot: ${IMAGE}"
+
+        select-oci-auth "$IMAGE" > auth.json
+        AUTHFILE="$(realpath auth.json)"
+
+        EXPIRE_LABEL=()
+        [ -n "$IMAGE_EXPIRES_AFTER" ] && EXPIRE_LABEL=("--annotation" "quay.expires-after=$IMAGE_EXPIRES_AFTER")
+
+        PUSH_DIR="$(mktemp -d)"
+        if [[ -d "${ARTIFACT_ROOT}" ]]; then
+          cp -a "${ARTIFACT_ROOT}/." "${PUSH_DIR}/" 2>/dev/null || true
+        fi
+        cd "${PUSH_DIR}"
+
+        shopt -s nullglob dotglob
+        artifact_files=(*)
+        if [[ ${#artifact_files[@]} -eq 0 ]]; then
+          echo "No artifacts to push after promote staging" >&2
+          exit 1
+        fi
+        shopt -u dotglob
+
+        echo "Pushing OCI artifact to ${IMAGE}"
+        if ! retry oras push "$IMAGE" \
+          --registry-config "${AUTHFILE}" \
+          "${EXPIRE_LABEL[@]}" \
+          --artifact-type "application/vnd.npm.packages" \
+          "${artifact_files[@]}"
+        then
+          echo "Failed to push OCI artifact ${IMAGE} to registry" >&2
+          exit 1
+        fi
+
+        if ! RESULTING_DIGEST=$(retry oras resolve \
+          --registry-config "${AUTHFILE}" "${IMAGE}")
+        then
+          echo "Failed to get digest for ${IMAGE} from registry" >&2
+          exit 1
+        fi
+
+        echo -n "$IMAGE" | tee "$(results.IMAGE_URL.path)"
+        echo -n "$RESULTING_DIGEST" | tee "$(results.IMAGE_DIGEST.path)"
+        echo -n "${IMAGE}@${RESULTING_DIGEST}" | tee "$(results.IMAGE_REF.path)"
+
+        echo "[$(date --utc -Ins)] End create-oci-artifact"
+      computeResources:
+        limits:
+          memory: 1Gi
+        requests:
+          cpu: "1"
+          memory: 1Gi

@@ -91,6 +91,9 @@ Local builds: `podman login registry.redhat.io` before `docker`/`podman` build.
 | `build-npm-packages` | Build multiple package dirs (Tekton `PACKAGES` args) |
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
 | `generate-npm-sbom` | Syft → SPDX JSON embedded as `package/sboms/redhat.spdx.json` (Python parity) |
+| `verify-npm-sbom` | Promote: require embedded `redhat.spdx.json` in each `.tgz` |
+| `lookup-npm-tl-compliance` | Promote helper: public registry lookup for `name@version` level |
+| `assess-npm-compliance` | Promote: inductive L1/L2/L3 via manifests + `lookup-npm-tl-compliance`; write `*.tl-compliance.json` |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
 | `build_scripts/install-gcc-toolset.sh` | Install gcc-toolset from `gcc-toolset.lock` |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |
