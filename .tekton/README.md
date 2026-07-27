@@ -44,7 +44,18 @@ also building a new Tekton bundle for that `Task` that uses the new builder imag
 
 The `npm-builder` image is built the same way as `plumbing-builder`. The Tekton task
 `build-npm-package-oci-ta` (component `task-build-npm-package`) is consumed by the
-`npm-registry` onboarding repo.
+`npm-registry` onboarding repo (PR builds).
+
+The promote task `promote-npm-oci-ta` (component `task-promote-npm-oci`) copies a
+green `on-pr-<sha>.npm` OCI artifact to a durable `:<sha>.npm` snapshot. Verify and
+compliance logic live in npm-builder (`verify-npm-sbom`, `assess-npm-compliance`).
+Compliance queries the **public** TL npm registry (no pull secret); release upload
+still needs Pulp credentials like Python. oras pull/push stay in the task (same
+pattern as build). Bundle CI mirrors `task-build-npm-package` via
+`task-promote-npm-oci-{pull-request,push}.yaml`.
+Onboard the Konflux component + ImageRepository + SA
+`build-pipeline-task-promote-npm-oci` under `calunga-v2` before the first bundle
+build (same UI flow as `task-build-npm-package`).
 
 The `Components` use [nudges](https://konflux-ci.dev/docs/building/component-nudges/#what-is-nudged)
 to keep these dependencies up to date. If all is working as expected, Konflux should

@@ -26,7 +26,9 @@ The [npm-builder](./npm-builder) directory contains the factory image for npm Tr
 Published to Quay as `npm-builder` via Konflux component `npm-builder`.
 
 Tekton task `build-npm-package-oci-ta` is bundled as `task-build-npm-package` for the
-`npm-registry` onboarding pipeline.
+`npm-registry` onboarding pipeline. Promote task `promote-npm-oci-ta` is bundled as
+`task-promote-npm-oci` (on-pr OCI → durable snapshot + compliance sidecars via public
+Pulp npm metadata query).
 
 ## Utils Image
 

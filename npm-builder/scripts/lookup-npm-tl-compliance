@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Look up TL npm registry presence and compliance level for name@version.
+
+Public registry only (no credentials). Used by assess-npm-compliance.
+
+Exit codes:
+  0 — print compliance level (L1/L2/L3) to stdout
+  1 — package/version not on TL registry
+  2 — transport / unexpected registry error
+
+Usage:
+  lookup-npm-tl-compliance <registry-base-url> <name> <version>
+"""
+from __future__ import print_function
+
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+def pkg_path(name):
+    if name.startswith("@") and "/" in name:
+        scope, pkg = name.split("/", 1)
+        return "%s%%2F%s" % (
+            urllib.parse.quote(scope, safe=""),
+            urllib.parse.quote(pkg, safe=""),
+        )
+    return urllib.parse.quote(name, safe="")
+
+
+def get_json(url):
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)
+
+
+def main(argv):
+    if len(argv) != 4:
+        print(
+            "Usage: lookup-npm-tl-compliance <registry-base-url> <name> <version>",
+            file=sys.stderr,
+        )
+        return 2
+
+    registry, name, version = argv[1], argv[2], argv[3]
+    registry = registry.rstrip("/")
+    meta_url = "%s/%s" % (registry, pkg_path(name))
+
+    try:
+        data = get_json(meta_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return 1
+        print(
+            "[lookup-npm-tl-compliance] registry error %s for %s" % (exc.code, meta_url),
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            "[lookup-npm-tl-compliance] registry request failed for %s: %s"
+            % (meta_url, exc),
+            file=sys.stderr,
+        )
+        return 2
+
+    versions = data.get("versions") or {}
+    if version not in versions:
+        return 1
+
+    # Adjacent compliance sidecar when release has published it:
+    # express@5.2.1 → .../express/-/express-5.2.1.tl-compliance.json
+    short = name.split("/")[-1]
+    comp_url = "%s/%s/-/%s-%s.tl-compliance.json" % (
+        registry,
+        pkg_path(name),
+        short,
+        version,
+    )
+    try:
+        comp = get_json(comp_url)
+        level = comp.get("compliance_level")
+        if level in ("L1", "L2", "L3"):
+            print(level)
+            return 0
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (404, 301, 302):
+            print(
+                "[lookup-npm-tl-compliance] compliance fetch error %s for %s"
+                % (exc.code, comp_url),
+                file=sys.stderr,
+            )
+            return 2
+    except Exception:
+        pass
+
+    # On registry, no compliance record yet → bootstrap L3.
+    print("L3")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

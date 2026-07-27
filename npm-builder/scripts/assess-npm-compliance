@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# Assess dependency-closure compliance against the public TL npm registry.
+# Writes *.tl-compliance.json sidecars next to each .tgz (outside the tarball).
+#
+# Inductive levels (no npm lockfile):
+#   L1 — one or more requires_tl_packages missing from TL
+#   L2 — all requires on TL, but at least one dep is L1 or L2
+#   L3 — no requires, OR every requires_tl_packages dep is itself L3
+#
+# Dep compliance is read from (in order): this OCI's sidecars / in-run levels,
+# then lookup-npm-tl-compliance (public registry + adjacent compliance JSON).
+#
+# Usage:
+#   assess-npm-compliance [artifact-dir] [source-root] [package-dir ...]
+# Env:
+#   ARTIFACT_ROOT, SOURCE_ROOT
+#   TL_NPM_REGISTRY_URL  (default: packages.redhat.com .../javascript)
+#
+# Requires (npm-builder image): bash, find, sort, tar, jq, python3, sha256sum,
+# awk, grep, date, basename, dirname; plus lookup-npm-tl-compliance on PATH.
+set -euo pipefail
+
+ARTIFACT_DIR="${ARTIFACT_ROOT:-./artifact}"
+SOURCE_DIR="${SOURCE_ROOT:-}"
+PACKAGE_DIRS=()
+
+if [[ $# -ge 1 ]]; then
+    ARTIFACT_DIR="$1"
+    shift
+fi
+if [[ $# -ge 1 ]]; then
+    SOURCE_DIR="$1"
+    shift
+fi
+PACKAGE_DIRS=("$@")
+
+TL_NPM_REGISTRY_URL="${TL_NPM_REGISTRY_URL:-https://packages.redhat.com/api/pulp-content/public-trusted-libraries/javascript}"
+TL_NPM_REGISTRY_URL="${TL_NPM_REGISTRY_URL%/}"
+
+for cmd in find sort tar jq python3 sha256sum awk grep date basename dirname lookup-npm-tl-compliance; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        echo "[assess-npm-compliance] ERROR: required command not on PATH: ${cmd}" >&2
+        exit 1
+    fi
+done
+
+if [[ ! -d "${ARTIFACT_DIR}" ]]; then
+    echo "[assess-npm-compliance] missing artifact dir: ${ARTIFACT_DIR}" >&2
+    exit 1
+fi
+
+mapfile -t tarballs < <(find "${ARTIFACT_DIR}" -type f -name '*.tgz' | LC_ALL=C sort)
+
+if [[ ${#tarballs[@]} -eq 0 ]]; then
+    if [[ -f "${ARTIFACT_DIR}/.keep" ]]; then
+        echo "[assess-npm-compliance] no .tgz files (infra-only .keep); nothing to assess"
+        exit 0
+    fi
+    echo "[assess-npm-compliance] no .tgz files under ${ARTIFACT_DIR}" >&2
+    exit 1
+fi
+
+declare -A LOCAL_TL=()
+declare -A TGZ_FOR=() # name@version → tarball path
+for tgz in "${tarballs[@]}"; do
+    if pkg_json="$(tar -xOf "${tgz}" package/package.json 2>/dev/null)"; then
+        n="$(jq -r '.name // empty' <<<"${pkg_json}")"
+        v="$(jq -r '.version // empty' <<<"${pkg_json}")"
+        if [[ -n "${n}" && -n "${v}" ]]; then
+            LOCAL_TL["${n}@${v}"]=1
+            TGZ_FOR["${n}@${v}"]="${tgz}"
+        fi
+    fi
+done
+
+declare -a MANIFEST_PATHS=()
+if [[ ${#PACKAGE_DIRS[@]} -gt 0 ]]; then
+    if [[ -z "${SOURCE_DIR}" || ! -d "${SOURCE_DIR}" ]]; then
+        echo "[assess-npm-compliance] SOURCE_ROOT/source-root required when package dirs are given" >&2
+        exit 1
+    fi
+    for pkg in "${PACKAGE_DIRS[@]}"; do
+        m="${SOURCE_DIR}/${pkg}/manifest.json"
+        if [[ ! -f "${m}" ]]; then
+            m="${pkg}/manifest.json"
+        fi
+        if [[ ! -f "${m}" ]]; then
+            echo "[assess-npm-compliance] missing manifest: ${pkg}/manifest.json" >&2
+            exit 1
+        fi
+        MANIFEST_PATHS+=("${m}")
+    done
+elif [[ -n "${SOURCE_DIR}" && -d "${SOURCE_DIR}" ]]; then
+    while IFS= read -r m; do
+        MANIFEST_PATHS+=("${m}")
+    done < <(find "${SOURCE_DIR}/packages" -mindepth 3 -maxdepth 3 -type f -name manifest.json 2>/dev/null | LC_ALL=C sort)
+fi
+
+if [[ ${#MANIFEST_PATHS[@]} -eq 0 ]]; then
+    echo "[assess-npm-compliance] no manifests found; cannot compute requires_tl_packages" >&2
+    echo "  Provide source-root (onboarding checkout) and optional package dirs." >&2
+    exit 1
+fi
+
+declare -A OUTPUT_TO_MANIFEST=()
+declare -A MANIFEST_REQUIRES=()
+declare -A MANIFEST_SOURCE_URL=()
+declare -A MANIFEST_SOURCE_REF=()
+
+for m in "${MANIFEST_PATHS[@]}"; do
+    name="$(jq -r '.name' "${m}")"
+    version="$(jq -r '.version' "${m}")"
+    requires="$(jq -c '.requires_tl_packages // []' "${m}")"
+    src_url="$(jq -r '.source.url // empty' "${m}")"
+    src_ref="$(jq -r '.source.ref // empty' "${m}")"
+    MANIFEST_REQUIRES["${m}"]="${requires}"
+    MANIFEST_SOURCE_URL["${m}"]="${src_url}"
+    MANIFEST_SOURCE_REF["${m}"]="${src_ref}"
+
+    while IFS= read -r pulp_name; do
+        [[ -n "${pulp_name}" ]] || continue
+        OUTPUT_TO_MANIFEST["${pulp_name}@${version}"]="${m}"
+    done < <(jq -r '.outputs[].pulp_name // empty' "${m}")
+    OUTPUT_TO_MANIFEST["${name}@${version}"]="${m}"
+done
+
+# name@version → compliance level once known
+declare -A LEVELS=()
+
+# Returns 0 and prints level; exit 1 if missing from TL; exit 2 on transport error.
+lookup_dep_level() {
+    local pkg="$1"
+    local ver="$2"
+    local key="${pkg}@${ver}"
+
+    if [[ -n "${LEVELS[${key}]:-}" ]]; then
+        echo "${LEVELS[${key}]}"
+        return 0
+    fi
+
+    # Sidecar already written in this artifact dir (same promote / prior output).
+    if [[ -n "${TGZ_FOR[${key}]:-}" ]]; then
+        local tgz="${TGZ_FOR[${key}]}"
+        local base sidecar lvl
+        base="$(basename "${tgz}" .tgz)"
+        sidecar="$(dirname "${tgz}")/${base}.tl-compliance.json"
+        if [[ -f "${sidecar}" ]]; then
+            lvl="$(jq -r '.compliance_level // empty' "${sidecar}")"
+            if [[ -n "${lvl}" ]]; then
+                LEVELS["${key}"]="${lvl}"
+                echo "${lvl}"
+                return 0
+            fi
+        fi
+        # Same OCI but not assessed yet — caller should topo-order; treat as pending miss.
+        return 1
+    fi
+
+    lookup-npm-tl-compliance "${TL_NPM_REGISTRY_URL}" "${pkg}" "${ver}"
+}
+
+# Topological order of manifests: deps that appear in this OCI first.
+declare -a ORDERED_MANIFESTS=()
+declare -A MANIFEST_DONE=()
+pending=("${MANIFEST_PATHS[@]}")
+max_iters=$(( ${#pending[@]} + 2 ))
+for ((iter = 0; iter < max_iters; iter++)); do
+    [[ ${#pending[@]} -eq 0 ]] && break
+    declare -a next_pending=()
+    progress=0
+    for m in "${pending[@]}"; do
+        ready=1
+        while IFS= read -r dep; do
+            [[ -n "${dep}" ]] || continue
+            dep_name="$(jq -r '.name' <<<"${dep}")"
+            dep_ver="$(jq -r '.version' <<<"${dep}")"
+            dep_key="${dep_name}@${dep_ver}"
+            if [[ -n "${TGZ_FOR[${dep_key}]:-}" && -z "${LEVELS[${dep_key}]:-}" ]]; then
+                dep_m="${OUTPUT_TO_MANIFEST[${dep_key}]:-}"
+                if [[ -n "${dep_m}" && -z "${MANIFEST_DONE[${dep_m}]:-}" ]]; then
+                    ready=0
+                    break
+                fi
+            fi
+        done < <(jq -c '.[]' <<<"${MANIFEST_REQUIRES[${m}]}")
+        if [[ "${ready}" -eq 1 ]]; then
+            ORDERED_MANIFESTS+=("${m}")
+            MANIFEST_DONE["${m}"]=1
+            progress=1
+        else
+            next_pending+=("${m}")
+        fi
+    done
+    pending=("${next_pending[@]}")
+    [[ "${progress}" -eq 1 ]] || break
+done
+
+for m in "${MANIFEST_PATHS[@]}"; do
+    if [[ -z "${MANIFEST_DONE[${m}]:-}" ]]; then
+        ORDERED_MANIFESTS+=("${m}")
+    fi
+done
+
+assessed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+wrote=0
+
+assess_manifest() {
+    local m="$1"
+    local requires_json gaps_json gap_count level dep_levels_json
+    local dep dep_name dep_ver dep_key dep_level rc
+    local key tgz base sha256 sidecar pkg_json out_name out_version
+
+    requires_json="${MANIFEST_REQUIRES[${m}]}"
+    gaps_json='[]'
+    dep_levels_json='[]'
+
+    while IFS= read -r dep; do
+        [[ -n "${dep}" ]] || continue
+        dep_name="$(jq -r '.name' <<<"${dep}")"
+        dep_ver="$(jq -r '.version' <<<"${dep}")"
+        dep_key="${dep_name}@${dep_ver}"
+
+        set +e
+        dep_level="$(lookup_dep_level "${dep_name}" "${dep_ver}")"
+        rc=$?
+        set -e
+
+        if [[ "${rc}" -eq 2 ]]; then
+            exit 1
+        fi
+        if [[ "${rc}" -ne 0 ]]; then
+            gaps_json="$(jq -c --argjson gap "$(jq -n \
+                --arg name "${dep_name}" \
+                --arg version "${dep_ver}" \
+                '{name:$name, version:$version, reason:"not_on_tl_registry"}')" \
+                '. + [$gap]' <<<"${gaps_json}")"
+            continue
+        fi
+
+        LEVELS["${dep_key}"]="${dep_level}"
+        dep_levels_json="$(jq -c --argjson row "$(jq -n \
+            --arg name "${dep_name}" \
+            --arg version "${dep_ver}" \
+            --arg compliance_level "${dep_level}" \
+            '{name:$name, version:$version, compliance_level:$compliance_level}')" \
+            '. + [$row]' <<<"${dep_levels_json}")"
+    done < <(jq -c '.[]' <<<"${requires_json}")
+
+    gap_count="$(jq 'length' <<<"${gaps_json}")"
+    if [[ "${gap_count}" -gt 0 ]]; then
+        level="L1"
+    elif [[ "$(jq 'length' <<<"${requires_json}")" -eq 0 ]]; then
+        level="L3"
+    elif [[ "$(jq '[.[] | select(.compliance_level != "L3")] | length' <<<"${dep_levels_json}")" -eq 0 ]]; then
+        level="L3"
+    else
+        level="L2"
+    fi
+
+    for key in "${!OUTPUT_TO_MANIFEST[@]}"; do
+        [[ "${OUTPUT_TO_MANIFEST[${key}]}" == "${m}" ]] || continue
+        [[ -n "${TGZ_FOR[${key}]:-}" ]] || continue
+        tgz="${TGZ_FOR[${key}]}"
+        LEVELS["${key}"]="${level}"
+
+        pkg_json="$(tar -xOf "${tgz}" package/package.json)"
+        out_name="$(jq -r '.name' <<<"${pkg_json}")"
+        out_version="$(jq -r '.version' <<<"${pkg_json}")"
+        base="$(basename "${tgz}" .tgz)"
+        sha256="$(sha256sum "${tgz}" | awk '{print $1}')"
+        sidecar="$(dirname "${tgz}")/${base}.tl-compliance.json"
+
+        jq -n \
+            --arg name "${out_name}" \
+            --arg version "${out_version}" \
+            --arg compliance_level "${level}" \
+            --arg assessed_at "${assessed_at}" \
+            --argjson closure_gaps "${gaps_json}" \
+            --argjson requires_tl_packages "${requires_json}" \
+            --argjson dependency_levels "${dep_levels_json}" \
+            --arg src_url "${MANIFEST_SOURCE_URL[${m}]}" \
+            --arg src_ref "${MANIFEST_SOURCE_REF[${m}]}" \
+            --arg tarball "$(basename "${tgz}")" \
+            --arg tarball_sha256 "${sha256}" \
+            --arg registry "${TL_NPM_REGISTRY_URL}" \
+            '{
+              name: $name,
+              version: $version,
+              compliance_level: $compliance_level,
+              assessed_at: $assessed_at,
+              closure_gaps: $closure_gaps,
+              requires_tl_packages: $requires_tl_packages,
+              dependency_levels: $dependency_levels,
+              built_from: (if $src_url == "" then null else {url: $src_url, ref: $src_ref} end),
+              tarball: $tarball,
+              tarball_sha256: $tarball_sha256,
+              registry: $registry
+            } | with_entries(select(.value != null))' > "${sidecar}"
+
+        echo "[assess-npm-compliance] ${out_name}@${out_version} → ${level} (gaps=${gap_count}) → ${sidecar}"
+        wrote=$((wrote + 1))
+    done
+}
+
+for m in "${ORDERED_MANIFESTS[@]}"; do
+    assess_manifest "${m}"
+done
+
+echo "[assess-npm-compliance] wrote ${wrote} compliance sidecar(s) via ${TL_NPM_REGISTRY_URL}"
