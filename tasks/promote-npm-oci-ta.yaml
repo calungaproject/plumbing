@@ -13,7 +13,8 @@ spec:
     Promote a PR npm OCI artifact (on-pr-<sha>.npm) to a durable snapshot tag
     (<sha>.npm): oras pull → verify embedded SPDX SBOM → assess compliance
     against the public TL npm registry (*.tl-compliance.json) → oras push.
-    No rebuild. Verify/compliance scripts live in the npm-builder image.
+    No rebuild. When PACKAGES_STATUS is no-packages, skips pull and publishes
+    an empty (.keep) durable artifact so infra-only merges stay green.
   params:
     - name: SOURCE_IMAGE
       description: >-
@@ -36,6 +37,12 @@ spec:
         Package directories whose manifests supply requires_tl_packages
         (e.g. ["packages/express/5.2.1"])
       type: array
+    - name: PACKAGES_STATUS
+      description: >-
+        From identify-packages SCRIPT_OUTPUT: has-packages or no-packages.
+        no-packages skips on-pr pull and pushes a .keep durable tag.
+      type: string
+      default: has-packages
     - name: TL_NPM_REGISTRY_URL
       description: Public TL npm registry base URL (read-only; no credentials)
       type: string
@@ -64,7 +71,7 @@ spec:
     - name: IMAGE_REF
       description: OCI artifact reference (image@digest)
     - name: SOURCE_IMAGE
-      description: Source (on-pr) OCI reference that was promoted
+      description: Source (on-pr) OCI reference that was promoted (or skipped)
   volumes:
     - name: trusted-ca
       configMap:
@@ -83,6 +90,8 @@ spec:
         value: $(params.WORKDIR_ROOT)/artifact
       - name: SOURCE_ROOT
         value: $(params.WORKDIR_ROOT)/source
+      - name: PACKAGES_STATUS
+        value: $(params.PACKAGES_STATUS)
     volumeMounts:
       - mountPath: $(params.WORKDIR_ROOT)
         name: workdir
@@ -113,16 +122,28 @@ spec:
         #!/bin/bash
         set -euo pipefail
 
+        mkdir -p "${ARTIFACT_ROOT}"
+
+        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
+          echo "[$(date --utc -Ins)] No packages in this merge; skipping on-pr pull"
+          touch "${ARTIFACT_ROOT}/.keep"
+          echo -n "skipped:no-packages" | tee "$(results.SOURCE_IMAGE.path)"
+          echo "[$(date --utc -Ins)] End pull-on-pr-artifact (skipped)"
+          exit 0
+        fi
+
         echo "[$(date --utc -Ins)] Pulling on-pr npm OCI artifact: ${SOURCE_IMAGE}"
 
         select-oci-auth "${SOURCE_IMAGE}" > auth.json
         AUTHFILE="$(realpath auth.json)"
 
-        mkdir -p "${ARTIFACT_ROOT}"
         if ! retry oras pull --registry-config "${AUTHFILE}" "${SOURCE_IMAGE}" -o "${ARTIFACT_ROOT}"
         then
           echo "Failed to pull ${SOURCE_IMAGE}" >&2
-          echo "Promote requires a green on-pr build for this SHA at the SOURCE_IMAGE tag." >&2
+          echo "Promote requires a green on-pr OCI for this commit." >&2
+          echo "Note: GitHub merge/squash SHAs usually differ from the PR head SHA used" >&2
+          echo "for on-pr-<sha>.npm — the push revision must match the PR build revision," >&2
+          echo "or promote must resolve the PR artifact another way." >&2
           exit 1
         fi
 
@@ -138,8 +159,14 @@ spec:
 
     - name: verify-sbom
       image: $(params.BUILDER_IMAGE)
-      command:
-        - verify-npm-sbom
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
+          echo "[verify-sbom] skipped (no-packages)"
+          exit 0
+        fi
+        verify-npm-sbom
       computeResources:
         limits:
           memory: 512Mi
@@ -152,13 +179,20 @@ spec:
       env:
         - name: TL_NPM_REGISTRY_URL
           value: $(params.TL_NPM_REGISTRY_URL)
-      # Pass PACKAGES as discrete argv entries (avoids bash word-splitting/globbing).
+      # PACKAGES via args → "$@" (avoids bash word-splitting of Tekton array expansion).
       # Network required: public Pulp npm metadata (no credentials).
-      command:
-        - assess-npm-compliance
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
+          echo "[assess-compliance] skipped (no-packages)"
+          exit 0
+        fi
+        assess-npm-compliance \
+          "$(params.WORKDIR_ROOT)/artifact" \
+          "$(params.WORKDIR_ROOT)/source" \
+          "$@"
       args:
-        - $(params.WORKDIR_ROOT)/artifact
-        - $(params.WORKDIR_ROOT)/source
         - $(params.PACKAGES[*])
       computeResources:
         limits:
