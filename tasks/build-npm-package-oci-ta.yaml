@@ -8,6 +8,9 @@ metadata:
     tekton.dev/tags: npm, konflux, trusted-libraries
   labels:
     app.kubernetes.io/version: "0.1"
+    # Conforma pipeline-required-tasks selector (see policy-data/).
+    build.appstudio.redhat.com/build_type: build-npm
+
 spec:
   description: >-
     Build npm Trusted Libraries packages from onboarding recipes, generate an
