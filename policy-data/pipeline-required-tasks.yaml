@@ -1,0 +1,27 @@
+---
+# Required Tekton tasks for Calunga npm factory / promote pipelines.
+#
+# Keys must match the selector Conforma reads from the attestation:
+#   1. build.appstudio.redhat.com/build_type on the build Task, or
+#   2. pipelines.openshift.io/runtime on the PipelineRun / Pipeline
+#
+# Task names are Task metadata.name values (not Pipeline task names).
+# Consumed via ECP data source:
+#   github.com/calungaproject/plumbing//policy-data?ref=main
+#
+# See: https://conforma.dev/docs/policy/packages/release_tasks.html
+pipeline-required-tasks:
+  build-npm:
+    - effective_on: "2026-01-01T00:00:00Z"
+      tasks:
+        - init
+        - git-clone-oci-ta
+        - run-script-oci-ta
+        - build-npm-package-oci-ta
+  promote-npm:
+    - effective_on: "2026-01-01T00:00:00Z"
+      tasks:
+        - init
+        - git-clone-oci-ta
+        - run-script-oci-ta
+        - promote-npm-oci-ta
