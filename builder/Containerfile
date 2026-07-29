@@ -1,7 +1,7 @@
 # default to latest supported policy, x86_64
 ARG BASEIMAGE=registry.access.redhat.com/ubi8/ubi@sha256:8e573e1d76ff27f9e1219b33c114e48b0f7b86f2e6858cd8861e84431c7416e4
 ARG POLICY=manylinux_2_28
-ARG PLATFORM=x86_64
+ARG PLATFORM=
 ARG DEVTOOLSET_ROOTPATH=/opt/rh/gcc-toolset-14/root
 ARG LD_LIBRARY_PATH_ARG=${DEVTOOLSET_ROOTPATH}/usr/lib64:${DEVTOOLSET_ROOTPATH}/usr/lib:${DEVTOOLSET_ROOTPATH}/usr/lib64/dyninst:${DEVTOOLSET_ROOTPATH}/usr/lib/dyninst
 ARG PREPEND_PATH=/usr/local/bin:${DEVTOOLSET_ROOTPATH}/usr/bin:
@@ -146,7 +146,8 @@ FROM build_base AS build_rust
 COPY build_scripts/build-rust.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export RUST_VERSION=1.95.0 && \
-    export RUST_HASH=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 && \
+    export RUST_HASH_x86_64=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 && \
+    export RUST_HASH_aarch64=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792 && \
     export RUST_DOWNLOAD_URL=https://static.rust-lang.org/rustup/dist && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 

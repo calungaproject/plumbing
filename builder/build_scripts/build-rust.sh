@@ -13,25 +13,29 @@ source "${MY_DIR}/build_utils.sh"
 
 # Install a more recent Rust
 check_var "${RUST_VERSION}"
-check_var "${RUST_HASH}"
 check_var "${RUST_DOWNLOAD_URL}"
 
 PREFIX=/opt/_internal/rust-${RUST_VERSION}
 
-# Download and verify rustup-init
+# Download and verify rustup-init (per-arch binary with per-arch hash)
 RUSTUP_INIT="rustup-init"
 if [ "${AUDITWHEEL_ARCH}" == "x86_64" ]; then
     RUSTUP_ARCH="x86_64-unknown-linux-gnu"
+    RUST_HASH="${RUST_HASH_x86_64}"
 elif [ "${AUDITWHEEL_ARCH}" == "aarch64" ]; then
     RUSTUP_ARCH="aarch64-unknown-linux-gnu"
+    RUST_HASH="${RUST_HASH_aarch64}"
 elif [ "${AUDITWHEEL_ARCH}" == "i686" ]; then
     RUSTUP_ARCH="i686-unknown-linux-gnu"
+    RUST_HASH="${RUST_HASH_i686}"
 elif [ "${AUDITWHEEL_ARCH}" == "armv7l" ]; then
     RUSTUP_ARCH="armv7-unknown-linux-gnueabihf"
+    RUST_HASH="${RUST_HASH_armv7l}"
 else
     echo "Unsupported architecture: ${AUDITWHEEL_ARCH}"
     exit 1
 fi
+check_var "${RUST_HASH}"
 
 fetch_source "${RUSTUP_INIT}" "${RUST_DOWNLOAD_URL}/${RUSTUP_ARCH}"
 check_sha256sum "${RUSTUP_INIT}" "${RUST_HASH}"
