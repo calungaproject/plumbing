@@ -32,7 +32,7 @@ fi
 
 SYSTEM_ACLOCAL="$(which aclocal)"
 
-fetch_source "${AUTOMAKE_ROOT}.tar.gz" "${AUTOMAKE_DOWNLOAD_URL}"
+fetch_source "${AUTOMAKE_ROOT}.tar.gz" "${AUTOMAKE_DOWNLOAD_URL}" "${AUTOMAKE_FALLBACK_URL:-}"
 check_sha256sum "${AUTOMAKE_ROOT}.tar.gz" "${AUTOMAKE_HASH}"
 tar -zxf "${AUTOMAKE_ROOT}.tar.gz"
 pushd "${AUTOMAKE_ROOT}"
