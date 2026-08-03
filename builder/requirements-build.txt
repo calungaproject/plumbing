@@ -197,9 +197,9 @@ types-psutil==7.2.1.20251231 \
     --hash=sha256:40735ca2fc818aed9dcbff7acb3317a774896615e3f4a7bd356afa224b9178e3 \
     --hash=sha256:dbf9df530b1130e131e4211ed8cea62c08007bfa69faf2883d296bd241d30e4a
     # via mypy
-types-setuptools==80.9.0.20250822 \
-    --hash=sha256:e1e92682fa07226415396bb4e2d31f116a16ffbe583b05b01f9910fcdea3b7e8 \
-    --hash=sha256:ec908f825134af3964932e6b011dce90f54c291015139cd9cdf79741b7d31b3c
+types-setuptools==80.10.0.20260124 \
+    --hash=sha256:1b86d9f0368858663276a0cbe5fe5a9722caf94b5acde8aba0399a6e90680f20 \
+    --hash=sha256:efed7e044f01adb9c2806c7a8e1b6aa3656b8e382379b53d5f26ee3db24d4c01
     # via mypy
 typing-extensions==4.14.1 \
     --hash=sha256:38b39f4aeeab64884ce9f74c94263ef78f3c22467c8724005483154c26648d36 \
