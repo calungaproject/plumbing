@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+# Upload npm .tgz packages to a Pulp npm repository (REST + curl).
+#
+# Env:
+#   FILES_DIR            Directory tree containing *.tgz (required)
+#   PULP_BASE_URL        Pulp base URL (required)
+#   PULP_API_ROOT        API root, e.g. /api/ (default: /api/)
+#   PULP_DOMAIN          Pulp domain (required)
+#   PULP_REPOSITORY      npm repository name (required)
+#   PULP_FILE_REPOSITORY Optional file repo for *.tl-compliance.json sidecars
+#
+# Credentials: /etc/service-account-secret/{username,password}
+#
+set -euo pipefail
+
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+PULP_BASE_URL="${PULP_BASE_URL:?PULP_BASE_URL required}"
+PULP_API_ROOT="${PULP_API_ROOT:-/api/}"
+PULP_DOMAIN="${PULP_DOMAIN:?PULP_DOMAIN required}"
+PULP_REPOSITORY="${PULP_REPOSITORY:?PULP_REPOSITORY required}"
+PULP_FILE_REPOSITORY="${PULP_FILE_REPOSITORY:-}"
+
+# shellcheck source=npm-common.sh
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Prefer sibling when running from a checkout; fall back to PATH install layout.
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+readonly CURL_RETRY=3
+readonly CURL_MAX_TIME_QUERY_SECONDS=30
+readonly CURL_MAX_TIME_UPLOAD_SECONDS=120
+readonly CURL_MAX_TIME_SIDECAR_SECONDS=60
+readonly COMPLIANCE_LABEL_KEY="tl.compliance_level"
+readonly MAX_PACKAGE_JSON_BYTES=1048576  # 1 MiB
+readonly MAX_COMPLIANCE_SIDECAR_BYTES=1048576  # 1 MiB
+
+
+# Empty / missing FILES_DIR is a successful no-op (infra-only snapshots).
+# Skip Pulp auth/API entirely when there is nothing to upload.
+mkdir -p "${FILES_DIR}"
+ls -la "${FILES_DIR}"
+tgz_count="$(find "${FILES_DIR}" -type f -name '*.tgz' | wc -l)"
+if [[ "${tgz_count}" -eq 0 ]]; then
+  echo "No .tgz packages under ${FILES_DIR}; skipping Pulp upload (infra-only no-op)"
+  exit 0
+fi
+
+PULP_USER="$(< /etc/service-account-secret/username)"
+PULP_PASS="$(< /etc/service-account-secret/password)"
+
+# Normalize so "/api" and "/api/" both yield ".../api/pulp/..."
+PULP_API_ROOT_NORM="${PULP_API_ROOT%/}/"
+PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT_NORM}pulp/${PULP_DOMAIN}/api/v3/"
+AUTH=(-u "${PULP_USER}:${PULP_PASS}")
+
+# Run curl and return stdout. On failure, print the response body to
+# stderr so --fail-with-body payloads are visible in Tekton logs.
+curl_capture() {
+  local out ec=0
+  out="$(curl "$@")" || ec=$?
+  if [[ "${ec}" -ne 0 ]]; then
+    echo "ERROR: curl failed (exit ${ec})" >&2
+    [[ -n "${out}" ]] && echo "${out}" >&2
+    return "${ec}"
+  fi
+  printf '%s' "${out}"
+}
+
+refresh_repository_version() {
+  local repo_json
+  repo_json="$(curl_capture --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    -G \
+    "${AUTH[@]}" \
+    "${PULP_QUERY_BASE}repositories/npm/npm/" \
+    --data-urlencode "name=${PULP_REPOSITORY}")"
+  PULP_REPOSITORY_VERSION="$(jq -r \
+    '.results[0].latest_version_href // empty' <<<"${repo_json}")"
+  PULP_REPOSITORY_HREF="$(jq -r \
+    '.results[0].pulp_href // empty' <<<"${repo_json}")"
+  if [[ -z "${PULP_REPOSITORY_HREF}" || "${PULP_REPOSITORY_HREF}" == "null" ]]; then
+    echo "ERROR: npm repository ${PULP_REPOSITORY} not found in domain ${PULP_DOMAIN}" >&2
+    return 1
+  fi
+  if [[ -z "${PULP_REPOSITORY_VERSION}" || "${PULP_REPOSITORY_VERSION}" == "null" ]]; then
+    echo "ERROR: npm repository ${PULP_REPOSITORY} has no latest_version_href" >&2
+    return 1
+  fi
+}
+
+refresh_repository_version
+echo "Repository: ${PULP_REPOSITORY_HREF}"
+echo "Version: ${PULP_REPOSITORY_VERSION}"
+
+PULP_FILE_REPOSITORY_HREF=""
+if [[ -n "${PULP_FILE_REPOSITORY:-}" ]]; then
+  file_repo_json="$(curl_capture --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    -G \
+    "${AUTH[@]}" \
+    "${PULP_QUERY_BASE}repositories/file/file/" \
+    --data-urlencode "name=${PULP_FILE_REPOSITORY}")"
+  PULP_FILE_REPOSITORY_HREF="$(jq -r \
+    '.results[0].pulp_href // empty' <<<"${file_repo_json}")"
+  if [[ -z "${PULP_FILE_REPOSITORY_HREF}" || "${PULP_FILE_REPOSITORY_HREF}" == "null" ]]; then
+    echo "ERROR: file repository ${PULP_FILE_REPOSITORY} not found in domain ${PULP_DOMAIN}" >&2
+    exit 1
+  fi
+  echo "File repository (compliance sidecars): ${PULP_FILE_REPOSITORY_HREF}"
+else
+  echo "PULP_FILE_REPOSITORY unset; skipping *.tl-compliance.json file uploads (labels still apply)"
+fi
+
+# Returns:
+#   0 -> exists with matching sha256 (sets EXISTING_CONTENT_HREF, EXISTING_LABEL)
+#   2 -> not found
+#   3 -> exists with different sha256
+check_package_exists_with_digest() {
+  local name="${1}"
+  local version="${2}"
+  local local_file="${3}"
+  local local_sha response count content_href artifact_href artifact_json server_sha
+
+  EXISTING_CONTENT_HREF=""
+  EXISTING_LABEL=""
+
+  # Always use the latest repository version so earlier uploads in this
+  # run are visible to subsequent existence checks.
+  refresh_repository_version
+
+  local_sha="$(sha256sum "${local_file}" | awk '{print $1}')"
+  response="$(curl_capture --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    -G \
+    "${AUTH[@]}" \
+    "${PULP_QUERY_BASE}content/npm/packages/" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "version=${version}" \
+    --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}")"
+  count="$(jq -r '.count // (.results|length) // 0' <<<"${response}")"
+  if [[ "${count}" -eq 0 ]]; then
+    return 2
+  fi
+
+  # Require exactly one result that matches the requested name/version
+  # (do not trust results[0] alone if filters are loose or count > 1).
+  match_json="$(jq -c \
+    --arg name "${name}" \
+    --arg version "${version}" '
+    [.results[]?
+      | select(
+          ((.name // "") == $name)
+          and ((.version // "") == $version)
+        )
+    ]
+    | if length == 1 then .[0]
+      else empty end
+  ' <<<"${response}")"
+  if [[ -z "${match_json}" ]]; then
+    echo "ERROR: expected exactly one Pulp package for ${name}@${version}," \
+      "got count=${count} with no unique name/version match" >&2
+    return 1
+  fi
+
+  content_href="$(jq -r '.pulp_href // empty' <<<"${match_json}")"
+  EXISTING_CONTENT_HREF="${content_href}"
+  EXISTING_LABEL="$(jq -r \
+    --arg key "${COMPLIANCE_LABEL_KEY}" \
+    '.pulp_labels[$key] // empty' <<<"${match_json}")"
+
+  artifact_href="$(jq -r '.artifact // empty' <<<"${match_json}")"
+  if [[ -z "${artifact_href}" || "${artifact_href}" == "null" ]]; then
+    # Detail fetch when list omits artifact
+    response="$(curl_capture --fail-with-body --silent \
+      --retry "${CURL_RETRY}" \
+      --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+      "${AUTH[@]}" "${PULP_BASE_URL}${content_href}")"
+    artifact_href="$(jq -r '.artifact // empty' <<<"${response}")"
+    EXISTING_LABEL="$(jq -r \
+      --arg key "${COMPLIANCE_LABEL_KEY}" \
+      '.pulp_labels[$key] // empty' <<<"${response}")"
+  fi
+  if [[ -z "${artifact_href}" || "${artifact_href}" == "null" ]]; then
+    echo "ERROR: no artifact href for existing ${name}@${version}" >&2
+    return 1
+  fi
+
+  artifact_json="$(curl_capture --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    "${AUTH[@]}" "${PULP_BASE_URL}${artifact_href}")"
+  server_sha="$(jq -r '.sha256 // empty' <<<"${artifact_json}")"
+  if [[ -n "${server_sha}" && "${server_sha}" == "${local_sha}" ]]; then
+    return 0
+  fi
+  echo "ERROR: ${name}@${version} exists in Pulp with different content" >&2
+  echo "  Local sha256:  ${local_sha}" >&2
+  echo "  Remote sha256: ${server_sha:-unknown}" >&2
+  return 3
+}
+
+apply_compliance_label() {
+  local content_href="${1}"
+  local level="${2}"
+  local current="${3:-}"
+
+  [[ -n "${level}" ]] || return 0
+  if [[ "${current}" == "${level}" ]]; then
+    echo "  Label ${COMPLIANCE_LABEL_KEY}=${level} already set"
+    return 0
+  fi
+
+  echo "  Setting ${COMPLIANCE_LABEL_KEY}=${level} on ${content_href}"
+  curl --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    "${AUTH[@]}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc --arg k "${COMPLIANCE_LABEL_KEY}" --arg v "${level}" \
+      '{key: $k, value: $v}')" \
+    "${PULP_BASE_URL}${content_href}set_label/"
+}
+
+upload_compliance_sidecar() {
+  local sidecar="${1}"
+  local pkg_name="${2}"
+  local pkg_version="${3}"
+  local base digest safe_name safe_version relative_path
+  [[ -f "${sidecar}" ]] || return 0
+  if [[ -z "${PULP_FILE_REPOSITORY_HREF}" ]]; then
+    return 0
+  fi
+  # Collapse package-controlled metadata into a single path segment so
+  # '/', '\', '..', and other separators cannot manipulate the Pulp path.
+  safe_segment() {
+    local out
+    out="$(printf '%s' "${1}" | sed -E 's/[^A-Za-z0-9._@+-]+/_/g')"
+    out="${out#"${out%%[![:space:]]*}"}"
+    out="${out%"${out##*[![:space:]]}"}"
+    if [[ -z "${out}" || "${out}" == "." || "${out}" == ".." ]]; then
+      out="unknown"
+    fi
+    printf '%s' "${out}"
+  }
+  base="$(safe_segment "$(basename "${sidecar}")")"
+  digest="$(sha256sum "${sidecar}" | awk '{print $1}')"
+  safe_name="$(safe_segment "${pkg_name}")"
+  safe_version="$(safe_segment "${pkg_version}")"
+  relative_path="npm-tl-compliance/${safe_name}/${safe_version}/${digest}/${base}"
+  curl --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_SIDECAR_SECONDS}" \
+    "${AUTH[@]}" \
+    -X POST \
+    -F "file=@${sidecar}" \
+    --form-string "repository=${PULP_FILE_REPOSITORY_HREF}" \
+    --form-string "relative_path=${relative_path}" \
+    "${PULP_QUERY_BASE}content/file/files/" \
+    && echo "Uploaded compliance sidecar ${sidecar} -> ${relative_path}" \
+    || echo "WARNING: could not upload compliance sidecar ${sidecar}"
+}
+
+uploaded=()
+skipped_existing=()
+failed=()
+
+while IFS= read -r -d '' file; do
+  if ! assert_tar_member_size "${file}" "package/package.json" \
+    "${MAX_PACKAGE_JSON_BYTES}"; then
+    echo "ERROR: ${file} missing or oversized package/package.json" >&2
+    failed+=("${file}")
+    continue
+  fi
+  if ! pkg_json="$(tar -xOf "${file}" package/package.json 2>/dev/null)"; then
+    echo "ERROR: ${file} missing package/package.json or is not a valid tarball" >&2
+    failed+=("${file}")
+    continue
+  fi
+  name="$(jq -r '.name // empty' <<<"${pkg_json}")"
+  version="$(jq -r '.version // empty' <<<"${pkg_json}")"
+  if [[ -z "${name}" || -z "${version}" ]]; then
+    echo "ERROR: ${file} package.json missing non-empty name/version" >&2
+    failed+=("${file}")
+    continue
+  fi
+
+  compliance_level=""
+  sidecar="${file%.tgz}.tl-compliance.json"
+  if [[ -f "${sidecar}" ]]; then
+    sidecar_size="$(wc -c < "${sidecar}")"
+    if [[ "${sidecar_size}" -gt "${MAX_COMPLIANCE_SIDECAR_BYTES}" ]]; then
+      echo "ERROR: compliance sidecar ${sidecar} is ${sidecar_size} bytes" \
+        "(max ${MAX_COMPLIANCE_SIDECAR_BYTES})" >&2
+      failed+=("${file}")
+      continue
+    fi
+    if ! compliance_level="$(jq -er '
+      if type != "object" then
+        error("sidecar root must be a JSON object")
+      elif (.compliance_level | type) != "string" then
+        error("compliance_level must be a string")
+      elif (.compliance_level | test("^L[123]$") | not) then
+        error("compliance_level must be L1, L2, or L3")
+      else .compliance_level end
+    ' "${sidecar}" 2>/tmp/sidecar-jq.err)"; then
+      echo "ERROR: invalid compliance sidecar ${sidecar}:" \
+        "$(cat /tmp/sidecar-jq.err 2>/dev/null || true)" >&2
+      failed+=("${file}")
+      continue
+    fi
+  fi
+
+  echo "Checking if ${name}@${version} (${file}) exists in Pulp..."
+  status=0
+  check_package_exists_with_digest "${name}" "${version}" "${file}" || status=$?
+
+  if [[ "${status}" -eq 0 ]]; then
+    echo "Skipping upload of ${file} - identical content already in Pulp"
+    if [[ -n "${compliance_level}" ]]; then
+      if ! apply_compliance_label \
+        "${EXISTING_CONTENT_HREF}" "${compliance_level}" "${EXISTING_LABEL}"; then
+        echo "ERROR: could not set ${COMPLIANCE_LABEL_KEY}=${compliance_level}" \
+          "on existing ${name}@${version}" >&2
+        failed+=("${file}")
+        continue
+      fi
+    fi
+    skipped_existing+=("${file}")
+    upload_compliance_sidecar "${sidecar}" "${name}" "${version}"
+    continue
+  elif [[ "${status}" -eq 3 || "${status}" -eq 1 ]]; then
+    failed+=("${file}")
+    continue
+  elif [[ "${status}" -ne 2 ]]; then
+    echo "ERROR: unexpected existence check status ${status} for ${file}" >&2
+    failed+=("${file}")
+    continue
+  fi
+
+  echo "Uploading ${file} (compliance=${compliance_level:-none})..."
+  # Use --form-string for text fields: -F treats a leading @ in the
+  # value as "read from file", which breaks scoped names (@scope/pkg).
+  CURL_ARGS=(
+    --fail-with-body
+    --silent
+    --retry "${CURL_RETRY}"
+    --max-time "${CURL_MAX_TIME_UPLOAD_SECONDS}"
+    "${AUTH[@]}"
+    -X POST
+    -F "file=@${file}"
+    --form-string "repository=${PULP_REPOSITORY_HREF}"
+    --form-string "name=${name}"
+    --form-string "version=${version}"
+  )
+  if [[ -n "${compliance_level}" ]]; then
+    labels_json="$(jq -nc --arg lvl "${compliance_level}" \
+      --arg key "${COMPLIANCE_LABEL_KEY}" \
+      '{ ($key): $lvl }')"
+    CURL_ARGS+=(--form-string "pulp_labels=${labels_json}")
+  fi
+
+  if curl "${CURL_ARGS[@]}" \
+    "${PULP_QUERY_BASE}content/npm/packages/upload/"; then
+    echo "Uploaded ${file}"
+    uploaded+=("${file}")
+    # New content creates a new repository version; refresh so later
+    # existence checks in this run see the upload.
+    refresh_repository_version
+    echo "  Repository version now: ${PULP_REPOSITORY_VERSION}"
+    upload_compliance_sidecar "${sidecar}" "${name}" "${version}"
+  else
+    echo "ERROR: Failed to upload ${file}"
+    failed+=("${file}")
+  fi
+done < <(find "${FILES_DIR}" -type f -name '*.tgz' -print0 | sort -z)
+
+echo ""
+echo "=============================="
+echo "  npm Pulp Upload Summary"
+echo "=============================="
+echo "Uploaded (${#uploaded[@]}):"
+for f in "${uploaded[@]+"${uploaded[@]}"}"; do echo "  - ${f}"; done
+echo "Skipped - already in Pulp (${#skipped_existing[@]}):"
+for f in "${skipped_existing[@]+"${skipped_existing[@]}"}"; do echo "  - ${f}"; done
+echo "Failed (${#failed[@]}):"
+for f in "${failed[@]+"${failed[@]}"}"; do echo "  - ${f}"; done
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  echo "ERROR: ${#failed[@]} upload(s) failed"
+  exit 1
+fi
