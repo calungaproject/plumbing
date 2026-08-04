@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pull npm package artifacts from digest-pinned snapshot images with oras.
+#
+# Env:
+#   FILES_DIR      Output root for digest-namespaced extract dirs (required)
+#   IMAGES_TXT     File listing digest-pinned image refs (required)
+#   ORAS_OPTIONS   Extra oras flags (optional, shell-split)
+#
+set -euo pipefail
+
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+IMAGES_TXT="${IMAGES_TXT:?IMAGES_TXT required}"
+
+AUTHFILE='/tmp/auth.json'
+mkdir -p "${FILES_DIR}"
+
+while read -r IMAGE; do
+  [[ -n "${IMAGE}" ]] || continue
+  echo "Processing ${IMAGE}"
+  # Require digest-pinned refs; sanitize for path use (colon/slash unsafe).
+  DIGEST="${IMAGE##*@}"
+  if [[ ! "${DIGEST}" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo "ERROR: image must be digest-pinned (got ${IMAGE})" >&2
+    exit 1
+  fi
+  DIGEST_SAFE="${DIGEST//[:\/]/_}"
+  OUT_DIR="${FILES_DIR}/${DIGEST_SAFE}"
+  mkdir -p "${OUT_DIR}"
+  select-oci-auth "${IMAGE}" > "${AUTHFILE}"
+  # ORAS_OPTIONS is intentionally unquoted so callers can pass multiple flags
+  # (e.g. "--insecure --registry-config ...").
+  # shellcheck disable=SC2086
+  retry oras pull ${ORAS_OPTIONS:-} --registry-config "${AUTHFILE}" \
+    "${IMAGE}" -o "${OUT_DIR}"
+done < "${IMAGES_TXT}"
+
+# Top-level only — recursive listing balloons Tekton logs on large trees.
+echo "Extracted top-level entries under ${FILES_DIR}:"
+ls -la "${FILES_DIR}"
