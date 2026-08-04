@@ -53,7 +53,7 @@ def format_summary_row(path):
     except Exception:
         w = os.path.splitext(os.path.basename(path))[0]
         s, r = 'FAIL', 'verify_import failed without output'
-    print(f'{s}\t{w}\t{r}')
+    return (s, w, r)
 
 
 def annotate_dep(path, dep_string):
@@ -64,22 +64,25 @@ def annotate_dep(path, dep_string):
         json.dump(d, f)
 
 
-def match_installed_wheels(wheel_index_path):
+def match_installed_wheels(wheel_index_path, pip_json=None):
     with open(wheel_index_path) as f:
         wheel_index = json.load(f)
-    installed = json.load(sys.stdin)
-    for pkg in installed:
+    if pip_json is None:
+        pip_json = json.load(sys.stdin)
+    matched = []
+    for pkg in pip_json:
         key = normalize(pkg['name']) + '-' + pkg['version']
         whl = wheel_index.get(key)
         if whl:
-            print(whl)
+            matched.append(whl)
+    return matched
 
 
 def lookup_wheel(wheel_index_path, name, version):
     with open(wheel_index_path) as f:
         wheel_index = json.load(f)
     key = normalize(name) + '-' + version
-    print(wheel_index.get(key, ''))
+    return wheel_index.get(key, '')
 
 
 def extract_missing_module(path):
@@ -92,30 +95,30 @@ def extract_missing_module(path):
                 if 'No module named' in msg:
                     mod = msg.split("'")[1] if "'" in msg else ''
                     if mod:
-                        print(mod.split('.')[0])
-                        return
+                        return mod.split('.')[0]
     except Exception:
         pass
+    return None
 
 
-def find_missing_wheel(module, tried_csv, import_map_path):
+def find_missing_wheel(module, tried, import_map_path):
     target = normalize(module)
-    tried = set(tried_csv.split(',')) if tried_csv else set()
+    if isinstance(tried, str):
+        tried = set(tried.split(',')) if tried else set()
     try:
         with open(import_map_path) as f:
             import_map = json.load(f)
         for whl in import_map.get(target, []):
             if whl not in tried:
-                print(whl)
-                return
+                return whl
     except Exception:
         pass
     for fname in sorted(os.listdir('.')):
         if (fname.endswith('.whl')
                 and normalize(fname.split('-')[0]) == target
                 and fname not in tried):
-            print(fname)
-            return
+            return fname
+    return None
 
 
 def write_failure_result(wheel_name, reason):
@@ -152,8 +155,9 @@ def read_built_wheels(path='/tmp/built-wheels.json'):
         return ''
 
 
-def group_has_built(summary_path, built_wheels_csv, wheel_index_path='/tmp/wheel-index.json'):
-    built = set(built_wheels_csv.split(',')) if built_wheels_csv else set()
+def group_has_built(summary_path, built_wheels, wheel_index_path='/tmp/wheel-index.json'):
+    if isinstance(built_wheels, str):
+        built_wheels = set(built_wheels.split(',')) if built_wheels else set()
     try:
         with open(summary_path) as f:
             entries = json.load(f)
@@ -164,17 +168,16 @@ def group_has_built(summary_path, built_wheels_csv, wheel_index_path='/tmp/wheel
                 continue
             key = normalize(e.get('name', '')) + '-' + str(e.get('version', ''))
             whl = wheel_index.get(key, '')
-            if whl in built:
-                print('yes')
-                return
+            if whl in built_wheels:
+                return True
     except Exception as exc:
         print(f'WARNING: {exc}', file=sys.stderr)
-    print('no')
+    return False
 
 
 def lookup_primary(label_raw, summary_path, wheel_index_path):
     if '__' not in label_raw:
-        return
+        return None
     label_name = normalize(label_raw.split('__', 1)[0])
     with open(wheel_index_path) as f:
         wheel_index = json.load(f)
@@ -187,8 +190,40 @@ def lookup_primary(label_raw, summary_path, wheel_index_path):
             version = entry['version']
             key = norm + '-' + version
             wheel = wheel_index.get(key, '')
-            print(f'{name}\n{version}\n{wheel}')
-            return
+            return (name, version, wheel)
+    return None
+
+
+def _cli_format_row(args):
+    s, w, r = format_summary_row(args[0])
+    print(f'{s}\t{w}\t{r}')
+
+
+def _cli_match_installed(args):
+    for whl in match_installed_wheels(args[0]):
+        print(whl)
+
+
+def _cli_extract_missing(args):
+    result = extract_missing_module(args[0])
+    if result:
+        print(result)
+
+
+def _cli_find_missing(args):
+    result = find_missing_wheel(args[0], args[1], args[2])
+    if result:
+        print(result)
+
+
+def _cli_group_has_built(args):
+    print('yes' if group_has_built(args[0], args[1]) else 'no')
+
+
+def _cli_lookup_primary(args):
+    result = lookup_primary(args[0], args[1], args[2])
+    if result:
+        print(f'{result[0]}\n{result[1]}\n{result[2]}')
 
 
 COMMANDS = {
@@ -198,18 +233,18 @@ COMMANDS = {
         args[0],
         prefix=args[args.index('--prefix') + 1] if '--prefix' in args else '  ',
     ),
-    'format-row': lambda args: format_summary_row(args[0]),
+    'format-row': lambda args: _cli_format_row(args),
     'annotate-dep': lambda args: annotate_dep(args[0], args[1]),
-    'match-installed': lambda args: match_installed_wheels(args[0]),
-    'lookup-wheel': lambda args: lookup_wheel(args[0], args[1], args[2]),
-    'extract-missing': lambda args: extract_missing_module(args[0]),
-    'find-missing': lambda args: find_missing_wheel(args[0], args[1], args[2]),
+    'match-installed': lambda args: _cli_match_installed(args),
+    'lookup-wheel': lambda args: print(lookup_wheel(args[0], args[1], args[2])),
+    'extract-missing': lambda args: _cli_extract_missing(args),
+    'find-missing': lambda args: _cli_find_missing(args),
     'write-failure': lambda args: write_failure_result(args[0], args[1]),
     'write-skip': lambda args: write_skip_result(args[0], args[1]),
     'read-built-status': lambda _: print(read_built_status()),
     'read-built-wheels': lambda _: print(read_built_wheels()),
-    'group-has-built': lambda args: group_has_built(args[0], args[1]),
-    'lookup-primary': lambda args: lookup_primary(args[0], args[1], args[2]),
+    'group-has-built': lambda args: _cli_group_has_built(args),
+    'lookup-primary': lambda args: _cli_lookup_primary(args),
 }
 
 if __name__ == '__main__':
