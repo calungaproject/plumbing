@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Verify and store Tekton Chains SLSA provenance for snapshot images.
+#
+# Env:
+#   FILES_DIR                      Extracted files root (required)
+#   IMAGES_TXT                     File listing digest-pinned images (required)
+#   TRUSTED_PROVENANCE_NAMESPACES  Comma-separated namespaces (default: calunga-tenant)
+#
+set -euo pipefail
+
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+IMAGES_TXT="${IMAGES_TXT:?IMAGES_TXT required}"
+TRUSTED_PROVENANCE_NAMESPACES="${TRUSTED_PROVENANCE_NAMESPACES:-calunga-tenant}"
+
+PROVENANCE_DIR="${FILES_DIR}/chains-provenance"
+DOCKER_CONFIG="$(mktemp -d)"
+export DOCKER_CONFIG
+on_exit() {
+  rm -rf "${DOCKER_CONFIG}"
+}
+trap 'on_exit' EXIT
+mkdir -p "${PROVENANCE_DIR}"
+
+# Trusted Chains identity for npm snapshot images (promote or build).
+readonly EXPECTED_BUILDER_ID="https://konflux-ci.dev/chains/v2"
+readonly EXPECTED_BUILD_TYPE="https://tekton.dev/chains/v2/slsa"
+TRUSTED_NS_JSON="$(jq -nc --arg s "${TRUSTED_PROVENANCE_NAMESPACES}" '
+  $s
+  | split(",")
+  | map(gsub("^\\s+|\\s+$"; ""))
+  | map(select(length > 0))
+')"
+if [[ "$(jq 'length' <<<"${TRUSTED_NS_JSON}")" -eq 0 ]]; then
+  echo "ERROR: trustedProvenanceNamespaces must list at least one namespace" >&2
+  exit 1
+fi
+
+while read -r IMAGE; do
+  [[ -n "${IMAGE}" ]] || continue
+  echo "Fetching Chains provenance for ${IMAGE}"
+
+  select-oci-auth "${IMAGE}" > "${DOCKER_CONFIG}/config.json"
+
+  DIGEST="${IMAGE##*@}"
+  if [[ ! "${DIGEST}" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
+    echo "ERROR: image must be digest-pinned (got ${IMAGE})" >&2
+    exit 1
+  fi
+  DIGEST_SAFE="${DIGEST//[:\/]/_}"
+  PROVENANCE_FILE="${PROVENANCE_DIR}/${DIGEST_SAFE}.json"
+
+  COSIGN_STDERR="/tmp/cosign-stderr-${DIGEST_SAFE}.log"
+  COSIGN_STDOUT="/tmp/cosign-stdout-${DIGEST_SAFE}.jsonl"
+  # Chains uses AWS KMS for signing, not public Sigstore/Rekor,
+  # so transparency log and SCT verification are skipped (same as
+  # extract-py-artifacts). Trust is the cluster Chains key plus
+  # subject digest and builder/pipeline/namespace checks below.
+  if ! cosign verify-attestation \
+    --type=slsaprovenance \
+    --insecure-ignore-tlog=true \
+    --insecure-ignore-sct=true \
+    --key k8s://openshift-pipelines/public-key \
+    "${IMAGE}" >"${COSIGN_STDOUT}" 2>"${COSIGN_STDERR}"; then
+    echo "ERROR: Failed to fetch Chains provenance for ${IMAGE}" >&2
+    cat "${COSIGN_STDERR}" >&2
+    exit 1
+  fi
+  # Capture full cosign output (avoid SIGPIPE from head under pipefail),
+  # then keep a SLSA statement that:
+  # - has buildDefinition
+  # - subject digest matches this image
+  # - was produced by Konflux Chains with a trusted npm pipeline
+  # - invocationId is in an authorized tenant namespace
+  DIGEST_HEX="${DIGEST#sha256:}"
+  if ! jq -s -e \
+    --arg want "${DIGEST_HEX}" \
+    --arg builder "${EXPECTED_BUILDER_ID}" \
+    --arg buildType "${EXPECTED_BUILD_TYPE}" \
+    --argjson trustedNs "${TRUSTED_NS_JSON}" '
+    map(try (.payload | @base64d | fromjson) catch empty)
+    | map(select(
+        .predicate.buildDefinition != null
+        and (.predicate.buildDefinition.buildType // "") == $buildType
+        and (.predicate.runDetails.builder.id // "") == $builder
+        and (
+          (.predicate.buildDefinition.externalParameters.runSpec.pipelineRef.name // "") as $pn
+          | ($pn == "promote-npm" or $pn == "build-npm")
+        )
+        and (
+          (.predicate.runDetails.metadata.invocationId // "") as $id
+          | any($trustedNs[]; . as $ns | ($id | startswith($ns + "/")))
+        )
+        and any(
+          .subject[]?;
+          (.digest.sha256 // "") == $want
+        )
+      ))
+    | .[0] // empty
+    | select(. != null and . != {})
+  ' "${COSIGN_STDOUT}" > "${PROVENANCE_FILE}"; then
+    echo "ERROR: No trusted Chains SLSA provenance for ${DIGEST}" >&2
+    echo "  expected builder=${EXPECTED_BUILDER_ID}" >&2
+    echo "  expected buildType=${EXPECTED_BUILD_TYPE}" >&2
+    echo "  expected pipelineRef.name in {promote-npm,build-npm}" >&2
+    echo "  expected invocationId namespace in ${TRUSTED_NS_JSON}" >&2
+    cat "${COSIGN_STDERR}" >&2
+    cat "${COSIGN_STDOUT}" >&2
+    exit 1
+  fi
+  echo "  Saved Chains provenance to ${PROVENANCE_FILE}"
+  rm -f "${COSIGN_STDERR}" "${COSIGN_STDOUT}"
+done < "${IMAGES_TXT}"
+
+echo "Chains provenance files:"
+ls -la "${PROVENANCE_DIR}"

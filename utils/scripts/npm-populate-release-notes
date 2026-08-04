@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Populate releaseNotes.content.artifacts (and mapping contentType) from
+# extracted npm .tgz packages under FILES_DIR.
+#
+# Env:
+#   FILES_DIR   Directory tree containing *.tgz (required)
+#   DATA_FILE   Path to data.json to update (required)
+#
+set -euo pipefail
+
+# shellcheck source=npm-common.sh
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Prefer sibling when running from a checkout; fall back to PATH install layout.
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+DATA_FILE="${DATA_FILE:?DATA_FILE required}"
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+ARTIFACTS_JSONL="$(mktemp)"
+TMP_DATA=""
+on_exit() {
+  rm -f "${ARTIFACTS_JSONL}"
+  [[ -n "${TMP_DATA}" ]] && rm -f "${TMP_DATA}"
+}
+trap 'on_exit' EXIT
+shopt -s nullglob
+
+# Cap metadata reads from package-controlled tar members (defense in depth).
+readonly MAX_PACKAGE_JSON_BYTES=1048576  # 1 MiB
+readonly MAX_SBOM_BYTES=5242880          # 5 MiB
+
+
+# Map package.json os/cpu fields to advisory architecture/os values.
+# Single unrestricted value is used; multiple or negated entries → any.
+parse_npm_platform() {
+  local pkg_json="${1}"
+  jq -r '
+    def one_or_any:
+      if . == null then "any"
+      elif type == "string" then
+        if startswith("!") then "any" else . end
+      elif type == "array" then
+        if length == 1
+           and (.[0] | type == "string")
+           and (.[0] | startswith("!") | not)
+        then .[0]
+        else "any" end
+      else "any" end;
+    def map_cpu:
+      if . == "any" then "any"
+      elif . == "x64" or . == "x86_64" then "amd64"
+      elif . == "arm64" or . == "aarch64" then "arm64"
+      elif . == "ia32" or . == "x86" then "386"
+      elif . == "ppc64" then "ppc64le"
+      elif . == "s390x" then "s390x"
+      else . end;
+    def map_os:
+      if . == "any" then "any"
+      elif . == "linux" then "linux"
+      elif . == "darwin" then "macos"
+      elif . == "win32" then "windows"
+      else . end;
+    ((.cpu | one_or_any) | map_cpu) as $arch
+    | ((.os | one_or_any) | map_os) as $os
+    | "\($arch) \($os)"
+  ' <<<"${pkg_json}"
+}
+
+while IFS= read -r -d '' tgz; do
+  filename="$(basename "${tgz}")"
+  echo "Processing tarball: ${tgz}"
+
+  if ! assert_tar_member_size "${tgz}" "package/package.json" \
+    "${MAX_PACKAGE_JSON_BYTES}"; then
+    echo "ERROR: package/package.json missing or oversized in ${filename}" >&2
+    exit 1
+  fi
+  pkg_json="$(tar -xOf "${tgz}" package/package.json)" || {
+    echo "ERROR: package/package.json missing in ${filename}"
+    exit 1
+  }
+  name="$(jq -r '.name // empty' <<<"${pkg_json}")"
+  version="$(jq -r '.version // empty' <<<"${pkg_json}")"
+  if [[ -z "${name}" || -z "${version}" ]]; then
+    echo "ERROR: ${filename} package.json missing non-empty name/version" >&2
+    exit 1
+  fi
+
+  if ! assert_tar_member_size "${tgz}" "package/sboms/redhat.spdx.json" \
+    "${MAX_SBOM_BYTES}"; then
+    echo "ERROR: package/sboms/redhat.spdx.json missing or oversized in ${filename}" >&2
+    exit 1
+  fi
+  sbom_json="$(tar -xOf "${tgz}" package/sboms/redhat.spdx.json 2>/dev/null)" || {
+    echo "ERROR: package/sboms/redhat.spdx.json missing in ${filename}"
+    exit 1
+  }
+
+  purl="$(jq -r \
+    --arg name "${name}" \
+    --arg version "${version}" '
+    def decode_npm_name:
+      gsub("%40"; "@")
+      | gsub("%2[Ff]"; "/")
+      | gsub("%2f"; "/");
+    def uri_decode:
+      # Decode common PURL percent-escapes for name/version comparison.
+      gsub("%2[Bb]"; "+")
+      | gsub("%2b"; "+")
+      | gsub("%3[Aa]"; ":")
+      | gsub("%3a"; ":")
+      | gsub("%40"; "@")
+      | gsub("%2[Ff]"; "/")
+      | gsub("%2f"; "/")
+      | gsub("%3[Ff]"; "?")
+      | gsub("%3f"; "?")
+      | gsub("%23"; "#")
+      | gsub("%20"; " ")
+      | gsub("%25"; "%");
+    def parse_npm_purl:
+      . as $purl
+      | sub("^pkg:npm/"; "")
+      | split("#")[0]
+      | split("?")[0]
+      | (try capture("^(?<n>.+)@(?<v>[^@]+)$") catch empty) as $m
+      | if $m == null then empty
+        else {
+          purl: $purl,
+          name: ($m.n | decode_npm_name | uri_decode),
+          version: ($m.v | uri_decode)
+        } end;
+    [.packages[]?.externalRefs[]?
+      | select(.referenceType == "purl")
+      | .referenceLocator
+      | select(startswith("pkg:npm/"))
+      | parse_npm_purl
+      | select(.name == $name and .version == $version)
+      | .purl
+    ] | first // empty
+  ' <<<"${sbom_json}")"
+
+  if [[ -z "${purl}" ]]; then
+    # Canonical npm PURL with percent-encoded name/version components.
+    # Scope marker @ -> %40; '/' between scope and name stays unencoded.
+    # e.g. @scope/pkg -> pkg:npm/%40scope/pkg@version
+    purl="$(jq -nr --arg n "${name}" --arg v "${version}" '
+      def enc: @uri;
+      ($n
+        | if startswith("@") and test("/") then
+            (capture("^@(?<scope>[^/]+)/(?<pkg>.+)$")
+             | "%40\(.scope | enc)/\(.pkg | enc)")
+          else enc end) as $id
+      | "pkg:npm/\($id)@\($v | enc)"
+    ')"
+    echo "  WARNING: no matching pkg:npm for ${name}@${version} in SBOM; using ${purl}"
+  fi
+  echo "  Found PURL: ${purl}"
+
+  read -r arch os <<< "$(parse_npm_platform "${pkg_json}")"
+  echo "  Platform from package.json: arch=${arch}, os=${os}"
+
+  jq -nc \
+    --arg component "${name}" \
+    --arg purl "${purl}" \
+    --arg architecture "${arch}" \
+    --arg os "${os}" \
+    '{component: $component, purl: $purl, architecture: $architecture, os: $os}' \
+    >> "${ARTIFACTS_JSONL}"
+done < <(find "${FILES_DIR}" -type f -name '*.tgz' -print0 | sort -z)
+
+DEDUPED="$(jq -sc '
+  if length == 0 then []
+  else
+    group_by(.component + "|" + .purl + "|" + .architecture + "|" + .os)
+    | map(.[0])
+  end
+' "${ARTIFACTS_JSONL}")"
+rm -f "${ARTIFACTS_JSONL}"
+
+ARTIFACT_COUNT="$(jq 'length' <<<"${DEDUPED}")"
+if [[ "${ARTIFACT_COUNT}" -eq 0 ]]; then
+  echo "WARNING: No .tgz files found (infra-only / empty snapshot); continuing"
+else
+  echo "Adding ${ARTIFACT_COUNT} artifact(s) to releaseNotes.content.artifacts"
+fi
+
+TMP_DATA="$(mktemp)"
+jq --argjson artifacts "${DEDUPED}" '
+  .releaseNotes.content.artifacts = (
+    ((.releaseNotes.content.artifacts // []) + $artifacts)
+    | group_by(.component + "|" + .purl + "|" + .architecture + "|" + .os)
+    | map(.[0])
+  )
+' "${DATA_FILE}" > "${TMP_DATA}" && mv "${TMP_DATA}" "${DATA_FILE}"
+
+if [[ "${ARTIFACT_COUNT}" -gt 0 ]]; then
+  COMPONENT_NAMES="$(jq -r '[.[].component] | unique | .[]' <<<"${DEDUPED}")"
+  MAPPING_ENTRIES="[]"
+  while IFS= read -r comp; do
+    [[ -n "${comp}" ]] || continue
+    MAPPING_ENTRIES="$(jq -c --arg name "${comp}" \
+      '. + [{name: $name, contentType: "generic"}]' \
+      <<<"${MAPPING_ENTRIES}")"
+  done <<<"${COMPONENT_NAMES}"
+  jq --argjson new_comps "${MAPPING_ENTRIES}" '
+    ($new_comps | map(.name)) as $names |
+    (.mapping.components // []) as $existing |
+    ($existing | map(.name)) as $existing_names |
+    .mapping.components = [
+      $existing[] |
+      if (.name as $n | $names | index($n))
+         and ((.contentGateway?.contentType //
+               .contentType // "") == "")
+      then . + {contentType: "generic"}
+      else . end
+    ] + [
+      $new_comps[]
+      | select(.name as $n |
+          $existing_names | index($n) | not)
+    ]
+  ' "${DATA_FILE}" > "${TMP_DATA}" && mv "${TMP_DATA}" "${DATA_FILE}"
+fi
+
+echo "Done. Updated artifacts:"
+jq '.releaseNotes.content.artifacts' "${DATA_FILE}"
