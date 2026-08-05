@@ -520,6 +520,27 @@ class TestGroupHasBuilt(unittest.TestCase):
         finally:
             os.unlink(f.name)
 
+    def test_csv_string_has_built(self):
+        summary_path, index_path = self._setup(
+            [{'name': 'click', 'version': '8.1.0'}],
+            {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
+            'click-8.1.0-py3-none-any.whl',
+        )
+        result = group_has_built(summary_path,
+                                 'click-8.1.0-py3-none-any.whl,other.whl',
+                                 wheel_index_path=index_path)
+        self.assertTrue(result)
+
+    def test_csv_string_no_match(self):
+        summary_path, index_path = self._setup(
+            [{'name': 'click', 'version': '8.1.0'}],
+            {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
+            'other.whl',
+        )
+        result = group_has_built(summary_path, 'other.whl',
+                                 wheel_index_path=index_path)
+        self.assertFalse(result)
+
     def test_empty_set_no_false_positive(self):
         summary_path, index_path = self._setup(
             [{'name': 'click', 'version': '8.1.0'}],
@@ -586,6 +607,26 @@ class TestFindMissingWheelFallback(unittest.TestCase):
                     self.assertEqual(result, 'click-8.1.0-py3-none-any.whl')
             finally:
                 os.unlink(f.name)
+
+    def test_csv_string_tried_skips(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'click': ['click-8.1.0-py3-none-any.whl', 'click-7.0-py3-none-any.whl']}, f)
+            f.flush()
+        try:
+            result = find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
+            self.assertEqual(result, 'click-7.0-py3-none-any.whl')
+        finally:
+            os.unlink(f.name)
+
+    def test_csv_string_tried_all_skipped(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'click': ['click-8.1.0-py3-none-any.whl']}, f)
+            f.flush()
+        try:
+            result = find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
+            self.assertIsNone(result)
+        finally:
+            os.unlink(f.name)
 
     def test_cwd_fallback_skips_tried(self):
         with tempfile.TemporaryDirectory() as tmpdir:
