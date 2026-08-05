@@ -5,6 +5,7 @@ import glob
 import json
 import locale
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,19 +40,30 @@ VENV_PATH = '/tmp/test-venv'
 VENV_GROUP_PATH = '/tmp/test-venv-group'
 SEPARATOR = '=' * 50
 RC_SCRIPT_ERROR = 2
+PYTHON_PATTERN = re.compile(r'^python\d+\.\d+$')
 
 
 def create_venv(python, path):
     shutil.rmtree(path, ignore_errors=True)
-    subprocess.run([python, '-m', 'venv', path], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run([python, '-m', 'venv', path], check=True,  # nosemgrep
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        print(f'ERROR: Python interpreter {python!r} not found',
+              file=sys.stderr)
+        sys.exit(RC_SCRIPT_ERROR)
+    except subprocess.CalledProcessError as exc:
+        print(f'ERROR: Failed to create venv at {path!r} '
+              f'using {python!r} (exit code {exc.returncode})',
+              file=sys.stderr)
+        sys.exit(RC_SCRIPT_ERROR)
     return path
 
 
 def pip_install(venv, *packages):
     cmd = [os.path.join(venv, 'bin', 'pip'), 'install',
            '--no-index', '--find-links', '.'] + list(packages)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep
     if result.stdout:
         print(result.stdout, end='')
     if result.returncode != 0:
@@ -62,19 +74,21 @@ def pip_install(venv, *packages):
 
 
 def pip_list_json(venv):
-    result = subprocess.run(
+    result = subprocess.run(  # nosemgrep
         [os.path.join(venv, 'bin', 'pip'), 'list', '--format=json'],
         capture_output=True, text=True)
     if result.returncode != 0:
         return []
     try:
         return json.loads(result.stdout)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        print(f'WARNING: Failed to parse pip list JSON: {exc}',
+              file=sys.stderr)
         return []
 
 
 def verify_in_venv(venv, script_dir, wheel, result_file):
-    result = subprocess.run(
+    result = subprocess.run(  # nosemgrep
         [os.path.join(venv, 'bin', 'python'),
          os.path.join(script_dir, 'verify_import.py'), wheel],
         capture_output=True, text=True)
@@ -388,6 +402,10 @@ def main(argv=None):
     files_dir = args.files_dir or os.getcwd()
     script_dir = args.script_dir or str(Path(__file__).resolve().parent)
     python = args.python
+
+    if not PYTHON_PATTERN.match(python):
+        print(f'ERROR: Invalid python interpreter: {python!r}', file=sys.stderr)
+        return 1
 
     os.chdir(files_dir)
     try:

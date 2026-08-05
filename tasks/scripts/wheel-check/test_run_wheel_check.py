@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,21 @@ class TestCreateVenv(unittest.TestCase):
         mock_run.assert_called_once()
         self.assertEqual(result, '/tmp/test-venv')
 
+    @patch('run_wheel_check.shutil.rmtree')
+    @patch('run_wheel_check.subprocess.run', side_effect=FileNotFoundError('not found'))
+    def test_missing_interpreter_exits(self, mock_run, mock_rmtree):
+        with self.assertRaises(SystemExit) as ctx:
+            run_wheel_check.create_venv('bogus-python', '/tmp/test-venv')
+        self.assertEqual(ctx.exception.code, run_wheel_check.RC_SCRIPT_ERROR)
+
+    @patch('run_wheel_check.shutil.rmtree')
+    @patch('run_wheel_check.subprocess.run',
+           side_effect=subprocess.CalledProcessError(1, 'venv'))
+    def test_venv_failure_exits(self, mock_run, mock_rmtree):
+        with self.assertRaises(SystemExit) as ctx:
+            run_wheel_check.create_venv('python3.12', '/tmp/bad-path')
+        self.assertEqual(ctx.exception.code, run_wheel_check.RC_SCRIPT_ERROR)
+
 
 class TestPipInstall(unittest.TestCase):
     @patch('run_wheel_check.subprocess.run')
@@ -92,6 +108,15 @@ class TestPipListJson(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='err')
         result = run_wheel_check.pip_list_json('/tmp/venv')
         self.assertEqual(result, [])
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_json_parse_error_warns(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='not json')
+        import io
+        with patch('sys.stderr', new_callable=io.StringIO) as mock_err:
+            result = run_wheel_check.pip_list_json('/tmp/venv')
+        self.assertEqual(result, [])
+        self.assertIn('WARNING', mock_err.getvalue())
 
 
 class TestWriteResult(unittest.TestCase):
@@ -230,6 +255,26 @@ class TestRunPhase1(unittest.TestCase):
         with open(rpath2) as f:
             data = json.load(f)
         self.assertEqual(data['status'], 'SKIP')
+
+    @patch('run_wheel_check.verify_in_venv', return_value=1)
+    @patch('run_wheel_check.pip_install', return_value=True)
+    @patch('run_wheel_check.create_venv', return_value='/tmp/test-venv')
+    def test_fail_no_output_fallback(self, mock_venv, mock_pip, mock_verify):
+        whl = make_wheel(self.tmpdir, 'badpkg', '1.0')
+
+        def verify_no_output(venv, sd, wheel, rf):
+            return 1
+        mock_verify.side_effect = verify_no_output
+
+        result = run_wheel_check.run_phase1(
+            [whl], None, self.results_dir, 'python3.12', self.tmpdir, self.script_dir)
+        self.assertTrue(result)
+
+        rpath = run_wheel_check.result_path(self.results_dir, whl)
+        with open(rpath) as f:
+            data = json.load(f)
+        self.assertEqual(data['status'], 'FAIL')
+        self.assertEqual(data['reason'], 'verify_import failed without output')
 
     def test_mixed_results(self):
         whl_data = make_data_wheel(self.tmpdir, 'mydata', '1.0')
@@ -505,6 +550,20 @@ class TestMainFunction(unittest.TestCase):
         run_wheel_check.WHEEL_INDEX_PATH = self.orig_wheel_index
         run_wheel_check.BUILT_WHEELS_PATH = self.orig_built_wheels
         run_wheel_check.IMPORT_MAP_PATH = self.orig_import_map
+
+    def test_invalid_python_rejected(self):
+        files_dir = os.path.join(self.tmpdir, 'files')
+        os.makedirs(files_dir)
+        make_wheel(files_dir, 'click', '8.1.0')
+        rc = run_wheel_check.main(['--python', 'evil; rm -rf /', '--files-dir', files_dir])
+        self.assertEqual(rc, 1)
+
+    def test_valid_python_accepted(self):
+        self.assertTrue(run_wheel_check.PYTHON_PATTERN.match('python3.12'))
+        self.assertTrue(run_wheel_check.PYTHON_PATTERN.match('python4.0'))
+        self.assertFalse(run_wheel_check.PYTHON_PATTERN.match('python'))
+        self.assertFalse(run_wheel_check.PYTHON_PATTERN.match('/usr/bin/python3.12'))
+        self.assertFalse(run_wheel_check.PYTHON_PATTERN.match('python3.12; echo hi'))
 
     def test_no_wheels(self):
         files_dir = os.path.join(self.tmpdir, 'empty')
