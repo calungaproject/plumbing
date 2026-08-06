@@ -173,9 +173,15 @@ spec:
         shopt -s nullglob dotglob
         artifact_files=(*)
         if [[ ${#artifact_files[@]} -eq 0 ]]; then
-          echo "No npm artifacts to push; using placeholder .keep (infra-only run)"
-          touch .keep
-          artifact_files=(.keep)
+          echo "No npm artifacts to push under ${PUSH_DIR}" >&2
+          exit 1
+        fi
+        # Require at least one package tarball (no .keep placeholders).
+        mapfile -t tgz_found < <(find . -type f -name '*.tgz' | head -n 1)
+        if [[ ${#tgz_found[@]} -eq 0 ]]; then
+          echo "No .tgz packages to push (refusing empty / placeholder OCI)" >&2
+          ls -la >&2 || true
+          exit 1
         fi
         shopt -u dotglob
 

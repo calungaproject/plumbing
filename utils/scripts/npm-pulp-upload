@@ -9,7 +9,7 @@
 #   PULP_REPOSITORY      npm repository name (required)
 #   PULP_FILE_REPOSITORY Optional file repo for *.tl-compliance.json sidecars
 #
-# Credentials: /etc/service-account-secret/{username,password}
+# Credentials: ${SECRET_DIR:-/etc/service-account-secret}/{username,password}
 #
 set -euo pipefail
 
@@ -19,6 +19,7 @@ PULP_API_ROOT="${PULP_API_ROOT:-/api/}"
 PULP_DOMAIN="${PULP_DOMAIN:?PULP_DOMAIN required}"
 PULP_REPOSITORY="${PULP_REPOSITORY:?PULP_REPOSITORY required}"
 PULP_FILE_REPOSITORY="${PULP_FILE_REPOSITORY:-}"
+SECRET_DIR="${SECRET_DIR:-/etc/service-account-secret}"
 
 # shellcheck source=npm-common.sh
 _SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -40,18 +41,20 @@ readonly MAX_PACKAGE_JSON_BYTES=1048576  # 1 MiB
 readonly MAX_COMPLIANCE_SIDECAR_BYTES=1048576  # 1 MiB
 
 
-# Empty / missing FILES_DIR is a successful no-op (infra-only snapshots).
-# Skip Pulp auth/API entirely when there is nothing to upload.
-mkdir -p "${FILES_DIR}"
+# Require at least one .tgz (PAC packages/ filters avoid empty releases).
+if [[ ! -d "${FILES_DIR}" ]]; then
+  echo "ERROR: FILES_DIR does not exist: ${FILES_DIR}" >&2
+  exit 1
+fi
 ls -la "${FILES_DIR}"
 tgz_count="$(find "${FILES_DIR}" -type f -name '*.tgz' | wc -l)"
 if [[ "${tgz_count}" -eq 0 ]]; then
-  echo "No .tgz packages under ${FILES_DIR}; skipping Pulp upload (infra-only no-op)"
-  exit 0
+  echo "ERROR: No .tgz packages under ${FILES_DIR}" >&2
+  exit 1
 fi
 
-PULP_USER="$(< /etc/service-account-secret/username)"
-PULP_PASS="$(< /etc/service-account-secret/password)"
+PULP_USER="$(< "${SECRET_DIR}/username")"
+PULP_PASS="$(< "${SECRET_DIR}/password")"
 
 # Normalize so "/api" and "/api/" both yield ".../api/pulp/..."
 PULP_API_ROOT_NORM="${PULP_API_ROOT%/}/"

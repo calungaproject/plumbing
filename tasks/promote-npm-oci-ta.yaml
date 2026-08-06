@@ -16,8 +16,8 @@ spec:
     Promote a PR npm OCI artifact (on-pr-<sha>.npm) to a durable snapshot tag
     (<sha>.npm): oras pull → verify embedded SPDX SBOM → assess compliance
     against the public TL npm registry (*.tl-compliance.json) → oras push.
-    No rebuild. When PACKAGES_STATUS is no-packages, skips pull and publishes
-    an empty (.keep) durable artifact so infra-only merges stay green.
+    No rebuild. Requires PACKAGES_STATUS=has-packages and at least one .tgz
+    in the on-pr artifact (PAC should only start promote when packages/ change).
   params:
     - name: SOURCE_IMAGE
       description: >-
@@ -42,8 +42,8 @@ spec:
       type: array
     - name: PACKAGES_STATUS
       description: >-
-        From identify-packages SCRIPT_OUTPUT: has-packages or no-packages.
-        no-packages skips on-pr pull and pushes a .keep durable tag.
+        From identify-packages SCRIPT_OUTPUT: must be has-packages. no-packages
+        fails the task (infra-only merges are skipped by PAC path filters).
       type: string
       default: has-packages
     - name: TL_NPM_REGISTRY_URL
@@ -74,7 +74,7 @@ spec:
     - name: IMAGE_REF
       description: OCI artifact reference (image@digest)
     - name: SOURCE_IMAGE
-      description: Source (on-pr) OCI reference that was promoted (or skipped)
+      description: Source (on-pr) OCI reference that was promoted
   volumes:
     - name: trusted-ca
       configMap:
@@ -127,12 +127,10 @@ spec:
 
         mkdir -p "${ARTIFACT_ROOT}"
 
-        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
-          echo "[$(date --utc -Ins)] No packages in this merge; skipping on-pr pull"
-          touch "${ARTIFACT_ROOT}/.keep"
-          echo -n "skipped:no-packages" | tee "$(results.SOURCE_IMAGE.path)"
-          echo "[$(date --utc -Ins)] End pull-on-pr-artifact (skipped)"
-          exit 0
+        if [[ "${PACKAGES_STATUS}" != "has-packages" ]]; then
+          echo "ERROR: PACKAGES_STATUS=${PACKAGES_STATUS}; expected has-packages" >&2
+          echo "Infra-only merges should be skipped by PAC packages/ path filters." >&2
+          exit 1
         fi
 
         echo "[$(date --utc -Ins)] Pulling on-pr npm OCI artifact: ${SOURCE_IMAGE}"
@@ -147,6 +145,12 @@ spec:
           echo "Note: GitHub merge/squash SHAs usually differ from the PR head SHA used" >&2
           echo "for on-pr-<sha>.npm — the push revision must match the PR build revision," >&2
           echo "or promote must resolve the PR artifact another way." >&2
+          exit 1
+        fi
+
+        if ! find "${ARTIFACT_ROOT}" -type f -name '*.tgz' | grep -q .; then
+          echo "ERROR: pulled ${SOURCE_IMAGE} but found no .tgz under ${ARTIFACT_ROOT}" >&2
+          ls -la "${ARTIFACT_ROOT}" >&2 || true
           exit 1
         fi
 
@@ -165,10 +169,6 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
-          echo "[verify-sbom] skipped (no-packages)"
-          exit 0
-        fi
         verify-npm-sbom
       computeResources:
         limits:
@@ -187,10 +187,6 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        if [[ "${PACKAGES_STATUS}" == "no-packages" ]]; then
-          echo "[assess-compliance] skipped (no-packages)"
-          exit 0
-        fi
         assess-npm-compliance \
           "$(params.WORKDIR_ROOT)/artifact" \
           "$(params.WORKDIR_ROOT)/source" \
@@ -239,6 +235,12 @@ spec:
         artifact_files=(*)
         if [[ ${#artifact_files[@]} -eq 0 ]]; then
           echo "No artifacts to push after promote staging" >&2
+          exit 1
+        fi
+        mapfile -t tgz_found < <(find . -type f -name '*.tgz' | head -n 1)
+        if [[ ${#tgz_found[@]} -eq 0 ]]; then
+          echo "No .tgz packages to push (refusing empty / placeholder OCI)" >&2
+          ls -la >&2 || true
           exit 1
         fi
         shopt -u dotglob
