@@ -148,11 +148,15 @@ spec:
           exit 1
         fi
 
-        if ! find "${ARTIFACT_ROOT}" -type f -name '*.tgz' | grep -q .; then
+        # oras image has no find(1).
+        shopt -s nullglob globstar
+        tgz_found=("${ARTIFACT_ROOT}"/*.tgz "${ARTIFACT_ROOT}"/**/*.tgz)
+        if [[ ${#tgz_found[@]} -eq 0 ]]; then
           echo "ERROR: pulled ${SOURCE_IMAGE} but found no .tgz under ${ARTIFACT_ROOT}" >&2
           ls -la "${ARTIFACT_ROOT}" >&2 || true
           exit 1
         fi
+        shopt -u nullglob globstar
 
         echo -n "${SOURCE_IMAGE}" | tee "$(results.SOURCE_IMAGE.path)"
         ls -la "${ARTIFACT_ROOT}"
@@ -237,13 +241,15 @@ spec:
           echo "No artifacts to push after promote staging" >&2
           exit 1
         fi
-        mapfile -t tgz_found < <(find . -type f -name '*.tgz' | head -n 1)
+        # Require at least one package tarball (oras image has no find(1)).
+        shopt -s nullglob globstar
+        tgz_found=(*.tgz **/*.tgz)
         if [[ ${#tgz_found[@]} -eq 0 ]]; then
           echo "No .tgz packages to push (refusing empty / placeholder OCI)" >&2
           ls -la >&2 || true
           exit 1
         fi
-        shopt -u dotglob
+        shopt -u nullglob globstar dotglob
 
         echo "Pushing OCI artifact to ${IMAGE}"
         if ! retry oras push "$IMAGE" \
