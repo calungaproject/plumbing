@@ -6,11 +6,11 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: build-npm-packages [<pkg-dir> ...]
+Usage: build-npm-packages <pkg-dir> [<pkg-dir> ...]
 
-Build onboarder recipes via build-npm-package. With no package dirs, prepares an
-empty artifact for infra-only pipeline runs. Writes package dirs, one per line,
-to BUILT_LIST (under WORKDIR_ROOT, default /var/workdir/built/list.txt).
+Build onboarder recipes via build-npm-package. At least one package directory is
+required. Writes package dirs, one per line, to BUILT_LIST (under WORKDIR_ROOT,
+default /var/workdir/built/list.txt).
 
 Environment:
   WORKDIR_ROOT   Factory scratch root (Tekton: /var/workdir)
@@ -27,8 +27,9 @@ mkdir -p "$(dirname "${BUILT_LIST}")" "${WORK_ROOT}" "${OUTPUT_ROOT}"
 : > "${BUILT_LIST}"
 
 if [[ $# -lt 1 ]]; then
-    echo "[build-npm-packages] no packages to build (infra-only)"
-    exit 0
+    echo "[build-npm-packages] ERROR: no packages to build" >&2
+    usage >&2
+    exit 1
 fi
 
 for pkg in "$@"; do

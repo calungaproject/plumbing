@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Release-pipeline entrypoint: snapshot → extract npm OCI → release notes →
+# Chains provenance. Invoked as a single Tekton step via:
+#   command: ["npm-release-extract"]
+#
+# Env (from task stepTemplate):
+#   TRUSTED_ARTIFACTS_EXTRACT_DIR  Workdir root (dataDir)
+#   SNAPSHOT_PATH                  Snapshot JSON path relative to extract dir
+#   IMAGES_TXT                     Output list of digest-pinned images
+#   FILES_DIR                      Extract root for oras pulls
+#   DATA_FILE                      data.json for release notes
+#   TRUSTED_PROVENANCE_NAMESPACES  Optional (passed through to fetch)
+#   ORAS_OPTIONS                   Optional (passed through to extract)
+#   STATUS_PATH                    Optional Tekton results.status path
+#
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+TRUSTED_ARTIFACTS_EXTRACT_DIR="${TRUSTED_ARTIFACTS_EXTRACT_DIR:?TRUSTED_ARTIFACTS_EXTRACT_DIR required}"
+SNAPSHOT_PATH="${SNAPSHOT_PATH:?SNAPSHOT_PATH required}"
+IMAGES_TXT="${IMAGES_TXT:?IMAGES_TXT required}"
+FILES_DIR="${FILES_DIR:?FILES_DIR required}"
+DATA_FILE="${DATA_FILE:?DATA_FILE required}"
+
+SNAPSHOT_FILE="${TRUSTED_ARTIFACTS_EXTRACT_DIR}/${SNAPSHOT_PATH}"
+if [[ ! -f "${SNAPSHOT_FILE}" ]]; then
+  fail_with_status "snapshot not found: ${SNAPSHOT_FILE}"
+fi
+
+if ! jq -e '.components | type == "array"' "${SNAPSHOT_FILE}" >/dev/null 2>&1; then
+  fail_with_status "snapshot missing components array: ${SNAPSHOT_FILE}"
+fi
+
+jq -r '
+  .components[]?
+  | select(.containerImage != null and .containerImage != "")
+  | .containerImage
+' "${SNAPSHOT_FILE}" > "${IMAGES_TXT}"
+
+if [[ ! -s "${IMAGES_TXT}" ]]; then
+  fail_with_status "no containerImage entries in snapshot: ${SNAPSHOT_FILE}"
+fi
+
+echo "Snapshot images:"
+cat "${IMAGES_TXT}"
+
+npm-extract-artifacts || fail_with_status "npm-extract-artifacts failed"
+npm-populate-release-notes || fail_with_status "npm-populate-release-notes failed"
+npm-fetch-chains-provenance || fail_with_status "npm-fetch-chains-provenance failed"
+
+echo "npm-release-extract completed"

@@ -184,10 +184,10 @@ rm -f "${ARTIFACTS_JSONL}"
 
 ARTIFACT_COUNT="$(jq 'length' <<<"${DEDUPED}")"
 if [[ "${ARTIFACT_COUNT}" -eq 0 ]]; then
-  echo "WARNING: No .tgz files found (infra-only / empty snapshot); continuing"
-else
-  echo "Adding ${ARTIFACT_COUNT} artifact(s) to releaseNotes.content.artifacts"
+  echo "ERROR: No .tgz files found under ${FILES_DIR}" >&2
+  exit 1
 fi
+echo "Adding ${ARTIFACT_COUNT} artifact(s) to releaseNotes.content.artifacts"
 
 TMP_DATA="$(mktemp)"
 jq --argjson artifacts "${DEDUPED}" '

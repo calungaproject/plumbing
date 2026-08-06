@@ -34,17 +34,32 @@ RUN python3 -m venv /venv && \
     /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes
 
 ##########################
+# UNIT TESTS (must pass)
+##########################
+FROM base AS test
+COPY scripts /src/scripts
+COPY tests /src/tests
+RUN chmod +x /src/scripts/* /src/tests/run_tests.sh \
+    && /src/tests/run_tests.sh \
+    && touch /tmp/utils-tests-ok
+
+##########################
 # ASSEMBLE THE FINAL IMAGE
 ##########################
 FROM base
 LABEL maintainer="Red Hat"
+
+# Gate the final image on the unit-test stage.
+COPY --from=test /tmp/utils-tests-ok /tmp/utils-tests-ok
 
 COPY --from=builder /venv /venv
 COPY --from=cosign /usr/local/bin/cosign /usr/local/bin/cosign
 COPY --from=oras /usr/bin/oras /usr/local/bin/oras
 COPY --from=oras /usr/local/bin/retry /usr/local/bin/retry
 
-COPY scripts/* /usr/local/bin/
+# --chmod applies only to these copied scripts (not cosign/oras/retry already
+# present in /usr/local/bin).
+COPY --chmod=755 scripts/* /usr/local/bin/
 
 RUN ln -s /venv/bin/twine /usr/local/bin/twine
 

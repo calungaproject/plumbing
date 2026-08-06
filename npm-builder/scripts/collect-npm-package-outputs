@@ -14,9 +14,8 @@ if [[ ! -f "${BUILT_LIST}" ]]; then
 fi
 
 if [[ ! -s "${BUILT_LIST}" ]]; then
-    touch "${ARTIFACT_ROOT}/.keep"
-    echo "[collect-npm-package-outputs] empty artifact (.keep only)"
-    exit 0
+    echo "[collect-npm-package-outputs] ERROR: built list is empty (no packages built)" >&2
+    exit 1
 fi
 
 while IFS= read -r pkg; do

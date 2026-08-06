@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Release-pipeline entrypoint: validate Pulp credentials and upload npm .tgz.
+# Invoked as a single Tekton step via:
+#   command: ["npm-release-upload"]
+#
+# Env (from task stepTemplate):
+#   FILES_DIR, PULP_*, STATUS_PATH (optional)
+# Credentials: /etc/service-account-secret/{username,password}
+#
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+SECRET_DIR="${SECRET_DIR:-/etc/service-account-secret}"
+
+for name in username password; do
+  path="${SECRET_DIR}/${name}"
+  if [[ ! -f "${path}" ]] || [[ -z "$(tr -d '[:space:]' < "${path}")" ]]; then
+    fail_with_status "Pulp credential missing or empty: ${path}"
+  fi
+done
+
+npm-pulp-upload || fail_with_status "npm-pulp-upload failed"
+
+echo "npm-release-upload completed"
