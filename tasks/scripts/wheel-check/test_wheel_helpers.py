@@ -167,10 +167,9 @@ class TestFormatSummaryRow(unittest.TestCase):
             json.dump({'wheel': 'foo-1.0.whl', 'status': 'PASS', 'reason': ''}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                format_summary_row(f.name)
-                self.assertIn('PASS', mock_out.getvalue())
-                self.assertIn('foo-1.0.whl', mock_out.getvalue())
+            status, wheel, reason = format_summary_row(f.name)
+            self.assertEqual(status, 'PASS')
+            self.assertEqual(wheel, 'foo-1.0.whl')
         finally:
             os.unlink(f.name)
 
@@ -179,19 +178,16 @@ class TestFormatSummaryRow(unittest.TestCase):
             json.dump({'wheel': 'foo-1.0.whl', 'status': 'PASS', 'reason': '', 'undeclared_dep': 'bar'}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                format_summary_row(f.name)
-                self.assertIn('undeclared dep: bar', mock_out.getvalue())
+            status, wheel, reason = format_summary_row(f.name)
+            self.assertIn('undeclared dep: bar', reason)
         finally:
             os.unlink(f.name)
 
     def test_invalid_file(self):
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            format_summary_row('/tmp/nonexistent-12345.json')
-            output = mock_out.getvalue()
-            self.assertIn('FAIL', output)
-            self.assertIn('nonexistent-12345', output)
-            self.assertIn('verify_import failed without output', output)
+        status, wheel, reason = format_summary_row('/tmp/nonexistent-12345.json')
+        self.assertEqual(status, 'FAIL')
+        self.assertIn('nonexistent-12345', wheel)
+        self.assertIn('verify_import failed without output', reason)
 
 
 class TestAnnotateDep(unittest.TestCase):
@@ -214,9 +210,8 @@ class TestLookupWheel(unittest.TestCase):
             json.dump({'click-8.1.0': 'click-8.1.0-py3-none-any.whl'}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                lookup_wheel(f.name, 'click', '8.1.0')
-                self.assertEqual(mock_out.getvalue().strip(), 'click-8.1.0-py3-none-any.whl')
+            result = lookup_wheel(f.name, 'click', '8.1.0')
+            self.assertEqual(result, 'click-8.1.0-py3-none-any.whl')
         finally:
             os.unlink(f.name)
 
@@ -225,9 +220,8 @@ class TestLookupWheel(unittest.TestCase):
             json.dump({}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                lookup_wheel(f.name, 'nonexistent', '1.0')
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            result = lookup_wheel(f.name, 'nonexistent', '1.0')
+            self.assertEqual(result, '')
         finally:
             os.unlink(f.name)
 
@@ -242,9 +236,8 @@ class TestExtractMissingModule(unittest.TestCase):
             }, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                extract_missing_module(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), 'click')
+            result = extract_missing_module(f.name)
+            self.assertEqual(result, 'click')
         finally:
             os.unlink(f.name)
 
@@ -257,9 +250,8 @@ class TestExtractMissingModule(unittest.TestCase):
             }, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                extract_missing_module(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), 'pkg')
+            result = extract_missing_module(f.name)
+            self.assertEqual(result, 'pkg')
         finally:
             os.unlink(f.name)
 
@@ -268,9 +260,8 @@ class TestExtractMissingModule(unittest.TestCase):
             json.dump({'imports_tested': [{'name': 'foo', 'success': True}]}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                extract_missing_module(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            result = extract_missing_module(f.name)
+            self.assertIsNone(result)
         finally:
             os.unlink(f.name)
 
@@ -279,9 +270,8 @@ class TestExtractMissingModule(unittest.TestCase):
             f.write('not json')
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                extract_missing_module(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            result = extract_missing_module(f.name)
+            self.assertIsNone(result)
         finally:
             os.unlink(f.name)
 
@@ -315,12 +305,8 @@ class TestLookupPrimary(unittest.TestCase):
             [{'name': 'click', 'version': '8.1.0'}],
             {'click-8.1.0': 'click-8.1.0-0-py3-none-any.whl'},
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary('click__8.1.0', summary_path, index_path)
-            lines = mock_out.getvalue().strip().split('\n')
-            self.assertEqual(lines[0], 'click')
-            self.assertEqual(lines[1], '8.1.0')
-            self.assertEqual(lines[2], 'click-8.1.0-0-py3-none-any.whl')
+        result = lookup_primary('click__8.1.0', summary_path, index_path)
+        self.assertEqual(result, ('click', '8.1.0', 'click-8.1.0-0-py3-none-any.whl'))
 
     def test_git_sourced_label(self):
         summary_path, index_path = self._make_files(
@@ -331,38 +317,32 @@ class TestLookupPrimary(unittest.TestCase):
             {'presidio_analyzer-2.2.359': 'presidio_analyzer-2.2.359-0-py3-none-any.whl'},
         )
         label = 'presidio_analyzer___git_https___github.com_microsoft_presidio.git_2.2.359'
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary(label, summary_path, index_path)
-            lines = mock_out.getvalue().strip().split('\n')
-            self.assertEqual(lines[0], 'presidio-analyzer')
-            self.assertEqual(lines[1], '2.2.359')
-            self.assertEqual(lines[2], 'presidio_analyzer-2.2.359-0-py3-none-any.whl')
+        result = lookup_primary(label, summary_path, index_path)
+        self.assertEqual(result[0], 'presidio-analyzer')
+        self.assertEqual(result[1], '2.2.359')
+        self.assertEqual(result[2], 'presidio_analyzer-2.2.359-0-py3-none-any.whl')
 
     def test_hyphenated_name(self):
         summary_path, index_path = self._make_files(
             [{'name': 'pydantic-ai-slim', 'version': '2.10.0'}],
             {'pydantic_ai_slim-2.10.0': 'pydantic_ai_slim-2.10.0-0-py3-none-any.whl'},
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary('pydantic-ai-slim__2.10.0', summary_path, index_path)
-            lines = mock_out.getvalue().strip().split('\n')
-            self.assertEqual(lines[0], 'pydantic-ai-slim')
-            self.assertEqual(lines[1], '2.10.0')
+        result = lookup_primary('pydantic-ai-slim__2.10.0', summary_path, index_path)
+        self.assertEqual(result[0], 'pydantic-ai-slim')
+        self.assertEqual(result[1], '2.10.0')
 
     def test_no_match(self):
         summary_path, index_path = self._make_files(
             [{'name': 'other-pkg', 'version': '1.0'}],
             {},
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary('click__8.1.0', summary_path, index_path)
-            self.assertEqual(mock_out.getvalue().strip(), '')
+        result = lookup_primary('click__8.1.0', summary_path, index_path)
+        self.assertIsNone(result)
 
     def test_empty_summary(self):
         summary_path, index_path = self._make_files([], {})
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary('click__8.1.0', summary_path, index_path)
-            self.assertEqual(mock_out.getvalue().strip(), '')
+        result = lookup_primary('click__8.1.0', summary_path, index_path)
+        self.assertIsNone(result)
 
     def test_no_prefix_collision(self):
         summary_path, index_path = self._make_files(
@@ -372,11 +352,9 @@ class TestLookupPrimary(unittest.TestCase):
             ],
             {'foobar-2.0': 'foobar-2.0-0-py3-none-any.whl'},
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            lookup_primary('foobar__2.0', summary_path, index_path)
-            lines = mock_out.getvalue().strip().split('\n')
-            self.assertEqual(lines[0], 'foobar')
-            self.assertEqual(lines[1], '2.0')
+        result = lookup_primary('foobar__2.0', summary_path, index_path)
+        self.assertEqual(result[0], 'foobar')
+        self.assertEqual(result[1], '2.0')
 
 
 class TestFindMissingWheel(unittest.TestCase):
@@ -385,9 +363,8 @@ class TestFindMissingWheel(unittest.TestCase):
             json.dump({'click': ['click-8.1.0-py3-none-any.whl']}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                find_missing_wheel('click', '', f.name)
-                self.assertEqual(mock_out.getvalue().strip(), 'click-8.1.0-py3-none-any.whl')
+            result = find_missing_wheel('click', set(), f.name)
+            self.assertEqual(result, 'click-8.1.0-py3-none-any.whl')
         finally:
             os.unlink(f.name)
 
@@ -396,9 +373,8 @@ class TestFindMissingWheel(unittest.TestCase):
             json.dump({'click': ['click-8.1.0-py3-none-any.whl']}, f)
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            result = find_missing_wheel('click', {'click-8.1.0-py3-none-any.whl'}, f.name)
+            self.assertIsNone(result)
         finally:
             os.unlink(f.name)
 
@@ -407,9 +383,8 @@ class TestFindMissingWheel(unittest.TestCase):
             f.write('not json')
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                find_missing_wheel('click', '', f.name)
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            result = find_missing_wheel('click', set(), f.name)
+            self.assertIsNone(result)
         finally:
             os.unlink(f.name)
 
@@ -512,10 +487,10 @@ class TestGroupHasBuilt(unittest.TestCase):
             {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
             'click-8.1.0-py3-none-any.whl',
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            group_has_built(summary_path, 'click-8.1.0-py3-none-any.whl',
-                            wheel_index_path=index_path)
-            self.assertEqual(mock_out.getvalue().strip(), 'yes')
+        result = group_has_built(summary_path,
+                                 {'click-8.1.0-py3-none-any.whl'},
+                                 wheel_index_path=index_path)
+        self.assertTrue(result)
 
     def test_no_built_wheel(self):
         summary_path, index_path = self._setup(
@@ -523,41 +498,58 @@ class TestGroupHasBuilt(unittest.TestCase):
             {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
             'other.whl',
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            group_has_built(summary_path, 'other.whl',
-                            wheel_index_path=index_path)
-            self.assertEqual(mock_out.getvalue().strip(), 'no')
+        result = group_has_built(summary_path, {'other.whl'},
+                                 wheel_index_path=index_path)
+        self.assertFalse(result)
 
     def test_empty_summary(self):
         summary_path, index_path = self._setup([], {}, '')
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            group_has_built(summary_path, 'any.whl',
-                            wheel_index_path=index_path)
-            self.assertEqual(mock_out.getvalue().strip(), 'no')
+        result = group_has_built(summary_path, set(),
+                                 wheel_index_path=index_path)
+        self.assertFalse(result)
 
     def test_corrupt_json_warns(self):
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             f.write('not json')
             f.flush()
         try:
-            with patch('sys.stdout', new_callable=io.StringIO) as mock_out, \
-                 patch('sys.stderr', new_callable=io.StringIO) as mock_err:
-                group_has_built(f.name, 'any.whl')
-                self.assertEqual(mock_out.getvalue().strip(), 'no')
+            with patch('sys.stderr', new_callable=io.StringIO) as mock_err:
+                result = group_has_built(f.name, set())
+                self.assertFalse(result)
                 self.assertIn('WARNING', mock_err.getvalue())
         finally:
             os.unlink(f.name)
 
-    def test_empty_csv_no_false_positive(self):
+    def test_csv_string_has_built(self):
+        summary_path, index_path = self._setup(
+            [{'name': 'click', 'version': '8.1.0'}],
+            {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
+            'click-8.1.0-py3-none-any.whl',
+        )
+        result = group_has_built(summary_path,
+                                 'click-8.1.0-py3-none-any.whl,other.whl',
+                                 wheel_index_path=index_path)
+        self.assertTrue(result)
+
+    def test_csv_string_no_match(self):
+        summary_path, index_path = self._setup(
+            [{'name': 'click', 'version': '8.1.0'}],
+            {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
+            'other.whl',
+        )
+        result = group_has_built(summary_path, 'other.whl',
+                                 wheel_index_path=index_path)
+        self.assertFalse(result)
+
+    def test_empty_set_no_false_positive(self):
         summary_path, index_path = self._setup(
             [{'name': 'click', 'version': '8.1.0'}],
             {'click-8.1.0': 'click-8.1.0-py3-none-any.whl'},
             '',
         )
-        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-            group_has_built(summary_path, '',
-                            wheel_index_path=index_path)
-            self.assertEqual(mock_out.getvalue().strip(), 'no')
+        result = group_has_built(summary_path, set(),
+                                 wheel_index_path=index_path)
+        self.assertFalse(result)
 
 
 class TestMatchInstalledWheels(unittest.TestCase):
@@ -569,14 +561,12 @@ class TestMatchInstalledWheels(unittest.TestCase):
             }, f)
             f.flush()
         try:
-            stdin_data = json.dumps([
+            pip_json = [
                 {'name': 'click', 'version': '8.1.0'},
                 {'name': 'requests', 'version': '2.31.0'},
-            ])
-            with patch('sys.stdin', io.StringIO(stdin_data)), \
-                 patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                match_installed_wheels(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), 'click-8.1.0-py3-none-any.whl')
+            ]
+            result = match_installed_wheels(f.name, pip_json=pip_json)
+            self.assertEqual(result, ['click-8.1.0-py3-none-any.whl'])
         finally:
             os.unlink(f.name)
 
@@ -585,11 +575,21 @@ class TestMatchInstalledWheels(unittest.TestCase):
             json.dump({'click-8.1.0': 'click-8.1.0-py3-none-any.whl'}, f)
             f.flush()
         try:
-            stdin_data = json.dumps([{'name': 'requests', 'version': '2.31.0'}])
-            with patch('sys.stdin', io.StringIO(stdin_data)), \
-                 patch('sys.stdout', new_callable=io.StringIO) as mock_out:
-                match_installed_wheels(f.name)
-                self.assertEqual(mock_out.getvalue().strip(), '')
+            pip_json = [{'name': 'requests', 'version': '2.31.0'}]
+            result = match_installed_wheels(f.name, pip_json=pip_json)
+            self.assertEqual(result, [])
+        finally:
+            os.unlink(f.name)
+
+    def test_stdin_fallback(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'click-8.1.0': 'click-8.1.0-py3-none-any.whl'}, f)
+            f.flush()
+        try:
+            stdin_data = json.dumps([{'name': 'click', 'version': '8.1.0'}])
+            with patch('sys.stdin', io.StringIO(stdin_data)):
+                result = match_installed_wheels(f.name)
+                self.assertEqual(result, ['click-8.1.0-py3-none-any.whl'])
         finally:
             os.unlink(f.name)
 
@@ -602,13 +602,31 @@ class TestFindMissingWheelFallback(unittest.TestCase):
                 json.dump({}, f)
                 f.flush()
             try:
-                with patch('sys.stdout', new_callable=io.StringIO) as mock_out, \
-                     patch('wheel_helpers.os.listdir', return_value=os.listdir(tmpdir)):
-                    find_missing_wheel('click', '', f.name)
-                    self.assertEqual(mock_out.getvalue().strip(),
-                                     'click-8.1.0-py3-none-any.whl')
+                with patch('wheel_helpers.os.listdir', return_value=os.listdir(tmpdir)):
+                    result = find_missing_wheel('click', set(), f.name)
+                    self.assertEqual(result, 'click-8.1.0-py3-none-any.whl')
             finally:
                 os.unlink(f.name)
+
+    def test_csv_string_tried_skips(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'click': ['click-8.1.0-py3-none-any.whl', 'click-7.0-py3-none-any.whl']}, f)
+            f.flush()
+        try:
+            result = find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
+            self.assertEqual(result, 'click-7.0-py3-none-any.whl')
+        finally:
+            os.unlink(f.name)
+
+    def test_csv_string_tried_all_skipped(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({'click': ['click-8.1.0-py3-none-any.whl']}, f)
+            f.flush()
+        try:
+            result = find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
+            self.assertIsNone(result)
+        finally:
+            os.unlink(f.name)
 
     def test_cwd_fallback_skips_tried(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -617,10 +635,10 @@ class TestFindMissingWheelFallback(unittest.TestCase):
                 json.dump({}, f)
                 f.flush()
             try:
-                with patch('sys.stdout', new_callable=io.StringIO) as mock_out, \
-                     patch('wheel_helpers.os.listdir', return_value=os.listdir(tmpdir)):
-                    find_missing_wheel('click', 'click-8.1.0-py3-none-any.whl', f.name)
-                    self.assertEqual(mock_out.getvalue().strip(), '')
+                with patch('wheel_helpers.os.listdir', return_value=os.listdir(tmpdir)):
+                    result = find_missing_wheel('click',
+                                                {'click-8.1.0-py3-none-any.whl'}, f.name)
+                    self.assertIsNone(result)
             finally:
                 os.unlink(f.name)
 
