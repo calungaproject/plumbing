@@ -6,7 +6,7 @@ FROM registry.redhat.io/rhtas/cosign-rhel9:1.3.6@sha256:ff6a2a11b8c1dff47cb115cf
 
 # ORAS client from Konflux's UBI-based image (no registry.redhat.io/oras equivalent;
 # same source release-service-utils uses).
-FROM quay.io/konflux-ci/oras:latest@sha256:6cea0b9e142c2e18429f5cd30d716715d932047cbf1631334c5c31f7e47c3a19 AS oras
+FROM quay.io/konflux-ci/oras:latest@sha256:1cc659b4d30536ec98300ac551739ef36dee345a7dcfe06129fd78abdc3688ac AS oras
 
 FROM registry.access.redhat.com/ubi10/ubi:latest as ubi
 
