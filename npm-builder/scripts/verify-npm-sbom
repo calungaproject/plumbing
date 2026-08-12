@@ -4,12 +4,13 @@
 # Usage: verify-npm-sbom [artifact-dir]
 # Default: ARTIFACT_ROOT (or ./artifact)
 #
-# Requires (npm-builder image): bash, find, sort, tar, grep.
+# Requires (npm-builder image): bash, find, sort, tar.
 set -euo pipefail
 
 ARTIFACT_DIR="${1:-${ARTIFACT_ROOT:-./artifact}}"
+SBOM_MEMBER="package/sboms/redhat.spdx.json"
 
-for cmd in find sort tar grep; do
+for cmd in find sort tar; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
         echo "[verify-npm-sbom] ERROR: required command not on PATH: ${cmd}" >&2
         exit 1
@@ -24,16 +25,26 @@ fi
 mapfile -t tarballs < <(find "${ARTIFACT_DIR}" -type f -name '*.tgz' | LC_ALL=C sort)
 
 if [[ ${#tarballs[@]} -eq 0 ]]; then
+    if [[ -f "${ARTIFACT_DIR}/.keep" ]]; then
+        echo "[verify-npm-sbom] no .tgz files (infra-only .keep); ok"
+        exit 0
+    fi
     echo "[verify-npm-sbom] no .tgz files under ${ARTIFACT_DIR}" >&2
     exit 1
 fi
 
 for tgz in "${tarballs[@]}"; do
     echo "[verify-npm-sbom] checking ${tgz}"
-    if ! tar -tzf "${tgz}" | grep -qE '(^|/)package/sboms/redhat\.spdx\.json$'; then
-        echo "[verify-npm-sbom] missing package/sboms/redhat.spdx.json in ${tgz}" >&2
+    # Extract the member directly (avoid tar|grep pipefail / SIGPIPE; see utils npm-common.sh).
+    tmp="$(mktemp)"
+    if ! tar -xOf "${tgz}" "${SBOM_MEMBER}" > "${tmp}" 2>/dev/null || [[ ! -s "${tmp}" ]]; then
+        rm -f "${tmp}"
+        echo "[verify-npm-sbom] missing ${SBOM_MEMBER} in ${tgz}" >&2
+        echo "[verify-npm-sbom] tar -tzf listing (first 30 entries):" >&2
+        tar -tzf "${tgz}" 2>&1 | head -30 >&2 || true
         exit 1
     fi
+    rm -f "${tmp}"
 done
 
 echo "[verify-npm-sbom] verified SPDX SBOM in ${#tarballs[@]} tarball(s)"
