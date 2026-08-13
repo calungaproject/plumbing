@@ -158,6 +158,9 @@ spec:
         fi
         shopt -u nullglob globstar
 
+        # oras runs as root; npm-builder (uid 1001) writes *.tl-compliance.json beside .tgz files.
+        chmod -R a+rwX "${ARTIFACT_ROOT}"
+
         echo -n "${SOURCE_IMAGE}" | tee "$(results.SOURCE_IMAGE.path)"
         ls -la "${ARTIFACT_ROOT}"
         echo "[$(date --utc -Ins)] End pull-on-pr-artifact"
