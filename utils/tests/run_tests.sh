@@ -231,6 +231,136 @@ assert_fail "npm-pulp-upload fails when remote sha256 conflicts" \
       MOCK_REMOTE_SHA="0000000000000000000000000000000000000000000000000000000000000000" \
       npm-pulp-upload
 
+# --- npm-fetch-chains-provenance: SLSA v0.2 (cluster) and v1 ---
+HEX="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+IMG="quay.example/npm@sha256:${HEX}"
+prov_root="${tmpdir}/prov"
+mkdir -p "${prov_root}"
+images_prov="${prov_root}/images.txt"
+printf '%s\n' "${IMG}" > "${images_prov}"
+files_prov="${prov_root}/files"
+mkdir -p "${files_prov}"
+
+envelope_from_statement() {
+  local statement="$1"
+  local payload
+  payload="$(printf '%s' "${statement}" | base64 | tr -d '\n')"
+  jq -nc --arg payload "${payload}" '{
+    payloadType: "application/vnd.in-toto+json",
+    payload: $payload,
+    signatures: [{keyid: "", sig: "mock"}]
+  }'
+}
+
+v02_statement() {
+  local runtime="$1" ns="$2" hex="$3"
+  jq -nc --arg runtime "${runtime}" --arg ns "${ns}" --arg hex "${hex}" '{
+    "_type": "https://in-toto.io/Statement/v0.1",
+    "predicateType": "https://slsa.dev/provenance/v0.2",
+    "subject": [{"name": "quay.example/npm", "digest": {"sha256": $hex}}],
+    "predicate": {
+      "builder": {"id": "https://tekton.dev/chains/v2"},
+      "buildType": "tekton.dev/v1/PipelineRun",
+      "invocation": {
+        "configSource": {},
+        "parameters": {},
+        "environment": {
+          "labels": {"pipelines.openshift.io/runtime": $runtime},
+          "annotations": {
+            "pipelinesascode.tekton.dev/log-url":
+              ("https://konflux-ui.example/ns/" + $ns + "/pipelinerun/x")
+          }
+        }
+      },
+      "buildConfig": {"tasks": []},
+      "metadata": {"buildStartedOn": "2026-08-13T15:53:47Z"}
+    }
+  }'
+}
+
+v1_statement() {
+  local pname="$1" invoc="$2" hex="$3"
+  jq -nc --arg pname "${pname}" --arg invoc "${invoc}" --arg hex "${hex}" '{
+    "_type": "https://in-toto.io/Statement/v0.1",
+    "predicateType": "https://slsa.dev/provenance/v1",
+    "subject": [{"name": "quay.example/npm", "digest": {"sha256": $hex}}],
+    "predicate": {
+      "buildDefinition": {
+        "buildType": "https://tekton.dev/chains/v2/slsa",
+        "externalParameters": {
+          "runSpec": {"pipelineRef": {"name": $pname}, "params": []}
+        }
+      },
+      "runDetails": {
+        "builder": {"id": "https://konflux-ci.dev/chains/v2"},
+        "metadata": {"invocationId": $invoc}
+      }
+    }
+  }'
+}
+
+fetch_stubs="${tmpdir}/fetch-stubs"
+mkdir -p "${fetch_stubs}"
+cat > "${fetch_stubs}/select-oci-auth" <<'EOF'
+#!/usr/bin/env bash
+echo '{"auths":{}}'
+EOF
+cat > "${fetch_stubs}/cosign" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1}" == "verify-attestation" ]]; then
+  cat "${COSIGN_ENVELOPE_FILE}"
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "${fetch_stubs}/select-oci-auth" "${fetch_stubs}/cosign"
+
+run_fetch() {
+  env PATH="${fetch_stubs}:${PATH}" \
+      FILES_DIR="${files_prov}" \
+      IMAGES_TXT="${images_prov}" \
+      TRUSTED_PROVENANCE_NAMESPACES="calunga-tenant" \
+      COSIGN_ENVELOPE_FILE="${1}" \
+      npm-fetch-chains-provenance
+}
+
+env_v02="${tmpdir}/env-v02.json"
+envelope_from_statement "$(v02_statement promote-npm calunga-tenant "${HEX}")" > "${env_v02}"
+rm -rf "${files_prov}/chains-provenance"
+assert_ok "npm-fetch-chains-provenance accepts SLSA v0.2 promote-npm" \
+  run_fetch "${env_v02}"
+assert_ok "v0.2 provenance file has tekton Chains builder" \
+  jq -e '.predicate.builder.id == "https://tekton.dev/chains/v2"' \
+    "${files_prov}/chains-provenance/sha256_${HEX}.json" >/dev/null
+
+env_v1="${tmpdir}/env-v1.json"
+envelope_from_statement "$(v1_statement promote-npm "calunga-tenant/pr-1" "${HEX}")" > "${env_v1}"
+rm -rf "${files_prov}/chains-provenance"
+assert_ok "npm-fetch-chains-provenance accepts SLSA v1 promote-npm" \
+  run_fetch "${env_v1}"
+assert_ok "v1 provenance file has buildDefinition" \
+  jq -e '.predicate.buildDefinition.buildType == "https://tekton.dev/chains/v2/slsa"' \
+    "${files_prov}/chains-provenance/sha256_${HEX}.json" >/dev/null
+
+env_bad_rt="${tmpdir}/env-bad-rt.json"
+envelope_from_statement "$(v02_statement docker-build calunga-tenant "${HEX}")" > "${env_bad_rt}"
+rm -rf "${files_prov}/chains-provenance"
+assert_fail "npm-fetch-chains-provenance rejects non-npm pipeline runtime" \
+  run_fetch "${env_bad_rt}"
+
+env_bad_ns="${tmpdir}/env-bad-ns.json"
+envelope_from_statement "$(v02_statement promote-npm other-tenant "${HEX}")" > "${env_bad_ns}"
+rm -rf "${files_prov}/chains-provenance"
+assert_fail "npm-fetch-chains-provenance rejects other tenant namespace" \
+  run_fetch "${env_bad_ns}"
+
+env_bad_hex="${tmpdir}/env-bad-hex.json"
+envelope_from_statement "$(v02_statement promote-npm calunga-tenant \
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")" > "${env_bad_hex}"
+rm -rf "${files_prov}/chains-provenance"
+assert_fail "npm-fetch-chains-provenance rejects subject digest mismatch" \
+  run_fetch "${env_bad_hex}"
+
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]
