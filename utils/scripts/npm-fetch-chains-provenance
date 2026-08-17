@@ -6,6 +6,11 @@
 #   IMAGES_TXT                     File listing digest-pinned images (required)
 #   TRUSTED_PROVENANCE_NAMESPACES  Comma-separated namespaces (default: calunga-tenant)
 #
+# Accepts both:
+#   - SLSA v0.2 PipelineRun attestations (current Konflux Chains default:
+#     builder https://tekton.dev/chains/v2, buildType tekton.dev/v1/PipelineRun)
+#   - SLSA v1 (buildDefinition / runDetails) if the cluster migrates
+#
 set -euo pipefail
 
 FILES_DIR="${FILES_DIR:?FILES_DIR required}"
@@ -21,9 +26,6 @@ on_exit() {
 trap 'on_exit' EXIT
 mkdir -p "${PROVENANCE_DIR}"
 
-# Trusted Chains identity for npm snapshot images (promote or build).
-readonly EXPECTED_BUILDER_ID="https://konflux-ci.dev/chains/v2"
-readonly EXPECTED_BUILD_TYPE="https://tekton.dev/chains/v2/slsa"
 TRUSTED_NS_JSON="$(jq -nc --arg s "${TRUSTED_PROVENANCE_NAMESPACES}" '
   $s
   | split(",")
@@ -54,55 +56,68 @@ while read -r IMAGE; do
   # Chains uses AWS KMS for signing, not public Sigstore/Rekor,
   # so transparency log and SCT verification are skipped (same as
   # extract-py-artifacts). Trust is the cluster Chains key plus
-  # subject digest and builder/pipeline/namespace checks below.
-  if ! cosign verify-attestation \
-    --type=slsaprovenance \
-    --insecure-ignore-tlog=true \
-    --insecure-ignore-sct=true \
-    --key k8s://openshift-pipelines/public-key \
-    "${IMAGE}" >"${COSIGN_STDOUT}" 2>"${COSIGN_STDERR}"; then
+  # subject digest, Chains builder, npm pipeline, and namespace.
+  # slsaprovenance = SLSA v0.2; slsaprovenance1 = SLSA v1.
+  : > "${COSIGN_STDOUT}"
+  : > "${COSIGN_STDERR}"
+  verified=0
+  for pred_type in slsaprovenance slsaprovenance1; do
+    if cosign verify-attestation \
+      --type="${pred_type}" \
+      --insecure-ignore-tlog=true \
+      --insecure-ignore-sct=true \
+      --key k8s://openshift-pipelines/public-key \
+      "${IMAGE}" >>"${COSIGN_STDOUT}" 2>>"${COSIGN_STDERR}"; then
+      verified=1
+    fi
+  done
+  if [[ "${verified}" -ne 1 ]]; then
     echo "ERROR: Failed to fetch Chains provenance for ${IMAGE}" >&2
     cat "${COSIGN_STDERR}" >&2
     exit 1
   fi
-  # Capture full cosign output (avoid SIGPIPE from head under pipefail),
-  # then keep a SLSA statement that:
-  # - has buildDefinition
-  # - subject digest matches this image
-  # - was produced by Konflux Chains with a trusted npm pipeline
-  # - invocationId is in an authorized tenant namespace
   DIGEST_HEX="${DIGEST#sha256:}"
   if ! jq -s -e \
     --arg want "${DIGEST_HEX}" \
-    --arg builder "${EXPECTED_BUILDER_ID}" \
-    --arg buildType "${EXPECTED_BUILD_TYPE}" \
     --argjson trustedNs "${TRUSTED_NS_JSON}" '
+    def chains_builder:
+      (.predicate.runDetails.builder.id // .predicate.builder.id // "") as $id
+      | ($id == "https://tekton.dev/chains/v2"
+         or $id == "https://konflux-ci.dev/chains/v2");
+    def slsa_type_ok:
+      (.predicate.buildDefinition.buildType // .predicate.buildType // "") as $bt
+      | ($bt == "https://tekton.dev/chains/v2/slsa"
+         or $bt == "tekton.dev/v1/PipelineRun");
+    def npm_pipeline:
+      (
+        .predicate.buildDefinition.externalParameters.runSpec.pipelineRef.name // ""
+      ) as $v1
+      | (
+        .predicate.invocation.environment.labels["pipelines.openshift.io/runtime"] // ""
+      ) as $rt
+      | ($v1 == "promote-npm" or $v1 == "build-npm"
+         or $rt == "promote-npm" or $rt == "build-npm");
+    def trusted_ns:
+      (
+        (.predicate.runDetails.metadata.invocationId // "") as $id
+        | any($trustedNs[]; . as $n | ($id | startswith($n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["pipelinesascode.tekton.dev/log-url"] // "") as $url
+        | any($trustedNs[]; . as $n | ($url | contains("/ns/" + $n + "/")))
+      );
+    def subject_ok:
+      any(.subject[]?; (.digest.sha256 // "") == $want);
     map(try (.payload | @base64d | fromjson) catch empty)
-    | map(select(
-        .predicate.buildDefinition != null
-        and (.predicate.buildDefinition.buildType // "") == $buildType
-        and (.predicate.runDetails.builder.id // "") == $builder
-        and (
-          (.predicate.buildDefinition.externalParameters.runSpec.pipelineRef.name // "") as $pn
-          | ($pn == "promote-npm" or $pn == "build-npm")
-        )
-        and (
-          (.predicate.runDetails.metadata.invocationId // "") as $id
-          | any($trustedNs[]; . as $ns | ($id | startswith($ns + "/")))
-        )
-        and any(
-          .subject[]?;
-          (.digest.sha256 // "") == $want
-        )
-      ))
+    | map(select(chains_builder and slsa_type_ok and npm_pipeline and trusted_ns and subject_ok))
     | .[0] // empty
     | select(. != null and . != {})
   ' "${COSIGN_STDOUT}" > "${PROVENANCE_FILE}"; then
     echo "ERROR: No trusted Chains SLSA provenance for ${DIGEST}" >&2
-    echo "  expected builder=${EXPECTED_BUILDER_ID}" >&2
-    echo "  expected buildType=${EXPECTED_BUILD_TYPE}" >&2
-    echo "  expected pipelineRef.name in {promote-npm,build-npm}" >&2
-    echo "  expected invocationId namespace in ${TRUSTED_NS_JSON}" >&2
+    echo "  accepted builders: https://tekton.dev/chains/v2, https://konflux-ci.dev/chains/v2" >&2
+    echo "  accepted buildType: tekton.dev/v1/PipelineRun (SLSA v0.2) or https://tekton.dev/chains/v2/slsa (v1)" >&2
+    echo "  expected npm pipeline: pipelineRef.name or pipelines.openshift.io/runtime in {promote-npm,build-npm}" >&2
+    echo "  expected namespace in invocationId or PAC log-url: ${TRUSTED_NS_JSON}" >&2
     cat "${COSIGN_STDERR}" >&2
     cat "${COSIGN_STDOUT}" >&2
     exit 1
