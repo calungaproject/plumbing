@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Upload npm .tgz packages to a Pulp npm repository (REST + curl).
 #
+# RH Pulp npm API (crc-pulp-npm-client / packages.redhat.com):
+#   - List filters: name, name__in, repository_version — not version.
+#     Filter name@version in jq after listing.
+#   - POST .../content/npm/packages/upload/ is sync and does not accept
+#     repository. Add the returned pulp_href via POST {repo}modify/.
+#
 # Env:
 #   FILES_DIR            Directory tree containing *.tgz (required)
 #   PULP_BASE_URL        Pulp base URL (required)
@@ -8,6 +14,8 @@
 #   PULP_DOMAIN          Pulp domain (required)
 #   PULP_REPOSITORY      npm repository name (required)
 #   PULP_FILE_REPOSITORY Optional file repo for *.tl-compliance.json sidecars
+#   PULP_TASK_TIMEOUT_SECONDS  Max wait for modify tasks (default 300)
+#   PULP_TASK_POLL_SECONDS     Poll interval for modify tasks (default 5)
 #
 # Credentials: ${SECRET_DIR:-/etc/service-account-secret}/{username,password}
 #
@@ -39,6 +47,9 @@ readonly CURL_MAX_TIME_SIDECAR_SECONDS=60
 readonly COMPLIANCE_LABEL_KEY="tl.compliance_level"
 readonly MAX_PACKAGE_JSON_BYTES=1048576  # 1 MiB
 readonly MAX_COMPLIANCE_SIDECAR_BYTES=1048576  # 1 MiB
+readonly LIST_PAGE_SIZE=100
+PULP_TASK_TIMEOUT_SECONDS="${PULP_TASK_TIMEOUT_SECONDS:-300}"
+PULP_TASK_POLL_SECONDS="${PULP_TASK_POLL_SECONDS:-5}"
 
 
 # Require at least one .tgz (PAC packages/ filters avoid empty releases).
@@ -121,6 +132,87 @@ else
   echo "PULP_FILE_REPOSITORY unset; skipping *.tl-compliance.json file uploads (labels still apply)"
 fi
 
+pulp_response_has_errors() {
+  local n
+  n="$(jq -r '
+    if (.errors | type) == "array" then (.errors | length)
+    elif (.errors | type) == "object" then (.errors | length)
+    else 0 end
+  ' <<<"${1}")"
+  [[ "${n}" -gt 0 ]]
+}
+
+wait_for_pulp_task() {
+  local task_href="${1}"
+  local task_url response state
+  local elapsed=0
+
+  if [[ "${task_href}" == http://* || "${task_href}" == https://* ]]; then
+    task_url="${task_href}"
+  else
+    task_url="${PULP_BASE_URL}${task_href}"
+  fi
+
+  while [[ "${elapsed}" -lt "${PULP_TASK_TIMEOUT_SECONDS}" ]]; do
+    response="$(curl_capture --fail-with-body --silent \
+      --retry "${CURL_RETRY}" \
+      --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+      "${AUTH[@]}" \
+      "${task_url}")"
+    state="$(jq -r '.state // empty' <<<"${response}")"
+    case "${state}" in
+      completed)
+        echo "Pulp task completed: ${task_url}"
+        return 0
+        ;;
+      failed|canceled)
+        echo "ERROR: Pulp task ${state}: ${task_url}" >&2
+        jq -r '.error // .description // "No details"' <<<"${response}" >&2
+        return 1
+        ;;
+    esac
+    echo "Waiting for Pulp task (state=${state:-unknown}, ${elapsed}s elapsed)..."
+    sleep "${PULP_TASK_POLL_SECONDS}"
+    elapsed=$((elapsed + PULP_TASK_POLL_SECONDS))
+    if [[ "${PULP_TASK_POLL_SECONDS}" -eq 0 ]]; then
+      echo "ERROR: Pulp task still ${state:-unknown} with zero poll interval" >&2
+      return 1
+    fi
+  done
+  echo "ERROR: Timeout waiting for Pulp task: ${task_url}" >&2
+  return 1
+}
+
+add_package_to_repository() {
+  local content_href="${1}"
+  local repo_href="${PULP_REPOSITORY_HREF}"
+  local modify_json task_href body
+
+  [[ "${repo_href}" == */ ]] || repo_href="${repo_href}/"
+  body="$(jq -nc --arg href "${content_href}" '{add_content_units: [$href]}')"
+  echo "Adding ${content_href} to ${repo_href}"
+  modify_json="$(curl_capture --fail-with-body --silent \
+    --retry "${CURL_RETRY}" \
+    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+    "${AUTH[@]}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "${body}" \
+    "${PULP_BASE_URL}${repo_href}modify/")"
+  if pulp_response_has_errors "${modify_json}"; then
+    echo "ERROR: repository modify rejected ${content_href}" >&2
+    echo "${modify_json}" >&2
+    return 1
+  fi
+  task_href="$(jq -r '.task // empty' <<<"${modify_json}")"
+  if [[ -z "${task_href}" || "${task_href}" == "null" ]]; then
+    echo "ERROR: repository modify did not return a task href" >&2
+    echo "${modify_json}" >&2
+    return 1
+  fi
+  wait_for_pulp_task "${task_href}"
+}
+
 # Returns:
 #   0 -> exists with matching sha256 (sets EXISTING_CONTENT_HREF, EXISTING_LABEL)
 #   2 -> not found
@@ -129,49 +221,70 @@ check_package_exists_with_digest() {
   local name="${1}"
   local version="${2}"
   local local_file="${3}"
-  local local_sha response count content_href artifact_href artifact_json server_sha
+  local local_sha response page_len page_matches matches_json match_json
+  local content_href artifact_href artifact_json server_sha
+  local offset=0 match_count=0
 
   EXISTING_CONTENT_HREF=""
   EXISTING_LABEL=""
+  matches_json='[]'
 
   # Always use the latest repository version so earlier uploads in this
   # run are visible to subsequent existence checks.
   refresh_repository_version
 
   local_sha="$(sha256sum "${local_file}" | awk '{print $1}')"
-  response="$(curl_capture --fail-with-body --silent \
-    --retry "${CURL_RETRY}" \
-    --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
-    -G \
-    "${AUTH[@]}" \
-    "${PULP_QUERY_BASE}content/npm/packages/" \
-    --data-urlencode "name=${name}" \
-    --data-urlencode "version=${version}" \
-    --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}")"
-  count="$(jq -r '.count // (.results|length) // 0' <<<"${response}")"
-  if [[ "${count}" -eq 0 ]]; then
+
+  # List allows name + repository_version, not version. Page through and
+  # filter name@version locally.
+  while true; do
+    response="$(curl_capture --fail-with-body --silent \
+      --retry "${CURL_RETRY}" \
+      --max-time "${CURL_MAX_TIME_QUERY_SECONDS}" \
+      -G \
+      "${AUTH[@]}" \
+      "${PULP_QUERY_BASE}content/npm/packages/" \
+      --data-urlencode "name=${name}" \
+      --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" \
+      --data-urlencode "limit=${LIST_PAGE_SIZE}" \
+      --data-urlencode "offset=${offset}")"
+    if pulp_response_has_errors "${response}"; then
+      echo "ERROR: Pulp package list rejected query for ${name}" >&2
+      echo "${response}" >&2
+      return 1
+    fi
+    page_matches="$(jq -c \
+      --arg name "${name}" \
+      --arg version "${version}" '
+      [.results[]?
+        | select(
+            ((.name // "") == $name)
+            and ((.version // "") == $version)
+          )
+      ]
+    ' <<<"${response}")"
+    matches_json="$(jq -c --argjson page "${page_matches}" '. + $page' \
+      <<<"${matches_json}")"
+    match_count="$(jq 'length' <<<"${matches_json}")"
+    if [[ "${match_count}" -gt 1 ]]; then
+      break
+    fi
+    page_len="$(jq '(.results // []) | length' <<<"${response}")"
+    if [[ "${page_len}" -eq 0 || "${page_len}" -lt "${LIST_PAGE_SIZE}" ]]; then
+      break
+    fi
+    offset=$((offset + page_len))
+  done
+
+  if [[ "${match_count}" -eq 0 ]]; then
     return 2
   fi
-
-  # Require exactly one result that matches the requested name/version
-  # (do not trust results[0] alone if filters are loose or count > 1).
-  match_json="$(jq -c \
-    --arg name "${name}" \
-    --arg version "${version}" '
-    [.results[]?
-      | select(
-          ((.name // "") == $name)
-          and ((.version // "") == $version)
-        )
-    ]
-    | if length == 1 then .[0]
-      else empty end
-  ' <<<"${response}")"
-  if [[ -z "${match_json}" ]]; then
+  if [[ "${match_count}" -ne 1 ]]; then
     echo "ERROR: expected exactly one Pulp package for ${name}@${version}," \
-      "got count=${count} with no unique name/version match" >&2
+      "got ${match_count} matches" >&2
     return 1
   fi
+  match_json="$(jq -c '.[0]' <<<"${matches_json}")"
 
   content_href="$(jq -r '.pulp_href // empty' <<<"${match_json}")"
   EXISTING_CONTENT_HREF="${content_href}"
@@ -352,6 +465,7 @@ while IFS= read -r -d '' file; do
   echo "Uploading ${file} (compliance=${compliance_level:-none})..."
   # Use --form-string for text fields: -F treats a leading @ in the
   # value as "read from file", which breaks scoped names (@scope/pkg).
+  # Sync upload does not accept `repository`; add the content unit after.
   CURL_ARGS=(
     --fail-with-body
     --silent
@@ -360,7 +474,6 @@ while IFS= read -r -d '' file; do
     "${AUTH[@]}"
     -X POST
     -F "file=@${file}"
-    --form-string "repository=${PULP_REPOSITORY_HREF}"
     --form-string "name=${name}"
     --form-string "version=${version}"
   )
@@ -371,19 +484,39 @@ while IFS= read -r -d '' file; do
     CURL_ARGS+=(--form-string "pulp_labels=${labels_json}")
   fi
 
-  if curl "${CURL_ARGS[@]}" \
-    "${PULP_QUERY_BASE}content/npm/packages/upload/"; then
-    echo "Uploaded ${file}"
-    uploaded+=("${file}")
-    # New content creates a new repository version; refresh so later
-    # existence checks in this run see the upload.
-    refresh_repository_version
-    echo "  Repository version now: ${PULP_REPOSITORY_VERSION}"
-    upload_compliance_sidecar "${sidecar}" "${name}" "${version}"
-  else
+  upload_json=""
+  content_href=""
+  if ! upload_json="$(curl_capture "${CURL_ARGS[@]}" \
+    "${PULP_QUERY_BASE}content/npm/packages/upload/")"; then
     echo "ERROR: Failed to upload ${file}"
     failed+=("${file}")
+    continue
   fi
+  if pulp_response_has_errors "${upload_json}"; then
+    echo "ERROR: Pulp upload rejected ${file}" >&2
+    echo "${upload_json}" >&2
+    failed+=("${file}")
+    continue
+  fi
+  content_href="$(jq -r '.pulp_href // empty' <<<"${upload_json}")"
+  if [[ -z "${content_href}" || "${content_href}" == "null" ]]; then
+    echo "ERROR: upload of ${file} did not return pulp_href" >&2
+    echo "${upload_json}" >&2
+    failed+=("${file}")
+    continue
+  fi
+  if ! add_package_to_repository "${content_href}"; then
+    echo "ERROR: Failed to add ${file} (${content_href}) to repository" >&2
+    failed+=("${file}")
+    continue
+  fi
+  echo "Uploaded ${file} -> ${content_href}"
+  uploaded+=("${file}")
+  # modify/ creates a new repository version; refresh so later
+  # existence checks in this run see the upload.
+  refresh_repository_version
+  echo "  Repository version now: ${PULP_REPOSITORY_VERSION}"
+  upload_compliance_sidecar "${sidecar}" "${name}" "${version}"
 done < <(find "${FILES_DIR}" -type f -name '*.tgz' -print0 | sort -z)
 
 echo ""
