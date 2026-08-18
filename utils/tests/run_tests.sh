@@ -167,20 +167,26 @@ lodash_tgz="${pulp_files}/lodash-4.17.21.tgz"
 tar -czf "${lodash_tgz}" -C "${pulp_pkg}" package
 local_sha="$(sha256sum "${lodash_tgz}" | awk '{print $1}')"
 
-# Shared mock curl for digest scenarios (state via MOCK_MODE env)
+# Shared mock curl for digest scenarios (state via MOCK_REMOTE_SHA env)
 mock_curl_bin="${tmpdir}/mock-curl"
 mkdir -p "${mock_curl_bin}"
 cat > "${mock_curl_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 joined="$*"
-# Repo list
-if [[ "${joined}" == *"/repositories/npm/npm/"* && "${joined}" != *"/content/"* ]]; then
+# Repo list (modify/ also contains this path)
+if [[ "${joined}" == *"/repositories/npm/npm/"* \
+   && "${joined}" != *"/content/"* \
+   && "${joined}" != *"modify/"* ]]; then
   echo '{"results":[{"name":"npm-registry","pulp_href":"/api/pulp/d/api/v3/repositories/npm/npm/r/","latest_version_href":"/api/pulp/d/api/v3/repositories/npm/npm/r/versions/1/"}]}'
   exit 0
 fi
-# Content list
+# Content list — RH Pulp rejects the version filter
 if [[ "${joined}" == *"/content/npm/packages/"* && "${joined}" == *"--data-urlencode"* ]]; then
+  if [[ "${joined}" == *"--data-urlencode version="* ]]; then
+    echo '{"errors":["Invalid Filter: '"'"'version'"'"'"]}'
+    exit 22
+  fi
   echo "{\"count\":1,\"results\":[{\"name\":\"lodash\",\"version\":\"4.17.21\",\"pulp_href\":\"/api/pulp/d/api/v3/content/npm/packages/x/\",\"artifact\":\"/api/pulp/d/api/v3/artifacts/${MOCK_REMOTE_SHA}/\",\"pulp_labels\":{}}]}"
   exit 0
 fi
@@ -230,6 +236,105 @@ assert_fail "npm-pulp-upload fails when remote sha256 conflicts" \
       PULP_REPOSITORY="npm-registry" \
       MOCK_REMOTE_SHA="0000000000000000000000000000000000000000000000000000000000000000" \
       npm-pulp-upload
+
+# --- npm-pulp-upload RH API dry-run: list without version, upload without
+# repository, then repository modify + task poll ---
+rh_mock_bin="${tmpdir}/rh-mock-curl"
+mkdir -p "${rh_mock_bin}"
+rh_call_log="${tmpdir}/rh-api-calls.log"
+: > "${rh_call_log}"
+cat > "${rh_mock_bin}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+joined="$*"
+printf '%s\n' "${joined}" >> "${RH_CALL_LOG}"
+
+# RH list rejects version= (exact production error)
+if [[ "${joined}" == *"/content/npm/packages/"* \
+   && "${joined}" != *"/upload/"* \
+   && "${joined}" == *"--data-urlencode version="* ]]; then
+  echo '{"errors":["Invalid Filter: '"'"'version'"'"'"]}'
+  exit 22
+fi
+
+# Sync upload rejects repository= (exact production error)
+if [[ "${joined}" == *"/content/npm/packages/upload/"* ]]; then
+  if [[ "${joined}" == *"--form-string repository="* \
+     || "${joined}" == *"-F repository="* ]]; then
+    echo '{"repository":["Unexpected field"]}'
+    exit 22
+  fi
+  echo '{"pulp_href":"/api/pulp/d/api/v3/content/npm/packages/new/","name":"lodash","version":"4.17.21"}'
+  exit 0
+fi
+
+if [[ "${joined}" == *"modify/"* ]]; then
+  if [[ "${joined}" != *add_content_units* ]]; then
+    echo '{"add_content_units":["This field is required."]}'
+    exit 22
+  fi
+  echo '{"task":"/api/pulp/d/api/v3/tasks/t1/"}'
+  exit 0
+fi
+
+if [[ "${joined}" == *"/tasks/"* ]]; then
+  echo '{"state":"completed"}'
+  exit 0
+fi
+
+if [[ "${joined}" == *"/repositories/npm/npm/"* && "${joined}" != *"/content/"* ]]; then
+  echo '{"results":[{"name":"npm-registry","pulp_href":"/api/pulp/d/api/v3/repositories/npm/npm/r/","latest_version_href":"/api/pulp/d/api/v3/repositories/npm/npm/r/versions/1/"}]}'
+  exit 0
+fi
+
+# Other versions of the same name must not look like "already exists"
+if [[ "${joined}" == *"/content/npm/packages/"* && "${joined}" == *"--data-urlencode"* ]]; then
+  echo '{"count":1,"next":null,"results":[{"name":"lodash","version":"4.17.20","pulp_href":"/api/pulp/d/api/v3/content/npm/packages/old/","artifact":"/api/pulp/d/api/v3/artifacts/old/","pulp_labels":{}}]}'
+  exit 0
+fi
+
+echo "mock curl: unhandled: ${joined}" >&2
+exit 22
+EOF
+chmod +x "${rh_mock_bin}/curl"
+
+assert_ok "npm-pulp-upload RH API dry-run (upload + modify)" \
+  env PATH="${rh_mock_bin}:${PATH}" \
+      FILES_DIR="${pulp_files}" \
+      SECRET_DIR="${sec_ok}" \
+      PULP_BASE_URL="https://example.invalid" \
+      PULP_API_ROOT="/api/" \
+      PULP_DOMAIN="d" \
+      PULP_REPOSITORY="npm-registry" \
+      PULP_TASK_POLL_SECONDS=0 \
+      PULP_TASK_TIMEOUT_SECONDS=30 \
+      RH_CALL_LOG="${rh_call_log}" \
+      npm-pulp-upload
+
+if grep -q -- '--data-urlencode version=' "${rh_call_log}"; then
+  echo "FAIL: list query still sent version= filter" >&2
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: list query did not send version= filter"
+  PASS=$((PASS + 1))
+fi
+if grep -q -- '--form-string repository=' "${rh_call_log}"; then
+  echo "FAIL: sync upload still sent repository=" >&2
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: sync upload did not send repository="
+  PASS=$((PASS + 1))
+fi
+if grep -q 'packages/upload/' "${rh_call_log}" \
+   && grep -q 'modify/' "${rh_call_log}" \
+   && grep -q '/tasks/' "${rh_call_log}"; then
+  echo "PASS: dry-run issued upload, modify, and task poll"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: dry-run missing upload/modify/task calls" >&2
+  cat "${rh_call_log}" >&2
+  FAIL=$((FAIL + 1))
+fi
 
 # --- npm-fetch-chains-provenance: SLSA v0.2 (cluster) and v1 ---
 HEX="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
