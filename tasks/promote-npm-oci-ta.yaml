@@ -37,7 +37,8 @@ spec:
       type: string
     - name: PACKAGES
       description: >-
-        Package directories whose manifests supply requires_tl_packages
+        Package directories in this promote (manifests group outputs / built_from;
+        packed package.json dependencies are the compliance input)
         (e.g. ["packages/express/5.2.1"])
       type: array
     - name: PACKAGES_STATUS

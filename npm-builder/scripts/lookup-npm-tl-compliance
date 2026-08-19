@@ -1,23 +1,304 @@
 #!/usr/bin/env python3
-"""Look up TL npm registry presence and compliance level for name@version.
+"""Look up TL npm registry presence and compliance level for a name + spec.
 
 Public registry only (no credentials). Used by assess-npm-compliance.
 
+The spec may be an exact version or an npm range (^1.5.0, ~1.2.3, >=1.0.0 <2).
+Ranges are resolved against the TL packument (highest matching version).
+
 Exit codes:
-  0 — print compliance level (L1/L2/L3) to stdout
-  1 — package/version not on TL registry
+  0 — print JSON {name, requested, version, compliance_level} to stdout
+  1 — package / matching version not on TL registry
   2 — transport / unexpected registry error
 
 Usage:
-  lookup-npm-tl-compliance <registry-base-url> <name> <version>
+  lookup-npm-tl-compliance <registry-base-url> <name> <version-or-range>
+  lookup-npm-tl-compliance --max-satisfying <spec> <version> [<version> ...]
 """
 from __future__ import print_function
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+# --- npm-ish semver (exact, ^, ~, *, x-ranges, comparators, ||) ---
+
+_X = {"x", "X", "*"}
+
+
+def _cmp_pre_ids(a, b):
+    """npm: numeric identifiers compare numerically; others as strings."""
+    an = len(a)
+    bn = len(b)
+    for i in range(min(an, bn)):
+        ai, bi = a[i], b[i]
+        a_num, b_num = ai.isdigit(), bi.isdigit()
+        if a_num and b_num:
+            av, bv = int(ai), int(bi)
+            if av != bv:
+                return (av > bv) - (av < bv)
+        elif a_num != b_num:
+            return -1 if a_num else 1
+        else:
+            if ai != bi:
+                return (ai > bi) - (ai < bi)
+    return (an > bn) - (an < bn)
+
+
+class Version(object):
+    __slots__ = ("major", "minor", "patch", "prerelease")
+
+    def __init__(self, text):
+        raw = text.strip()
+        if raw.startswith("v") or raw.startswith("V"):
+            raw = raw[1:]
+        if "+" in raw:
+            raw = raw.split("+", 1)[0]
+        pre = None
+        if "-" in raw:
+            core, pre = raw.split("-", 1)
+        else:
+            core = raw
+        parts = core.split(".")
+        nums = []
+        for part in parts[:3]:
+            if part in _X or part == "":
+                raise ValueError("not a concrete version: %s" % text)
+            nums.append(int(part))
+        while len(nums) < 3:
+            nums.append(0)
+        self.major, self.minor, self.patch = nums
+        self.prerelease = tuple(pre.split(".")) if pre else None
+
+    def tuple(self):
+        return (self.major, self.minor, self.patch)
+
+    def __str__(self):
+        core = "%d.%d.%d" % (self.major, self.minor, self.patch)
+        if self.prerelease:
+            return core + "-" + ".".join(self.prerelease)
+        return core
+
+    def __eq__(self, other):
+        return self.tuple() == other.tuple() and self.prerelease == other.prerelease
+
+    def __lt__(self, other):
+        if self.tuple() != other.tuple():
+            return self.tuple() < other.tuple()
+        if self.prerelease is None and other.prerelease is None:
+            return False
+        if self.prerelease is None:
+            return False
+        if other.prerelease is None:
+            return True
+        return _cmp_pre_ids(self.prerelease, other.prerelease) < 0
+
+    def __le__(self, other):
+        return self == other or self < other
+
+    def __gt__(self, other):
+        return other < self
+
+    def __ge__(self, other):
+        return self == other or self > other
+
+
+def _parse_partial(text):
+    """Return (major, minor, patch, wild_at) where wild_at is 0/1/2/3 (3=exact)."""
+    raw = text.strip()
+    if raw.startswith("v") or raw.startswith("V"):
+        raw = raw[1:]
+    if "+" in raw:
+        raw = raw.split("+", 1)[0]
+    if "-" in raw:
+        raw = raw.split("-", 1)[0]
+    if raw in _X or raw == "":
+        return (0, 0, 0, 0)
+    parts = raw.split(".")
+    nums = []
+    wild_at = 3
+    for i, part in enumerate(parts[:3]):
+        if part in _X:
+            wild_at = i
+            break
+        nums.append(int(part))
+    else:
+        wild_at = len(nums)
+        if wild_at > 3:
+            wild_at = 3
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2], wild_at)
+
+
+def _caret_bounds(ver):
+    lower = ver
+    if ver.major != 0:
+        upper = Version("%d.0.0" % (ver.major + 1))
+    elif ver.minor != 0:
+        upper = Version("0.%d.0" % (ver.minor + 1))
+    else:
+        upper = Version("0.0.%d" % (ver.patch + 1))
+    return lower, upper
+
+
+def _tilde_bounds(major, minor, patch, wild_at):
+    lower = Version("%d.%d.%d" % (major, minor, patch))
+    if wild_at <= 1:
+        upper = Version("%d.0.0" % (major + 1))
+    else:
+        upper = Version("%d.%d.0" % (major, minor + 1))
+    return lower, upper
+
+
+def _split_comparators(clause):
+    """Split a single ||-clause into tokens, keeping hyphen ranges together."""
+    clause = clause.strip()
+    if not clause or clause == "*":
+        return ["*"]
+    hyphen = re.match(r"^(.+?)\s+-\s+(.+)$", clause)
+    if hyphen:
+        return [">=" + hyphen.group(1).strip(), "<=" + hyphen.group(2).strip()]
+    return clause.split()
+
+
+def _token_to_bounds(token):
+    """Return list of (op, Version) with op in >=, <, <=, >, =, *."""
+    token = token.strip()
+    if token in ("*", "", "x", "X"):
+        return [("*", None)]
+    if token.startswith("^"):
+        partial = token[1:]
+        pre = None
+        core = partial
+        if "-" in partial.split("+", 1)[0]:
+            core, pre_s = partial.split("+", 1)[0].split("-", 1)
+            pre = tuple(pre_s.split("."))
+        major, minor, patch, wild_at = _parse_partial(core)
+        ver = Version("%d.%d.%d" % (major, minor, patch))
+        ver.prerelease = pre
+        if wild_at == 0:
+            return [("*", None)]
+        if wild_at == 1:
+            return [(">=", Version("%d.0.0" % major)), ("<", Version("%d.0.0" % (major + 1)))]
+        lower, upper = _caret_bounds(ver)
+        return [(">=", lower), ("<", upper)]
+    if token.startswith("~"):
+        major, minor, patch, wild_at = _parse_partial(token[1:])
+        if wild_at == 0:
+            return [("*", None)]
+        lower, upper = _tilde_bounds(major, minor, patch, wild_at)
+        return [(">=", lower), ("<", upper)]
+    m = re.match(r"^(>=|<=|>|<|=)?\s*(.+)$", token)
+    if not m:
+        raise ValueError("bad range token: %s" % token)
+    op = m.group(1) or "="
+    rest = m.group(2).strip()
+    major, minor, patch, wild_at = _parse_partial(rest)
+    if wild_at < 3 and op == "=":
+        if wild_at == 0:
+            return [("*", None)]
+        if wild_at == 1:
+            return [
+                (">=", Version("%d.0.0" % major)),
+                ("<", Version("%d.0.0" % (major + 1))),
+            ]
+        return [
+            (">=", Version("%d.%d.0" % (major, minor))),
+            ("<", Version("%d.%d.0" % (major, minor + 1))),
+        ]
+    ver = Version("%d.%d.%d" % (major, minor, patch))
+    if "-" in rest.split("+", 1)[0]:
+        pre = rest.split("+", 1)[0].split("-", 1)[1]
+        ver.prerelease = tuple(pre.split("."))
+    return [(op, ver)]
+
+
+def _cmp_op(version, op, bound):
+    if op == "*":
+        return True
+    if op == "=":
+        return version == bound
+    if op == ">=":
+        return version >= bound
+    if op == ">":
+        return version > bound
+    if op == "<=":
+        return version <= bound
+    if op == "<":
+        return version < bound
+    raise ValueError("unknown op %s" % op)
+
+
+def _clause_allows_prerelease(comparators):
+    for op, bound in comparators:
+        if bound is not None and bound.prerelease:
+            return True
+    return False
+
+
+def satisfies(version_text, spec):
+    try:
+        version = Version(version_text)
+    except (TypeError, ValueError):
+        return False
+    spec = (spec or "*").strip()
+    if spec in ("*", "", "x", "X"):
+        return version.prerelease is None
+    for clause in spec.split("||"):
+        try:
+            tokens = _split_comparators(clause)
+            comparators = []
+            for token in tokens:
+                comparators.extend(_token_to_bounds(token))
+        except (TypeError, ValueError):
+            continue
+        allow_pre = _clause_allows_prerelease(comparators)
+        if version.prerelease and not allow_pre:
+            continue
+        if all(_cmp_op(version, op, bound) for op, bound in comparators):
+            return True
+    return False
+
+
+def max_satisfying(versions, spec):
+    matching = []
+    for item in versions:
+        if satisfies(item, spec):
+            try:
+                matching.append((Version(item), item))
+            except (TypeError, ValueError):
+                continue
+    if not matching:
+        return None
+    matching.sort(key=lambda pair: pair[0])
+    return matching[-1][1]
+
+
+def is_registry_spec(spec):
+    if spec is None:
+        return False
+    stripped = spec.strip()
+    if not stripped:
+        return False
+    prefixes = (
+        "http://",
+        "https://",
+        "git+",
+        "git://",
+        "file:",
+        "github:",
+        "workspace:",
+        "npm:",
+        "link:",
+        "portal:",
+    )
+    lower = stripped.lower()
+    return not lower.startswith(prefixes)
 
 
 def pkg_path(name):
@@ -36,42 +317,14 @@ def get_json(url):
         return json.load(resp)
 
 
-def main(argv):
-    if len(argv) != 4:
-        print(
-            "Usage: lookup-npm-tl-compliance <registry-base-url> <name> <version>",
-            file=sys.stderr,
-        )
-        return 2
+def resolve_from_packument(data, spec):
+    versions = list((data.get("versions") or {}).keys())
+    if spec in (data.get("versions") or {}):
+        return spec
+    return max_satisfying(versions, spec)
 
-    registry, name, version = argv[1], argv[2], argv[3]
-    registry = registry.rstrip("/")
-    meta_url = "%s/%s" % (registry, pkg_path(name))
 
-    try:
-        data = get_json(meta_url)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return 1
-        print(
-            "[lookup-npm-tl-compliance] registry error %s for %s" % (exc.code, meta_url),
-            file=sys.stderr,
-        )
-        return 2
-    except Exception as exc:
-        print(
-            "[lookup-npm-tl-compliance] registry request failed for %s: %s"
-            % (meta_url, exc),
-            file=sys.stderr,
-        )
-        return 2
-
-    versions = data.get("versions") or {}
-    if version not in versions:
-        return 1
-
-    # Adjacent compliance sidecar when release has published it:
-    # express@5.2.1 → .../express/-/express-5.2.1.tl-compliance.json
+def compliance_for_version(registry, name, version):
     short = name.split("/")[-1]
     comp_url = "%s/%s/-/%s-%s.tl-compliance.json" % (
         registry,
@@ -83,8 +336,7 @@ def main(argv):
         comp = get_json(comp_url)
         level = comp.get("compliance_level")
         if level in ("L1", "L2", "L3"):
-            print(level)
-            return 0
+            return 0, level
     except urllib.error.HTTPError as exc:
         if exc.code not in (404, 301, 302):
             print(
@@ -92,12 +344,79 @@ def main(argv):
                 % (exc.code, comp_url),
                 file=sys.stderr,
             )
-            return 2
+            return 2, None
     except Exception:
         pass
-
     # On registry, no compliance record yet → bootstrap L3.
-    print("L3")
+    return 0, "L3"
+
+
+def lookup(registry, name, spec):
+    registry = registry.rstrip("/")
+    if not is_registry_spec(spec):
+        return 1, None
+    meta_url = "%s/%s" % (registry, pkg_path(name))
+    try:
+        data = get_json(meta_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return 1, None
+        print(
+            "[lookup-npm-tl-compliance] registry error %s for %s" % (exc.code, meta_url),
+            file=sys.stderr,
+        )
+        return 2, None
+    except Exception as exc:
+        print(
+            "[lookup-npm-tl-compliance] registry request failed for %s: %s"
+            % (meta_url, exc),
+            file=sys.stderr,
+        )
+        return 2, None
+
+    resolved = resolve_from_packument(data, spec)
+    if resolved is None:
+        return 1, None
+    rc, level = compliance_for_version(registry, name, resolved)
+    if rc != 0:
+        return rc, None
+    payload = {
+        "name": name,
+        "requested": spec,
+        "version": resolved,
+        "compliance_level": level,
+    }
+    return 0, payload
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[1] == "--max-satisfying":
+        if len(argv) < 3:
+            print(
+                "Usage: lookup-npm-tl-compliance --max-satisfying <spec> [version ...]",
+                file=sys.stderr,
+            )
+            return 2
+        spec = argv[2]
+        versions = argv[3:]
+        found = max_satisfying(versions, spec)
+        if found is None:
+            return 1
+        print(found)
+        return 0
+
+    if len(argv) != 4:
+        print(
+            "Usage: lookup-npm-tl-compliance <registry-base-url> <name> <version-or-range>",
+            file=sys.stderr,
+        )
+        return 2
+
+    registry, name, spec = argv[1], argv[2], argv[3]
+    rc, payload = lookup(registry, name, spec)
+    if rc != 0:
+        return rc
+    print(json.dumps(payload, separators=(",", ":")))
     return 0
 
 
