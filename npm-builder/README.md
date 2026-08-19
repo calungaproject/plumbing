@@ -92,8 +92,8 @@ Local builds: `podman login registry.redhat.io` before `docker`/`podman` build.
 | `collect-npm-artifacts` | Stage `out/*.tgz` for OCI push / optional Pulp publish |
 | `generate-npm-sbom` | Syft → SPDX JSON embedded as `package/sboms/redhat.spdx.json` (Python parity) |
 | `verify-npm-sbom` | Promote: require embedded `redhat.spdx.json` in each `.tgz` |
-| `lookup-npm-tl-compliance` | Promote helper: public registry lookup for `name@version` level |
-| `assess-npm-compliance` | Promote: inductive L1/L2/L3 via manifests + `lookup-npm-tl-compliance`; write `*.tl-compliance.json` |
+| `lookup-npm-tl-compliance` | Promote helper: public packument lookup for `name` + version or range |
+| `assess-npm-compliance` | Promote: inductive L1/L2/L3 from packed `package.json` `dependencies` + `lookup-npm-tl-compliance`; write `*.tl-compliance.json` |
 | `npm-publish-pulp` | Optional Pulp npm publish (deferred; Tekton step only) |
 | `build_scripts/install-gcc-toolset.sh` | Install gcc-toolset from `gcc-toolset.lock` |
 | `build_scripts/install-rust-toolset.sh` | Install + versionlock pinned rust-toolset RPMs |
@@ -117,3 +117,15 @@ docker run --rm npm-builder rustc --version
 docker run --rm npm-builder cargo --version
 docker run --rm npm-builder syft version
 ```
+
+## Tests
+
+Konflux / `docker build` runs `tests/run_tests.sh` in a Containerfile stage and
+will not produce the final image if they fail (same pattern as `utils/`).
+
+```bash
+./npm-builder/tests/run_tests.sh
+```
+
+Local runs need bash 4+ (`mapfile`) and `sha256sum`. On macOS: `brew install bash coreutils`.
+

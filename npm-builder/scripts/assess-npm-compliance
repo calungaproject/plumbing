@@ -2,13 +2,20 @@
 # Assess dependency-closure compliance against the public TL npm registry.
 # Writes *.tl-compliance.json sidecars next to each .tgz (outside the tarball).
 #
-# Inductive levels (no npm lockfile):
-#   L1 — one or more requires_tl_packages missing from TL
-#   L2 — all requires on TL, but at least one dep is L1 or L2
-#   L3 — no requires, OR every requires_tl_packages dep is itself L3
+# Direct production dependencies come from the packed package.json (what
+# consumers install), not from the onboarding manifest.
+#
+# Inductive levels (direct deps only; no npm lockfile):
+#   L1 — one or more packed dependencies missing from TL (range unsatisfied)
+#   L2 — all direct deps on TL, but at least one dep is L1 or L2
+#   L3 — no dependencies, OR every direct dep is itself L3
+#
+# optionalDependencies that are already in this snapshot (typically
+# @calunga/…-linux-x64 from the same recipe) are treated as satisfied and
+# are not part of the check. Other optionals and peerDependencies are ignored.
 #
 # Dep compliance is read from (in order): this OCI's sidecars / in-run levels,
-# then lookup-npm-tl-compliance (public registry + adjacent compliance JSON).
+# then lookup-npm-tl-compliance (public packument + adjacent compliance JSON).
 #
 # Usage:
 #   assess-npm-compliance [artifact-dir] [source-root] [package-dir ...]
@@ -56,8 +63,13 @@ if [[ ${#tarballs[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Split name@version where name may be scoped (@scope/pkg@1.2.3).
+nv_name() { printf '%s' "${1%@*}"; }
+nv_version() { printf '%s' "${1##*@}"; }
+
 declare -A LOCAL_TL=()
 declare -A TGZ_FOR=() # name@version → tarball path
+declare -A VERSIONS_FOR_NAME=() # name → space-separated versions
 for tgz in "${tarballs[@]}"; do
     if pkg_json="$(tar -xOf "${tgz}" package/package.json 2>/dev/null)"; then
         n="$(jq -r '.name // empty' <<<"${pkg_json}")"
@@ -65,6 +77,7 @@ for tgz in "${tarballs[@]}"; do
         if [[ -n "${n}" && -n "${v}" ]]; then
             LOCAL_TL["${n}@${v}"]=1
             TGZ_FOR["${n}@${v}"]="${tgz}"
+            VERSIONS_FOR_NAME["${n}"]="${VERSIONS_FOR_NAME[${n}]:-} ${v}"
         fi
     fi
 done
@@ -93,7 +106,7 @@ elif [[ -n "${SOURCE_DIR}" && -d "${SOURCE_DIR}" ]]; then
 fi
 
 if [[ ${#MANIFEST_PATHS[@]} -eq 0 ]]; then
-    echo "[assess-npm-compliance] no manifests found; cannot compute requires_tl_packages" >&2
+    echo "[assess-npm-compliance] no manifests found; cannot group outputs or record built_from" >&2
     echo "  Provide source-root (onboarding checkout) and optional package dirs." >&2
     exit 1
 fi
@@ -102,14 +115,25 @@ declare -A OUTPUT_TO_MANIFEST=()
 declare -A MANIFEST_REQUIRES=()
 declare -A MANIFEST_SOURCE_URL=()
 declare -A MANIFEST_SOURCE_REF=()
+declare -A MANIFEST_MAIN_KEY=()
+
+packed_direct_deps() {
+    local tgz="$1"
+    local pkg_json
+    pkg_json="$(tar -xOf "${tgz}" package/package.json)"
+    jq -c '
+      (.dependencies // {})
+      | to_entries
+      | map(select((.key | length) > 0 and (.value | type) == "string" and (.value | length) > 0))
+      | map({name: .key, requested: .value})
+    ' <<<"${pkg_json}"
+}
 
 for m in "${MANIFEST_PATHS[@]}"; do
     name="$(jq -r '.name' "${m}")"
     version="$(jq -r '.version' "${m}")"
-    requires="$(jq -c '.requires_tl_packages // []' "${m}")"
     src_url="$(jq -r '.source.url // empty' "${m}")"
     src_ref="$(jq -r '.source.ref // empty' "${m}")"
-    MANIFEST_REQUIRES["${m}"]="${requires}"
     MANIFEST_SOURCE_URL["${m}"]="${src_url}"
     MANIFEST_SOURCE_REF["${m}"]="${src_ref}"
 
@@ -118,41 +142,67 @@ for m in "${MANIFEST_PATHS[@]}"; do
         OUTPUT_TO_MANIFEST["${pulp_name}@${version}"]="${m}"
     done < <(jq -r '.outputs[].pulp_name // empty' "${m}")
     OUTPUT_TO_MANIFEST["${name}@${version}"]="${m}"
+
+    main_pulp="$(jq -r '[.outputs[] | select(.type == "npm-package") | .pulp_name][0] // .name' "${m}")"
+    main_key="${main_pulp}@${version}"
+    MANIFEST_MAIN_KEY["${m}"]="${main_key}"
+    if [[ -z "${TGZ_FOR[${main_key}]:-}" ]]; then
+        echo "[assess-npm-compliance] missing main tarball for ${main_key} (manifest ${m})" >&2
+        exit 1
+    fi
+    MANIFEST_REQUIRES["${m}"]="$(packed_direct_deps "${TGZ_FOR[${main_key}]}")"
 done
 
 # name@version → compliance level once known
 declare -A LEVELS=()
 
-# Returns 0 and prints level; exit 1 if missing from TL; exit 2 on transport error.
-lookup_dep_level() {
+resolve_local_version() {
     local pkg="$1"
-    local ver="$2"
-    local key="${pkg}@${ver}"
+    local spec="$2"
+    local versions="${VERSIONS_FOR_NAME[${pkg}]:-}"
+    # shellcheck disable=SC2086
+    lookup-npm-tl-compliance --max-satisfying "${spec}" ${versions}
+}
 
-    if [[ -n "${LEVELS[${key}]:-}" ]]; then
-        echo "${LEVELS[${key}]}"
-        return 0
-    fi
+# Returns 0 and prints JSON {name,requested,version,compliance_level};
+# exit 1 if missing from TL; exit 2 on transport error.
+lookup_dep() {
+    local pkg="$1"
+    local spec="$2"
+    local resolved rc json lvl key tgz base sidecar
 
-    # Sidecar already written in this artifact dir (same promote / prior output).
-    if [[ -n "${TGZ_FOR[${key}]:-}" ]]; then
-        local tgz="${TGZ_FOR[${key}]}"
-        local base sidecar lvl
-        base="$(basename "${tgz}" .tgz)"
-        sidecar="$(dirname "${tgz}")/${base}.tl-compliance.json"
-        if [[ -f "${sidecar}" ]]; then
-            lvl="$(jq -r '.compliance_level // empty' "${sidecar}")"
-            if [[ -n "${lvl}" ]]; then
-                LEVELS["${key}"]="${lvl}"
-                echo "${lvl}"
-                return 0
-            fi
+    set +e
+    resolved="$(resolve_local_version "${pkg}" "${spec}")"
+    rc=$?
+    set -e
+    if [[ "${rc}" -eq 0 && -n "${resolved}" ]]; then
+        key="${pkg}@${resolved}"
+        if [[ -n "${LEVELS[${key}]:-}" ]]; then
+            jq -nc --arg name "${pkg}" --arg requested "${spec}" \
+                --arg version "${resolved}" --arg compliance_level "${LEVELS[${key}]}" \
+                '{name:$name, requested:$requested, version:$version, compliance_level:$compliance_level}'
+            return 0
         fi
-        # Same OCI but not assessed yet — caller should topo-order; treat as pending miss.
-        return 1
+        if [[ -n "${TGZ_FOR[${key}]:-}" ]]; then
+            tgz="${TGZ_FOR[${key}]}"
+            base="$(basename "${tgz}" .tgz)"
+            sidecar="$(dirname "${tgz}")/${base}.tl-compliance.json"
+            if [[ -f "${sidecar}" ]]; then
+                lvl="$(jq -r '.compliance_level // empty' "${sidecar}")"
+                if [[ -n "${lvl}" ]]; then
+                    LEVELS["${key}"]="${lvl}"
+                    jq -nc --arg name "${pkg}" --arg requested "${spec}" \
+                        --arg version "${resolved}" --arg compliance_level "${lvl}" \
+                        '{name:$name, requested:$requested, version:$version, compliance_level:$compliance_level}'
+                    return 0
+                fi
+            fi
+            # Same OCI but not assessed yet — caller should topo-order; treat as pending miss.
+            return 1
+        fi
     fi
 
-    lookup-npm-tl-compliance "${TL_NPM_REGISTRY_URL}" "${pkg}" "${ver}"
+    lookup-npm-tl-compliance "${TL_NPM_REGISTRY_URL}" "${pkg}" "${spec}"
 }
 
 # Topological order of manifests: deps that appear in this OCI first.
@@ -169,7 +219,12 @@ for ((iter = 0; iter < max_iters; iter++)); do
         while IFS= read -r dep; do
             [[ -n "${dep}" ]] || continue
             dep_name="$(jq -r '.name' <<<"${dep}")"
-            dep_ver="$(jq -r '.version' <<<"${dep}")"
+            dep_spec="$(jq -r '.requested' <<<"${dep}")"
+            set +e
+            dep_ver="$(resolve_local_version "${dep_name}" "${dep_spec}")"
+            rc=$?
+            set -e
+            [[ "${rc}" -eq 0 && -n "${dep_ver}" ]] || continue
             dep_key="${dep_name}@${dep_ver}"
             if [[ -n "${TGZ_FOR[${dep_key}]:-}" && -z "${LEVELS[${dep_key}]:-}" ]]; then
                 dep_m="${OUTPUT_TO_MANIFEST[${dep_key}]:-}"
@@ -203,7 +258,7 @@ wrote=0
 assess_manifest() {
     local m="$1"
     local requires_json gaps_json gap_count level dep_levels_json
-    local dep dep_name dep_ver dep_key dep_level rc
+    local dep dep_name dep_spec dep_key dep_json dep_level dep_ver rc
     local key tgz base sha256 sidecar pkg_json out_name out_version
 
     requires_json="${MANIFEST_REQUIRES[${m}]}"
@@ -213,11 +268,10 @@ assess_manifest() {
     while IFS= read -r dep; do
         [[ -n "${dep}" ]] || continue
         dep_name="$(jq -r '.name' <<<"${dep}")"
-        dep_ver="$(jq -r '.version' <<<"${dep}")"
-        dep_key="${dep_name}@${dep_ver}"
+        dep_spec="$(jq -r '.requested' <<<"${dep}")"
 
         set +e
-        dep_level="$(lookup_dep_level "${dep_name}" "${dep_ver}")"
+        dep_json="$(lookup_dep "${dep_name}" "${dep_spec}")"
         rc=$?
         set -e
 
@@ -227,18 +281,22 @@ assess_manifest() {
         if [[ "${rc}" -ne 0 ]]; then
             gaps_json="$(jq -c --argjson gap "$(jq -n \
                 --arg name "${dep_name}" \
-                --arg version "${dep_ver}" \
-                '{name:$name, version:$version, reason:"not_on_tl_registry"}')" \
+                --arg requested "${dep_spec}" \
+                '{name:$name, requested:$requested, reason:"not_on_tl_registry"}')" \
                 '. + [$gap]' <<<"${gaps_json}")"
             continue
         fi
 
+        dep_ver="$(jq -r '.version' <<<"${dep_json}")"
+        dep_level="$(jq -r '.compliance_level' <<<"${dep_json}")"
+        dep_key="${dep_name}@${dep_ver}"
         LEVELS["${dep_key}"]="${dep_level}"
         dep_levels_json="$(jq -c --argjson row "$(jq -n \
             --arg name "${dep_name}" \
+            --arg requested "${dep_spec}" \
             --arg version "${dep_ver}" \
             --arg compliance_level "${dep_level}" \
-            '{name:$name, version:$version, compliance_level:$compliance_level}')" \
+            '{name:$name, requested:$requested, version:$version, compliance_level:$compliance_level}')" \
             '. + [$row]' <<<"${dep_levels_json}")"
     done < <(jq -c '.[]' <<<"${requires_json}")
 
@@ -272,8 +330,7 @@ assess_manifest() {
             --arg compliance_level "${level}" \
             --arg assessed_at "${assessed_at}" \
             --argjson closure_gaps "${gaps_json}" \
-            --argjson requires_tl_packages "${requires_json}" \
-            --argjson dependency_levels "${dep_levels_json}" \
+            --argjson direct_dependencies "${dep_levels_json}" \
             --arg src_url "${MANIFEST_SOURCE_URL[${m}]}" \
             --arg src_ref "${MANIFEST_SOURCE_REF[${m}]}" \
             --arg tarball "$(basename "${tgz}")" \
@@ -285,8 +342,7 @@ assess_manifest() {
               compliance_level: $compliance_level,
               assessed_at: $assessed_at,
               closure_gaps: $closure_gaps,
-              requires_tl_packages: $requires_tl_packages,
-              dependency_levels: $dependency_levels,
+              direct_dependencies: $direct_dependencies,
               built_from: (if $src_url == "" then null else {url: $src_url, ref: $src_ref} end),
               tarball: $tarball,
               tarball_sha256: $tarball_sha256,
