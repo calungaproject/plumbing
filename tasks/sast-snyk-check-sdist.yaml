@@ -96,7 +96,7 @@ spec:
         ls -la "${ARTIFACT_DIR}"
 
     - name: extract-sdists
-      image: quay.io/konflux-ci/konflux-test:v1.5.2@sha256:c370a7bc6e172cdbab001f1a19f37ebc95f47c3d8fe2d915fa4641132490ead7
+      image: quay.io/konflux-ci/konflux-test:v1.5.6@sha256:365b172d2a8a145406f028d0a94a77b489fbdf9d84e5bd9529b1c3ad72f077b1
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -121,7 +121,7 @@ spec:
         echo "Extracted ${SDIST_COUNT} sdist(s)"
 
     - name: sast-snyk-check
-      image: quay.io/konflux-ci/konflux-test:v1.5.2@sha256:c370a7bc6e172cdbab001f1a19f37ebc95f47c3d8fe2d915fa4641132490ead7
+      image: quay.io/konflux-ci/konflux-test:v1.5.6@sha256:365b172d2a8a145406f028d0a94a77b489fbdf9d84e5bd9529b1c3ad72f077b1
       volumeMounts:
         - mountPath: /etc/secrets
           name: snyk-secret
