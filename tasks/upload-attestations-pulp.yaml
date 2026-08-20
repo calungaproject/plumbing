@@ -97,7 +97,7 @@ spec:
         mountPath: /var/workdir
   steps:
     - name: prepare-workdir
-      image: quay.io/konflux-ci/release-service-utils@sha256:5546fa78d3c88d7b6a2e8cff8902f7757f00541d0bbaf113b9f293133894afa3
+      image: quay.io/konflux-ci/release-service-utils@sha256:9db0cc6b09799f41c87d46589dcd2c1ba66edfcaab3b88b99e2fcbc0646424bf
       computeResources:
         limits:
           memory: 32Mi
