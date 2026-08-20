@@ -133,7 +133,7 @@ spec:
         - /var/workdir/output
         - /var/workdir/artifact
     - name: create-oci-artifact
-      image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
+      image: quay.io/konflux-ci/oras:latest@sha256:1cc659b4d30536ec98300ac551739ef36dee345a7dcfe06129fd78abdc3688ac
       workingDir: /var/workdir
       volumeMounts:
         - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
