@@ -127,8 +127,10 @@ assess-npm-compliance "${miss_root}/artifact" "${miss_root}/source" "packages/pa
     >/dev/null
 assert_eq "$(jq -r .compliance_level "${miss_root}/artifact/parent-1.0.0.tl-compliance.json")" \
     "L1" "packed dep missing from TL → L1"
-assert_eq "$(jq -r '.closure_gaps[0].name' "${miss_root}/artifact/parent-1.0.0.tl-compliance.json")" \
-    "missing" "gap records packed dep name"
+assert_eq "$(jq -r '.schema_version' "${miss_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "3" "sidecar schema_version is 3"
+assert_eq "$(jq -r '.missing_gaps[0]' "${miss_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "missing@^1.0.0" "missing dep recorded in missing_gaps"
 
 # --- dep on TL at L3 → L3 ---
 ok_root="${tmpdir}/ok"
@@ -139,8 +141,10 @@ assess-npm-compliance "${ok_root}/artifact" "${ok_root}/source" "packages/parent
     >/dev/null
 assert_eq "$(jq -r .compliance_level "${ok_root}/artifact/parent-1.0.0.tl-compliance.json")" \
     "L3" "packed dep on TL at L3 → L3"
-assert_eq "$(jq -r '.direct_dependencies[0].version' "${ok_root}/artifact/parent-1.0.0.tl-compliance.json")" \
-    "1.0.0" "sidecar records resolved version"
+assert_eq "$(jq -r '.direct_dependencies[0].requested' "${ok_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "^1.0.0" "sidecar records requested range only"
+assert_eq "$(jq -r '.pending_l3_gaps | length' "${ok_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "0" "L3 dep not listed in pending_l3_gaps"
 
 # --- dep on TL at L2 → L2 ---
 mid_root="${tmpdir}/mid"
@@ -151,6 +155,8 @@ assess-npm-compliance "${mid_root}/artifact" "${mid_root}/source" "packages/pare
     >/dev/null
 assert_eq "$(jq -r .compliance_level "${mid_root}/artifact/parent-1.0.0.tl-compliance.json")" \
     "L2" "packed dep on TL at L2 → L2"
+assert_eq "$(jq -r '.pending_l3_gaps[0]' "${mid_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "mid@1.0.0" "L2 dep listed in pending_l3_gaps"
 
 # --- same-OCI dep: parent waits for leaf sidecar ---
 local_root="${tmpdir}/local"
@@ -167,8 +173,8 @@ assert_eq "$(jq -r .compliance_level "${local_root}/artifact/leaf-1.0.0.tl-compl
     "L3" "same-OCI leaf → L3"
 assert_eq "$(jq -r .compliance_level "${local_root}/artifact/parent-1.0.0.tl-compliance.json")" \
     "L3" "parent of same-OCI L3 leaf → L3"
-assert_eq "$(jq -r '.direct_dependencies[0].version' "${local_root}/artifact/parent-1.0.0.tl-compliance.json")" \
-    "1.0.0" "parent resolved leaf from this snapshot"
+assert_eq "$(jq -r '.direct_dependencies[0].requested' "${local_root}/artifact/parent-1.0.0.tl-compliance.json")" \
+    "^1.0.0" "parent records leaf requested range"
 
 echo
 echo "assess-npm-compliance: ${PASS} passed, ${FAIL} failed"

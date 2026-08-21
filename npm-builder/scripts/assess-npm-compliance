@@ -6,9 +6,9 @@
 # consumers install), not from the onboarding manifest.
 #
 # Inductive levels (direct deps only; no npm lockfile):
-#   L1 — one or more packed dependencies missing from TL (range unsatisfied)
-#   L2 — all direct deps on TL, but at least one dep is L1 or L2
-#   L3 — no dependencies, OR every direct dep is itself L3
+#   L1 — one or more packed dependencies missing from TL (missing_gaps)
+#   L2 — all direct deps on TL, but at least one dep is not L3 (pending_l3_gaps)
+#   L3 — no dependencies, OR every direct dep is itself L3 (both gap lists empty)
 #
 # optionalDependencies that are already in this snapshot (typically
 # @calunga/…-linux-x64 from the same recipe) are treated as satisfied and
@@ -22,6 +22,8 @@
 # Env:
 #   ARTIFACT_ROOT, SOURCE_ROOT
 #   TL_NPM_REGISTRY_URL  (default: packages.redhat.com .../javascript)
+#   TL_SKIP_COMPLIANCE_SIDECAR  When set, do not fetch adjacent *.tl-compliance.json
+#                               from the TL registry (PoC: sidecars live in OCI only).
 #
 # Requires (npm-builder image): bash, find, sort, tar, jq, python3, sha256sum,
 # awk, grep, date, basename, dirname; plus lookup-npm-tl-compliance on PATH.
@@ -187,7 +189,7 @@ lookup_dep() {
             tgz="${TGZ_FOR[${key}]}"
             base="$(basename "${tgz}" .tgz)"
             sidecar="$(dirname "${tgz}")/${base}.tl-compliance.json"
-            if [[ -f "${sidecar}" ]]; then
+            if [[ -z "${TL_SKIP_COMPLIANCE_SIDECAR:-}" && -f "${sidecar}" ]]; then
                 lvl="$(jq -r '.compliance_level // empty' "${sidecar}")"
                 if [[ -n "${lvl}" ]]; then
                     LEVELS["${key}"]="${lvl}"
@@ -257,13 +259,13 @@ wrote=0
 
 assess_manifest() {
     local m="$1"
-    local requires_json gaps_json gap_count level dep_levels_json
-    local dep dep_name dep_spec dep_key dep_json dep_level dep_ver rc
+    local requires_json missing_json pending_json gap_count level dep
+    local dep_name dep_spec dep_json dep_level dep_ver dep_key rc
     local key tgz base sha256 sidecar pkg_json out_name out_version
 
     requires_json="${MANIFEST_REQUIRES[${m}]}"
-    gaps_json='[]'
-    dep_levels_json='[]'
+    missing_json='[]'
+    pending_json='[]'
 
     while IFS= read -r dep; do
         [[ -n "${dep}" ]] || continue
@@ -279,11 +281,8 @@ assess_manifest() {
             exit 1
         fi
         if [[ "${rc}" -ne 0 ]]; then
-            gaps_json="$(jq -c --argjson gap "$(jq -n \
-                --arg name "${dep_name}" \
-                --arg requested "${dep_spec}" \
-                '{name:$name, requested:$requested, reason:"not_on_tl_registry"}')" \
-                '. + [$gap]' <<<"${gaps_json}")"
+            dep_key="${dep_name}@${dep_spec}"
+            missing_json="$(jq -c --arg key "${dep_key}" '. + [$key]' <<<"${missing_json}")"
             continue
         fi
 
@@ -291,24 +290,20 @@ assess_manifest() {
         dep_level="$(jq -r '.compliance_level' <<<"${dep_json}")"
         dep_key="${dep_name}@${dep_ver}"
         LEVELS["${dep_key}"]="${dep_level}"
-        dep_levels_json="$(jq -c --argjson row "$(jq -n \
-            --arg name "${dep_name}" \
-            --arg requested "${dep_spec}" \
-            --arg version "${dep_ver}" \
-            --arg compliance_level "${dep_level}" \
-            '{name:$name, requested:$requested, version:$version, compliance_level:$compliance_level}')" \
-            '. + [$row]' <<<"${dep_levels_json}")"
+        if [[ "${dep_level}" != "L3" ]]; then
+            pending_json="$(jq -c --arg key "${dep_key}" '. + [$key]' <<<"${pending_json}")"
+        fi
     done < <(jq -c '.[]' <<<"${requires_json}")
 
-    gap_count="$(jq 'length' <<<"${gaps_json}")"
+    gap_count="$(jq 'length' <<<"${missing_json}")"
     if [[ "${gap_count}" -gt 0 ]]; then
         level="L1"
+    elif [[ "$(jq 'length' <<<"${pending_json}")" -gt 0 ]]; then
+        level="L2"
     elif [[ "$(jq 'length' <<<"${requires_json}")" -eq 0 ]]; then
         level="L3"
-    elif [[ "$(jq '[.[] | select(.compliance_level != "L3")] | length' <<<"${dep_levels_json}")" -eq 0 ]]; then
-        level="L3"
     else
-        level="L2"
+        level="L3"
     fi
 
     for key in "${!OUTPUT_TO_MANIFEST[@]}"; do
@@ -329,27 +324,31 @@ assess_manifest() {
             --arg version "${out_version}" \
             --arg compliance_level "${level}" \
             --arg assessed_at "${assessed_at}" \
-            --argjson closure_gaps "${gaps_json}" \
-            --argjson direct_dependencies "${dep_levels_json}" \
+            --argjson missing_gaps "${missing_json}" \
+            --argjson pending_l3_gaps "${pending_json}" \
+            --argjson direct_dependencies "${requires_json}" \
             --arg src_url "${MANIFEST_SOURCE_URL[${m}]}" \
             --arg src_ref "${MANIFEST_SOURCE_REF[${m}]}" \
             --arg tarball "$(basename "${tgz}")" \
             --arg tarball_sha256 "${sha256}" \
             --arg registry "${TL_NPM_REGISTRY_URL}" \
             '{
+              schema_version: 3,
               name: $name,
               version: $version,
               compliance_level: $compliance_level,
               assessed_at: $assessed_at,
-              closure_gaps: $closure_gaps,
+              missing_gaps: $missing_gaps,
+              pending_l3_gaps: $pending_l3_gaps,
               direct_dependencies: $direct_dependencies,
+              compliance_revision: 1,
               built_from: (if $src_url == "" then null else {url: $src_url, ref: $src_ref} end),
               tarball: $tarball,
               tarball_sha256: $tarball_sha256,
               registry: $registry
             } | with_entries(select(.value != null))' > "${sidecar}"
 
-        echo "[assess-npm-compliance] ${out_name}@${out_version} → ${level} (gaps=${gap_count}) → ${sidecar}"
+        echo "[assess-npm-compliance] ${out_name}@${out_version} → ${level} (missing=$(jq 'length' <<<"${missing_json}") pending=$(jq 'length' <<<"${pending_json}")) → ${sidecar}"
         wrote=$((wrote + 1))
     done
 }

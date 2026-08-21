@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Rebuild closure index (and optionally gap lists) via update-npm-closure rebalance.
+# Runs in plumbing-utils image (Pulp credentials + oras required).
+#
+# Usage:
+#   npm-rebalance-closure [--index-only]
+#
+# Env: COMPLIANCE_IMAGE_PREFIX, CLOSURE_INDEX_IMAGE, PULP_*, SECRET_DIR
+#
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+if [[ -z "${COMPLIANCE_IMAGE_PREFIX:-}" ]]; then
+  fail_with_status "COMPLIANCE_IMAGE_PREFIX is required"
+fi
+
+args=(rebalance)
+if [[ "${1:-}" == "--index-only" ]]; then
+  args+=(--index-only)
+elif [[ -n "${1:-}" ]]; then
+  fail_with_status "unknown argument: $1 (use --index-only or no args)"
+fi
+
+update-npm-closure "${args[@]}" || fail_with_status "update-npm-closure rebalance failed"
+echo "npm-rebalance-closure completed"

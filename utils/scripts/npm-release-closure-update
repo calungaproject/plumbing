@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Release-pipeline entrypoint: propagate TL npm closure via per-package compliance OCI.
+# Invoked as a Tekton step via:
+#   command: ["npm-release-closure-update"]
+#
+# Env:
+#   SIDECAR_PATH or FILES_DIR (finds exactly one *.tl-compliance.json)
+#   PULP_CONTENT_HREF (optional; updater resolves from repo if unset)
+#   COMPLIANCE_IMAGE_PREFIX, PULP_*, TL_NPM_REGISTRY_URL
+#   STATUS_PATH (optional; written on failure via npm-common.sh)
+#
+set -euo pipefail
+
+_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+if [[ -f "${_SCRIPT_DIR}/npm-common.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${_SCRIPT_DIR}/npm-common.sh"
+else
+  # shellcheck disable=SC1091
+  source "$(command -v npm-common.sh)"
+fi
+
+SIDECAR="${SIDECAR_PATH:-}"
+PULP_HREF="${PULP_CONTENT_HREF:-}"
+
+if [[ -z "${SIDECAR}" ]]; then
+  FILES_DIR="${FILES_DIR:?FILES_DIR required when SIDECAR_PATH is unset}"
+  shopt -s nullglob globstar
+  sidecars=("${FILES_DIR}"/*.tl-compliance.json "${FILES_DIR}"/**/*.tl-compliance.json)
+  shopt -u nullglob globstar
+  if [[ ${#sidecars[@]} -ne 1 ]]; then
+    fail_with_status "expected exactly one *.tl-compliance.json under ${FILES_DIR}, got ${#sidecars[@]}"
+  fi
+  SIDECAR="${sidecars[0]}"
+fi
+
+if [[ ! -f "${SIDECAR}" ]]; then
+  fail_with_status "sidecar not found: ${SIDECAR}"
+fi
+
+if [[ -z "${COMPLIANCE_IMAGE_PREFIX:-}" ]]; then
+  fail_with_status "COMPLIANCE_IMAGE_PREFIX is required"
+fi
+
+update-npm-closure update --sidecar "${SIDECAR}" --pulp-href "${PULP_HREF}" \
+  || fail_with_status "update-npm-closure failed"
+
+echo "npm-release-closure-update completed"

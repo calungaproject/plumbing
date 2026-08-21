@@ -127,5 +127,112 @@ will not produce the final image if they fail (same pattern as `utils/`).
 ./npm-builder/tests/run_tests.sh
 ```
 
-Local runs need bash 4+ (`mapfile`) and `sha256sum`. On macOS: `brew install bash coreutils`.
+Local runs need bash 4+ (`mapfile`), `sha256sum`, and `oras`. On macOS:
+
+```bash
+brew install bash coreutils oras
+```
+
+The probe scripts prepend Homebrew `bash` and GNU `sha256sum` when present.
+
+## Closure index (PoC probes)
+
+Local end-to-end without Konflux SBOM/signing. **`hack/` probes are not used in
+Tekton** — they invoke the same production scripts that run on Linux in CI.
+
+| Surface | Image | macOS shims? |
+| ------- | ----- | ------------ |
+| `assess-npm-compliance` | npm-builder | No |
+| `update-npm-closure`, `npm-rebalance-closure` | plumbing-utils | No |
+| `npm-pulp-upload` | plumbing-utils | No |
+| `hack/npm-closure-probe` | local only | Yes (Python; prepends `utils/scripts`, `npm-builder/scripts`) |
+
+Schema v3: per-package `*.tl-compliance.json` (immutable `direct_dependencies`,
+mutable `missing_gaps` / `pending_l3_gaps`) plus global `npm-closure-index.json`
+OCI. See `npm-registry/docs/tl-compliance-schema-v3.md`.
+
+### `hack/npm-closure-probe` (unified local CLI)
+
+Subcommands call the same production scripts as the release pipeline:
+
+| Subcommand | Pipeline steps |
+| ---------- | -------------- |
+| `add NAME VERSION` | **assess** (`assess-npm-compliance`) → **publish** (`npm-pulp-upload`, `oras`, `npm-release-closure-update`) |
+| `seed [--init-index]` | `update-npm-closure seed` |
+| `rebalance [--index-only]` | `update-npm-closure rebalance` |
+| `e2e [--mode …]` | Multi-package scenario (runs `add` repeatedly + assertions) |
+| `assess NAME VERSION` | assess only (no Quay prefixes) |
+
+**Probe env** (prefixes required; never defaulted):
+
+```bash
+cd plumbing
+export PULP_USERNAME='...'
+export PULP_PASSWORD='...'
+export COMPLIANCE_IMAGE_PREFIX='quay.io/<org>/npm-compliance'
+export SNAPSHOT_IMAGE_PREFIX='quay.io/<org>/npm-snapshot'
+# optional: CLOSURE_INDEX_IMAGE='quay.io/<org>/npm-compliance/npm-closure-index:latest'
+```
+
+```bash
+./hack/npm-closure-probe seed --init-index
+./hack/npm-closure-probe e2e
+./hack/npm-closure-probe add depd 2.0.0
+./hack/npm-closure-probe rebalance --index-only
+./hack/npm-closure-probe assess express 4.22.2
+```
+
+Seed/rebalance need `COMPLIANCE_IMAGE_PREFIX` only (no snapshot prefix).
+
+OCI artifacts:
+
+| Ref | Contents |
+| --- | -------- |
+| `SNAPSHOT_IMAGE_PREFIX:<name-version>` | package `.tgz` only |
+| `COMPLIANCE_IMAGE_PREFIX:<name-version>` | `*.tl-compliance.json` (schema v3) |
+| `…/npm-closure-index:latest` | global reverse gap index |
+
+Release `update-npm-closure update` drains index waiters when a blocker lands,
+registers the release on gap keys, and updates Pulp `tl.compliance_level` /
+`tl.compliance_oci_digest` (no index digest on Pulp).
+
+Repair: `update-npm-closure rebalance` or `npm-rebalance-closure` (utils image).
+
+Requires `docker login quay.io` for OCI push/pull steps.
+
+### Closure index + level propagation E2E
+
+Two tier-A consumers with shared deps; lands `ms@2.0.0` (debug). In parents phase,
+`send@0.19.0` registers gap blockers on the index, then `ms@2.1.3` is probed.
+
+| `--mode` | What it does |
+| -------- | ------------ |
+| `all` (default) | Shared chain → index assertions → finalhandler L3 |
+| `shared` | Land shared deps + refresh debug |
+| `parents` | Probe send/finalhandler + assert index links (e.g. ms→send) |
+| `levels` | finalhandler-only deps + assert finalhandler L3 |
+| `verify` | No probes; assert index + levels on current OCI |
+
+```bash
+./hack/npm-closure-probe e2e 2>&1 | tee /tmp/npm-closure-parent-e2e.log
+./hack/npm-closure-probe e2e --mode verify
+./hack/npm-closure-probe e2e --mode parents
+```
+
+Add packages:
+
+```bash
+./hack/npm-closure-probe add depd 2.0.0
+./hack/npm-closure-probe add ms 2.1.3 --seed-first
+```
+
+Seed / rebalance:
+
+```bash
+./hack/npm-closure-probe seed --init-index
+./hack/npm-closure-probe rebalance --index-only
+./hack/npm-closure-probe rebalance
+```
+
+Exits non-zero if assertions fail.
 
