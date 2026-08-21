@@ -1,0 +1,1028 @@
+#!/usr/bin/env python3
+"""TL npm closure updater: per-package compliance OCI + global closure index.
+
+Schema v3 (assess writes initial doc; updater mutates gap lists + level only):
+
+  direct_dependencies  immutable [{name, requested}] from package.json
+  missing_gaps         mutable [name@version, ...] not on TL yet
+  pending_l3_gaps      mutable [name@version, ...] on TL but not L3
+  compliance_level     L1 if missing_gaps; L2 if pending_l3_gaps; else L3
+
+Global index (separate OCI artifact): blocker name@version -> {parents: [...]}.
+
+Usage:
+  update-npm-closure update --sidecar PATH [--pulp-href HREF]
+  update-npm-closure seed [--init-index]
+  update-npm-closure rebalance [--index-only]
+  update-npm-closure show --name NAME --version VERSION
+  update-npm-closure show-index
+
+Environment (Pulp REST):
+  PULP_BASE_URL, PULP_API_ROOT, PULP_DOMAIN, PULP_REPOSITORY
+  SECRET_DIR or PULP_USERNAME + PULP_PASSWORD
+  TL_NPM_REGISTRY_URL
+
+Environment (Quay / ORAS — prefixes required at deploy time, never hardcoded):
+  COMPLIANCE_IMAGE_PREFIX   required
+  CLOSURE_INDEX_IMAGE       optional; default: ${COMPLIANCE_IMAGE_PREFIX}/npm-closure-index:latest
+  COMPLIANCE_ARTIFACT_TYPE, ORAS_OPTIONS
+"""
+from __future__ import print_function
+
+import argparse
+import base64
+import copy
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SCHEMA_VERSION = 3
+INDEX_SCHEMA_VERSION = 1
+INDEX_FILENAME = "npm-closure-index.json"
+COMPLIANCE_LABEL = "tl.compliance_level"
+COMPLIANCE_DIGEST_LABEL = "tl.compliance_oci_digest"
+COMPLIANCE_ARTIFACT_TYPE = "application/vnd.npm.tl-compliance+json"
+DEFAULT_NPM_REPOSITORY = "npm-registry"
+PYTHON_WHEELS_REPOSITORY = "main"
+NPM_CONTENT_PATH = "/content/npm/packages/"
+ORAS_DIGEST_RE = re.compile(r"^Digest:\s*(sha256:[a-f0-9]{64})\s*$", re.IGNORECASE | re.MULTILINE)
+CAS_MAX_RETRIES = int(os.environ.get("CLOSURE_CAS_MAX_RETRIES", "8"))
+
+
+def eprint(*args):
+    print(*args, file=sys.stderr)
+
+
+def node_key(name, version):
+    return "%s@%s" % (name, version)
+
+
+def parse_node_key(key):
+    name, version = key.rsplit("@", 1)
+    return name, version
+
+
+def _load_npm_semver():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    import npm_semver  # noqa: WPS433 — bundled next to this script in plumbing-utils
+
+    return npm_semver
+
+
+def npm_version_satisfies(version, spec):
+    """True when version is the max satisfying release for spec (npm semver rules)."""
+    if version == spec:
+        return True
+    semver = _load_npm_semver()
+    return semver.max_satisfying([version], spec) == version
+
+
+def find_index_blocker_keys_for_release(index, release_name, release_version):
+    """Index blocker keys cleared when release_name@release_version lands on TL."""
+    matched = []
+    for blocker_key in (index.get("entries") or {}):
+        bname, bspec = parse_node_key(blocker_key)
+        if bname != release_name:
+            continue
+        if bspec == release_version or npm_version_satisfies(release_version, bspec):
+            matched.append(blocker_key)
+    return sorted(set(matched))
+
+
+def gap_name(key):
+    return parse_node_key(key)[0]
+
+
+def compliance_oci_tag(name, version):
+    if name.startswith("@"):
+        return "%s-%s" % (name.lstrip("@").replace("/", "-"), version)
+    return "%s-%s" % (name, version)
+
+
+def compliance_filename(name, version):
+    return "%s.tl-compliance.json" % compliance_oci_tag(name, version)
+
+
+def validate_compliance_image_prefix():
+    prefix = os.environ.get("COMPLIANCE_IMAGE_PREFIX", "").strip()
+    if not prefix:
+        raise SystemExit("COMPLIANCE_IMAGE_PREFIX is required")
+    return prefix
+
+
+def compliance_image_ref(name, version):
+    prefix = validate_compliance_image_prefix()
+    if "@" in prefix and not prefix.endswith("@"):
+        base = prefix.split("@", 1)[0]
+    else:
+        base = prefix
+    if ":" in base.rsplit("/", 1)[-1]:
+        base = base.rsplit(":", 1)[0]
+    return "%s:%s" % (base, compliance_oci_tag(name, version))
+
+
+def closure_index_image_ref():
+    explicit = os.environ.get("CLOSURE_INDEX_IMAGE", "").strip()
+    if explicit:
+        return explicit
+    prefix = validate_compliance_image_prefix()
+    if "@" in prefix and not prefix.endswith("@"):
+        base = prefix.split("@", 1)[0]
+    else:
+        base = prefix
+    if ":" in base.rsplit("/", 1)[-1]:
+        base = base.rsplit(":", 1)[0]
+    return "%s/npm-closure-index:latest" % base
+
+
+def compute_level(doc):
+    if doc.get("missing_gaps"):
+        return "L1"
+    if doc.get("pending_l3_gaps"):
+        return "L2"
+    return "L3"
+
+
+def normalize_gap_list(value):
+    if not value:
+        return []
+    if isinstance(value, list) and value and isinstance(value[0], str):
+        return sorted(set(value))
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                name = item.get("name") or ""
+                version = item.get("version") or item.get("requested") or ""
+                if name and version:
+                    out.append(node_key(name, version))
+        return sorted(set(out))
+    return []
+
+
+def normalize_direct_dependencies(value):
+    if not value:
+        return []
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or ""
+        requested = item.get("requested") or item.get("version") or ""
+        if name and requested:
+            out.append({"name": name, "requested": requested})
+    return out
+
+
+def normalize_doc(doc):
+    """Normalize v1/v2/v3 compliance JSON to internal v3 shape."""
+    doc = copy.deepcopy(doc)
+    missing = normalize_gap_list(doc.get("missing_gaps"))
+    pending = normalize_gap_list(doc.get("pending_l3_gaps"))
+    legacy_gaps = doc.get("closure_gaps") or []
+    if legacy_gaps and not missing and not pending:
+        for item in legacy_gaps:
+            if isinstance(item, dict):
+                name = item.get("name") or ""
+                version = item.get("version") or item.get("requested") or ""
+                if name and version:
+                    missing.append(node_key(name, version))
+    missing = sorted(set(missing))
+    pending = sorted(set(pending))
+    direct = normalize_direct_dependencies(doc.get("direct_dependencies"))
+    level = doc.get("compliance_level") or doc.get("level") or compute_level(
+        {"missing_gaps": missing, "pending_l3_gaps": pending}
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "name": doc.get("name") or "",
+        "version": doc.get("version") or "",
+        "compliance_level": level,
+        "direct_dependencies": direct,
+        "missing_gaps": missing,
+        "pending_l3_gaps": pending,
+        "assessed_at": doc.get("assessed_at"),
+        "closure_updated_at": doc.get("closure_updated_at"),
+        "compliance_revision": int(doc.get("compliance_revision") or 1),
+        "pulp_href": doc.get("pulp_href") or "",
+        "tarball_sha256": doc.get("tarball_sha256"),
+        "tarball": doc.get("tarball"),
+        "built_from": doc.get("built_from"),
+        "registry": doc.get("registry"),
+    }
+
+
+def gap_keys(doc):
+    return sorted(set(doc.get("missing_gaps") or []) | set(doc.get("pending_l3_gaps") or []))
+
+
+def direct_dep_names(doc):
+    return {d["name"] for d in doc.get("direct_dependencies") or []}
+
+
+def validate_gap_subset(doc):
+    for key in gap_keys(doc):
+        if gap_name(key) not in direct_dep_names(doc):
+            raise SystemExit(
+                "Gap %r is not a direct dependency of %s@%s"
+                % (key, doc.get("name"), doc.get("version"))
+            )
+
+
+def refresh_parent_doc(doc, blocker_key, blocker_level):
+    """Mutate gap lists only; recompute level. direct_dependencies unchanged."""
+    doc = copy.deepcopy(doc)
+    missing = list(doc.get("missing_gaps") or [])
+    pending = list(doc.get("pending_l3_gaps") or [])
+    if blocker_key in missing:
+        missing.remove(blocker_key)
+        if blocker_level != "L3" and blocker_key not in pending:
+            pending.append(blocker_key)
+    elif blocker_key in pending:
+        if blocker_level == "L3":
+            pending.remove(blocker_key)
+    doc["missing_gaps"] = sorted(set(missing))
+    doc["pending_l3_gaps"] = sorted(set(pending))
+    doc["compliance_level"] = compute_level(doc)
+    doc["compliance_revision"] = int(doc.get("compliance_revision") or 1) + 1
+    doc["closure_updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return doc
+
+
+def doc_to_compliance_json(doc, for_update=False):
+    registry = os.environ.get(
+        "TL_NPM_REGISTRY_URL",
+        "https://packages.redhat.com/api/pulp-content/public-trusted-libraries/javascript",
+    ).rstrip("/")
+    out = {
+        "schema_version": SCHEMA_VERSION,
+        "name": doc["name"],
+        "version": doc["version"],
+        "compliance_level": doc.get("compliance_level") or compute_level(doc),
+        "direct_dependencies": copy.deepcopy(doc.get("direct_dependencies") or []),
+        "missing_gaps": sorted(set(doc.get("missing_gaps") or [])),
+        "pending_l3_gaps": sorted(set(doc.get("pending_l3_gaps") or [])),
+        "assessed_at": doc.get("assessed_at"),
+        "closure_updated_at": doc.get("closure_updated_at")
+        or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "compliance_revision": int(doc.get("compliance_revision") or 1),
+        "registry": doc.get("registry") or registry,
+        "compliance_oci": compliance_image_ref(doc["name"], doc["version"]),
+        "pulp_href": doc.get("pulp_href") or "",
+    }
+    if doc.get("tarball_sha256"):
+        out["tarball_sha256"] = doc["tarball_sha256"]
+    if doc.get("tarball"):
+        out["tarball"] = doc["tarball"]
+    if doc.get("built_from"):
+        out["built_from"] = doc["built_from"]
+    if for_update:
+        out["direct_dependencies"] = copy.deepcopy(doc.get("direct_dependencies") or [])
+    return out
+
+
+def sidecar_to_doc(sidecar_path, pulp_href=""):
+    with open(sidecar_path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if pulp_href:
+        data["pulp_href"] = pulp_href
+    doc = normalize_doc(data)
+    if not doc["name"] or not doc["version"]:
+        raise SystemExit("Sidecar missing name/version")
+    validate_gap_subset(doc)
+    return doc
+
+
+def empty_index():
+    return {
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "revision": 0,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "entries": {},
+    }
+
+
+def normalize_index(raw):
+    if not raw:
+        return empty_index()
+    entries = {}
+    for key, val in (raw.get("entries") or {}).items():
+        parents = sorted(set((val or {}).get("parents") or []))
+        if parents:
+            entries[key] = {"parents": parents}
+    return {
+        "schema_version": INDEX_SCHEMA_VERSION,
+        "revision": int(raw.get("revision") or 0),
+        "updated_at": raw.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "entries": entries,
+    }
+
+
+def index_add_parent(index, blocker_key, parent_key):
+    entry = index["entries"].setdefault(blocker_key, {"parents": []})
+    parents = set(entry.get("parents") or [])
+    parents.add(parent_key)
+    entry["parents"] = sorted(parents)
+
+
+def index_remove_key(index, key):
+    index["entries"].pop(key, None)
+
+
+def rebuild_index_from_docs(docs_by_key):
+    index = empty_index()
+    for parent_key, doc in docs_by_key.items():
+        for blocker_key in gap_keys(doc):
+            index_add_parent(index, blocker_key, parent_key)
+    return index
+
+
+def pulp_credentials():
+    secret_dir = os.environ.get("SECRET_DIR", "/etc/service-account-secret")
+    user_file = os.path.join(secret_dir, "username")
+    pass_file = os.path.join(secret_dir, "password")
+    if os.path.isfile(user_file) and os.path.isfile(pass_file):
+        with open(user_file, "r", encoding="utf-8") as fh:
+            user = fh.read()
+        with open(pass_file, "r", encoding="utf-8") as fh:
+            password = fh.read()
+        return user, password
+    user = os.environ.get("PULP_USERNAME", "")
+    password = os.environ.get("PULP_PASSWORD", "")
+    if user and password:
+        return user, password
+    raise SystemExit("Pulp credentials required (SECRET_DIR or PULP_USERNAME/PULP_PASSWORD)")
+
+
+def pulp_query_base():
+    base = os.environ.get("PULP_BASE_URL", "https://packages.redhat.com")
+    root = os.environ.get("PULP_API_ROOT", "/api/").rstrip("/") + "/"
+    domain = os.environ.get("PULP_DOMAIN", "public-trusted-libraries")
+    return "%s%spulp/%s/api/v3/" % (base, root, domain)
+
+
+def pulp_auth_header():
+    user, password = pulp_credentials()
+    token = base64.b64encode(("%s:%s" % (user, password)).encode("utf-8")).decode("ascii")
+    return {"Authorization": "Basic %s" % token}
+
+
+def pulp_request(method, url, data=None, timeout=60):
+    headers = pulp_auth_header()
+    body = None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit("Pulp %s %s failed (%s): %s" % (method, url, exc.code, detail))
+
+
+def pulp_get(url, timeout=60):
+    return pulp_request("GET", url, None, timeout=timeout)
+
+
+def pulp_post(url, data, timeout=60):
+    return pulp_request("POST", url, data, timeout=timeout)
+
+
+def npm_repository_name():
+    repo_name = os.environ.get("PULP_REPOSITORY", DEFAULT_NPM_REPOSITORY)
+    if repo_name == PYTHON_WHEELS_REPOSITORY:
+        raise SystemExit(
+            "Refusing PULP_REPOSITORY=%r (python wheels repo). "
+            "Set PULP_REPOSITORY=%r for npm closure work."
+            % (repo_name, DEFAULT_NPM_REPOSITORY)
+        )
+    return repo_name
+
+
+def assert_npm_content_href(content_href, context):
+    if not content_href or NPM_CONTENT_PATH not in content_href:
+        raise SystemExit(
+            "Refusing non-npm content href for %s (expected %s): %r"
+            % (context, NPM_CONTENT_PATH, content_href)
+        )
+
+
+def get_repository():
+    repo_name = npm_repository_name()
+    query = pulp_query_base() + "repositories/npm/npm/?" + urllib.parse.urlencode({"name": repo_name})
+    payload = pulp_get(query)
+    results = payload.get("results") or []
+    if not results:
+        raise SystemExit("npm repository not found: %s" % repo_name)
+    return results[0]
+
+
+def find_content_in_repo(name, version, repo_version_href):
+    query = pulp_query_base() + "content/npm/packages/?" + urllib.parse.urlencode(
+        {"name": name, "repository_version": repo_version_href, "limit": 100}
+    )
+    payload = pulp_get(query)
+    matches = [
+        row
+        for row in (payload.get("results") or [])
+        if row.get("name") == name and row.get("version") == version
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise SystemExit("Multiple Pulp content rows for %s@%s" % (name, version))
+    return None
+
+
+def normalize_digest(digest):
+    if not digest:
+        return ""
+    digest = digest.strip()
+    if digest.startswith("sha256:"):
+        return digest
+    if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest.lower()):
+        return "sha256:" + digest.lower()
+    return digest
+
+
+def set_pulp_label(content_href, key, value):
+    assert_npm_content_href(content_href, "set_pulp_label")
+    base = os.environ.get("PULP_BASE_URL", "https://packages.redhat.com")
+    url = base + content_href.rstrip("/") + "/set_label/"
+    pulp_post(url, {"key": key, "value": value})
+
+
+def sync_content_pulp_labels(content_href, repo_version_href, name, version, level, compliance_digest):
+    current = find_content_in_repo(name, version, repo_version_href)
+    if not current:
+        return
+    labels = current.get("pulp_labels") or {}
+    key = node_key(name, version)
+    if level and labels.get(COMPLIANCE_LABEL) != level:
+        set_pulp_label(content_href, COMPLIANCE_LABEL, level)
+        eprint("Updated %s Pulp label %s -> %s" % (key, labels.get(COMPLIANCE_LABEL), level))
+    norm_digest = normalize_digest(compliance_digest)
+    if norm_digest and labels.get(COMPLIANCE_DIGEST_LABEL) != norm_digest:
+        set_pulp_label(content_href, COMPLIANCE_DIGEST_LABEL, norm_digest)
+        eprint("Updated %s Pulp label %s -> %s" % (key, COMPLIANCE_DIGEST_LABEL, norm_digest))
+
+
+def list_repo_packages(repo):
+    offset = 0
+    while True:
+        query = pulp_query_base() + "content/npm/packages/?" + urllib.parse.urlencode(
+            {
+                "repository_version": repo["latest_version_href"],
+                "limit": 100,
+                "offset": offset,
+            }
+        )
+        payload = pulp_get(query)
+        batch = payload.get("results") or []
+        if not batch:
+            break
+        for row in batch:
+            name = row.get("name") or ""
+            version = row.get("version") or ""
+            if name and version:
+                yield row
+        if len(batch) < 100:
+            break
+        offset += len(batch)
+
+
+def run_oras(args, check=True, cwd=None):
+    cmd = ["oras"] + args
+    extra = os.environ.get("ORAS_OPTIONS", "").strip()
+    if extra:
+        cmd = ["oras"] + extra.split() + args
+    proc = subprocess.run(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if check and proc.returncode != 0:
+        raise SystemExit(
+            "oras failed (%s): %s" % (proc.returncode, proc.stderr.strip() or proc.stdout.strip())
+        )
+    return proc
+
+
+def compliance_artifact_type():
+    return os.environ.get("COMPLIANCE_ARTIFACT_TYPE", COMPLIANCE_ARTIFACT_TYPE)
+
+
+def oras_resolve_digest(image_ref):
+    proc = run_oras(["resolve", image_ref])
+    resolved = proc.stdout.strip()
+    if "@" in resolved:
+        return normalize_digest(resolved.rsplit("@", 1)[-1])
+    return normalize_digest(resolved)
+
+
+def pull_json_artifact(image_ref, filename_suffix, parser):
+    with tempfile.TemporaryDirectory(prefix="npm-oras-pull.") as tmp:
+        try:
+            run_oras(["pull", image_ref, "-o", tmp])
+        except SystemExit:
+            return None, None
+        path = None
+        for entry in os.listdir(tmp):
+            if entry.endswith(filename_suffix):
+                path = os.path.join(tmp, entry)
+                break
+        if not path or not os.path.isfile(path):
+            return None, None
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        digest = oras_resolve_digest(image_ref)
+        return parser(data), digest
+
+
+def pull_compliance_doc(name, version, pulp_href_fallback=""):
+    def _parse(raw):
+        doc = normalize_doc(raw)
+        if pulp_href_fallback and not doc.get("pulp_href"):
+            doc["pulp_href"] = pulp_href_fallback
+        return doc
+
+    return pull_json_artifact(
+        compliance_image_ref(name, version),
+        ".tl-compliance.json",
+        _parse,
+    )
+
+
+def pull_index():
+    def _parse(raw):
+        return normalize_index(raw)
+
+    doc, digest = pull_json_artifact(closure_index_image_ref(), INDEX_FILENAME, _parse)
+    if doc is None:
+        return empty_index(), None
+    return doc, digest
+
+
+def push_json_artifact(image_ref, filename, payload, artifact_type=None):
+    artifact_type = artifact_type or compliance_artifact_type()
+    with tempfile.TemporaryDirectory(prefix="npm-oras-push.") as tmp:
+        path = os.path.join(tmp, filename)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        proc = run_oras(
+            [
+                "push",
+                image_ref,
+                "--artifact-type",
+                artifact_type,
+                "--annotation",
+                "org.opencontainers.image.title=npm-closure-artifact",
+                filename,
+            ],
+            cwd=tmp,
+        )
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        match = ORAS_DIGEST_RE.search(combined)
+        if match:
+            return normalize_digest(match.group(1))
+        return oras_resolve_digest(image_ref)
+
+
+def publish_compliance_doc(doc, repo):
+    payload = doc_to_compliance_json(doc)
+    digest = push_json_artifact(
+        compliance_image_ref(doc["name"], doc["version"]),
+        compliance_filename(doc["name"], doc["version"]),
+        payload,
+    )
+    href = doc.get("pulp_href")
+    if not href:
+        content = find_content_in_repo(doc["name"], doc["version"], repo["latest_version_href"])
+        if content:
+            href = content.get("pulp_href") or ""
+            doc["pulp_href"] = href
+    if href:
+        sync_content_pulp_labels(
+            href,
+            repo["latest_version_href"],
+            doc["name"],
+            doc["version"],
+            doc.get("compliance_level"),
+            digest,
+        )
+    return digest
+
+
+def publish_index(index, expected_revision=None):
+    index = normalize_index(index)
+    if expected_revision is not None and index["revision"] != expected_revision:
+        index["revision"] = expected_revision
+    index["revision"] = int(index["revision"]) + 1
+    index["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    digest = push_json_artifact(
+        closure_index_image_ref(),
+        INDEX_FILENAME,
+        index,
+        artifact_type=os.environ.get(
+            "CLOSURE_INDEX_ARTIFACT_TYPE", "application/vnd.npm.closure-index+json"
+        ),
+    )
+    return index, digest
+
+
+def cas_push_index(mutator):
+    for attempt in range(CAS_MAX_RETRIES):
+        index, _digest = pull_index()
+        expected = index["revision"]
+        updated = mutator(copy.deepcopy(index))
+        updated["revision"] = expected
+        try:
+            new_index, digest = publish_index(updated, expected_revision=expected)
+            return new_index, digest
+        except SystemExit as exc:
+            if attempt + 1 >= CAS_MAX_RETRIES:
+                raise
+            eprint("Index CAS retry %s/%s: %s" % (attempt + 1, CAS_MAX_RETRIES, exc))
+            time.sleep(0.2 * (attempt + 1))
+    raise SystemExit("Index CAS failed after %s retries" % CAS_MAX_RETRIES)
+
+
+def cas_publish_compliance(doc, repo):
+    name, version = doc["name"], doc["version"]
+    for attempt in range(CAS_MAX_RETRIES):
+        existing, _ = pull_compliance_doc(name, version, doc.get("pulp_href") or "")
+        if existing:
+            expected_rev = int(existing.get("compliance_revision") or 1)
+            if int(doc.get("compliance_revision") or 1) <= expected_rev:
+                doc["compliance_revision"] = expected_rev + 1
+            doc["direct_dependencies"] = existing.get("direct_dependencies") or doc.get(
+                "direct_dependencies"
+            ) or []
+            if not doc.get("assessed_at"):
+                doc["assessed_at"] = existing.get("assessed_at")
+        digest = publish_compliance_doc(doc, repo)
+        verify, _ = pull_compliance_doc(name, version, doc.get("pulp_href") or "")
+        if verify and int(verify.get("compliance_revision") or 0) >= int(
+            doc.get("compliance_revision") or 0
+        ):
+            return digest
+        if attempt + 1 >= CAS_MAX_RETRIES:
+            raise SystemExit("Compliance CAS failed for %s@%s" % (name, version))
+        eprint("Compliance CAS retry %s/%s for %s@%s" % (attempt + 1, CAS_MAX_RETRIES, name, version))
+        time.sleep(0.2 * (attempt + 1))
+    return None
+
+
+def tl_level_for_key(name, version, repo):
+    content = find_content_in_repo(name, version, repo["latest_version_href"])
+    if not content:
+        return None
+    labels = content.get("pulp_labels") or {}
+    level = labels.get(COMPLIANCE_LABEL)
+    if level:
+        return level
+    doc, _ = pull_compliance_doc(name, version, content.get("pulp_href") or "")
+    if doc:
+        return doc.get("compliance_level")
+    return "L3"
+
+
+def promote_parent(repo, index, parent_key, blocker_key, blocker_level, refreshed, queue):
+    if parent_key in refreshed:
+        return
+    name, version = parse_node_key(parent_key)
+    doc, _ = pull_compliance_doc(name, version)
+    if not doc:
+        eprint("Skip parent refresh (no compliance OCI): %s" % parent_key)
+        return
+    old_level = doc.get("compliance_level")
+    updated = refresh_parent_doc(doc, blocker_key, blocker_level)
+    digest = cas_publish_compliance(updated, repo)
+    refreshed[parent_key] = digest
+    eprint(
+        "Refreshed %s level %s -> %s (blocker %s at %s)"
+        % (parent_key, old_level, updated["compliance_level"], blocker_key, blocker_level)
+    )
+    if updated["compliance_level"] == "L3":
+        queue.append(parent_key)
+
+
+def drain_blocker_parents(repo, index, blocker_key, blocker_level):
+    """Refresh waiter compliance docs for a blocker landing. Does not mutate index."""
+    entry = (index.get("entries") or {}).get(blocker_key) or {}
+    parents = list(entry.get("parents") or [])
+    if not parents:
+        return []
+    refreshed = {}
+    queue = []
+    for parent_key in parents:
+        promote_parent(repo, index, parent_key, blocker_key, blocker_level, refreshed, queue)
+    seen = set()
+    while queue:
+        key = queue.pop(0)
+        if key in seen:
+            continue
+        seen.add(key)
+        level_doc, _ = pull_compliance_doc(*parse_node_key(key))
+        if not level_doc:
+            continue
+        parent_level = level_doc.get("compliance_level") or "L3"
+        if parent_level != "L3":
+            continue
+        sub = (index.get("entries") or {}).get(key) or {}
+        for parent_key in sub.get("parents") or []:
+            promote_parent(repo, index, parent_key, key, parent_level, refreshed, queue)
+    return sorted(refreshed.keys())
+
+
+def apply_index_release(index, package_key, release_doc, release_level):
+    """Register release on index; drop satisfied blocker entries when L3."""
+    if release_level == "L3":
+        release_name, release_version = parse_node_key(package_key)
+        for blocker_key in find_index_blocker_keys_for_release(
+            index, release_name, release_version
+        ):
+            index_remove_key(index, blocker_key)
+        index_remove_key(index, package_key)
+    register_package_on_index(index, package_key, release_doc)
+    return index
+
+
+def register_package_on_index(index, package_key, doc):
+    for blocker_key in gap_keys(doc):
+        index_add_parent(index, blocker_key, package_key)
+
+
+def merge_update(sidecar_path, pulp_href):
+    if pulp_href:
+        assert_npm_content_href(pulp_href, "merge_update --pulp-href")
+    validate_compliance_image_prefix()
+
+    repo = get_repository()
+    release_doc = sidecar_to_doc(sidecar_path, pulp_href)
+    package_key = node_key(release_doc["name"], release_doc["version"])
+    release_level = release_doc["compliance_level"]
+
+    eprint("Closure update for %s (index + gap lists)" % package_key)
+
+    index, _ = pull_index()
+    release_name, release_version = parse_node_key(package_key)
+    blocker_keys = find_index_blocker_keys_for_release(
+        index, release_name, release_version
+    )
+    if package_key in (index.get("entries") or {}) and package_key not in blocker_keys:
+        blocker_keys.append(package_key)
+    drained = []
+    for blocker_key in blocker_keys:
+        drained.extend(
+            drain_blocker_parents(repo, index, blocker_key, release_level)
+        )
+    drained = sorted(set(drained))
+
+    release_doc["compliance_revision"] = int(release_doc.get("compliance_revision") or 1)
+    release_digest = cas_publish_compliance(release_doc, repo)
+
+    def mutate_index(idx):
+        return apply_index_release(idx, package_key, release_doc, release_level)
+
+    new_index, index_digest = cas_push_index(mutate_index)
+
+    print(
+        json.dumps(
+            {
+                "package": package_key,
+                "compliance_level": release_level,
+                "compliance_oci_digest": release_digest,
+                "parents_refreshed": drained,
+                "index_revision": new_index.get("revision"),
+                "index_oci_digest": index_digest,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def hydrate_seed_doc(row):
+    name = row.get("name") or ""
+    version = row.get("version") or ""
+    labels = row.get("pulp_labels") or {}
+    return normalize_doc(
+        {
+            "name": name,
+            "version": version,
+            "pulp_href": row.get("pulp_href") or "",
+            "compliance_level": labels.get(COMPLIANCE_LABEL) or "L3",
+            "direct_dependencies": [],
+            "missing_gaps": [],
+            "pending_l3_gaps": [],
+            "assessed_at": None,
+            "compliance_revision": 1,
+        }
+    )
+
+
+def cmd_seed(args):
+    validate_compliance_image_prefix()
+    repo = get_repository()
+    eprint(
+        "Seeding compliance OCI from npm repo %r; python wheels repo %r is not touched."
+        % (repo.get("name") or npm_repository_name(), PYTHON_WHEELS_REPOSITORY)
+    )
+    docs_by_key = {}
+    pushed = {}
+    count = 0
+    for row in list_repo_packages(repo):
+        key = node_key(row["name"], row["version"])
+        existing, _ = pull_compliance_doc(row["name"], row["version"], row.get("pulp_href") or "")
+        if existing:
+            docs_by_key[key] = existing
+            count += 1
+            continue
+        doc = hydrate_seed_doc(row)
+        digest = publish_compliance_doc(doc, repo)
+        docs_by_key[key] = doc
+        if digest:
+            pushed[key] = digest
+        count += 1
+
+    index_result = None
+    if args.init_index:
+        index = rebuild_index_from_docs(docs_by_key)
+        index, index_digest = publish_index(index, expected_revision=0)
+        index_result = {"revision": index.get("revision"), "digest": index_digest}
+
+    print(
+        json.dumps(
+            {"node_count": count, "compliance_oci": pushed, "index": index_result},
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def cmd_rebalance(args):
+    validate_compliance_image_prefix()
+    repo = get_repository()
+    docs_by_key = {}
+    updated = []
+
+    for row in list_repo_packages(repo):
+        name, version = row["name"], row["version"]
+        key = node_key(name, version)
+        doc, _ = pull_compliance_doc(name, version, row.get("pulp_href") or "")
+        if not doc:
+            doc = hydrate_seed_doc(row)
+        if args.index_only:
+            docs_by_key[key] = doc
+            continue
+        if not doc.get("direct_dependencies"):
+            docs_by_key[key] = doc
+            continue
+        missing = []
+        pending = []
+        repo_version = repo["latest_version_href"]
+        for dep in doc.get("direct_dependencies") or []:
+            dep_name = dep.get("name") or ""
+            dep_spec = dep.get("requested") or ""
+            if not dep_name or not dep_spec:
+                continue
+            resolved = find_resolved_version_for_dep(
+                dep_name, dep_spec, doc, repo_version
+            )
+            if not resolved:
+                missing.append(node_key(dep_name, dep_spec))
+                continue
+            dep_key = node_key(dep_name, resolved)
+            level = tl_level_for_key(dep_name, resolved, repo)
+            if level is None:
+                missing.append(dep_key)
+            elif level != "L3":
+                pending.append(dep_key)
+            else:
+                pass
+        new_doc = copy.deepcopy(doc)
+        new_doc["missing_gaps"] = sorted(set(missing))
+        new_doc["pending_l3_gaps"] = sorted(set(pending))
+        new_doc["compliance_level"] = compute_level(new_doc)
+        if (
+            new_doc["missing_gaps"] != doc.get("missing_gaps")
+            or new_doc["pending_l3_gaps"] != doc.get("pending_l3_gaps")
+            or new_doc["compliance_level"] != doc.get("compliance_level")
+        ):
+            new_doc["compliance_revision"] = int(doc.get("compliance_revision") or 1) + 1
+            new_doc["closure_updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            publish_compliance_doc(new_doc, repo)
+            updated.append(key)
+        docs_by_key[key] = new_doc
+
+    index = rebuild_index_from_docs(docs_by_key)
+    new_index, index_digest = cas_push_index(lambda _idx: index)
+
+    print(
+        json.dumps(
+            {
+                "mode": "index-only" if args.index_only else "full",
+                "packages_seen": len(docs_by_key),
+                "compliance_updated": updated,
+                "index_revision": new_index.get("revision"),
+                "index_oci_digest": index_digest,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def find_resolved_version_for_dep(dep_name, dep_spec, doc, repo_version_href):
+    for key in gap_keys(doc):
+        if gap_name(key) == dep_name:
+            return parse_node_key(key)[1]
+    content = find_content_in_repo(dep_name, dep_spec, repo_version_href)
+    if content:
+        return content.get("version")
+    query = pulp_query_base() + "content/npm/packages/?" + urllib.parse.urlencode(
+        {"name": dep_name, "repository_version": repo_version_href, "limit": 100}
+    )
+    payload = pulp_get(query)
+    for row in payload.get("results") or []:
+        if row.get("name") == dep_name and row.get("version") == dep_spec:
+            return dep_spec
+    return None
+
+
+def cmd_show(args):
+    if args.compliance_path:
+        with open(args.compliance_path, "r", encoding="utf-8") as fh:
+            print(fh.read())
+        return
+    if not args.name or not args.version:
+        raise SystemExit("show requires --name and --version, or --compliance-path")
+    doc, _ = pull_compliance_doc(args.name, args.version)
+    if not doc:
+        raise SystemExit("No compliance OCI for %s@%s" % (args.name, args.version))
+    print(json.dumps(doc_to_compliance_json(doc), indent=2, sort_keys=True))
+
+
+def cmd_show_index(_args):
+    index, digest = pull_index()
+    print(json.dumps({"digest": digest, "index": index}, indent=2, sort_keys=True))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="TL npm closure updater (compliance OCI + index)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    seed_p = sub.add_parser("seed", help="Bootstrap compliance OCI for catalog packages missing OCI")
+    seed_p.add_argument(
+        "--init-index",
+        action="store_true",
+        help="Rebuild and push closure index from existing compliance docs",
+    )
+    seed_p.set_defaults(func=cmd_seed)
+
+    reb_p = sub.add_parser("rebalance", help="Rebuild closure index (and optionally gap lists)")
+    reb_p.add_argument(
+        "--index-only",
+        action="store_true",
+        help="Rebuild index from current gap lists only (no gap re-derive)",
+    )
+    reb_p.set_defaults(func=cmd_rebalance)
+
+    upd_p = sub.add_parser("update", help="Apply release sidecar + update index and waiters")
+    upd_p.add_argument("--sidecar", required=True, help="Path to *.tl-compliance.json from assess")
+    upd_p.add_argument("--pulp-href", default="", help="Pulp content href for the released package")
+    upd_p.set_defaults(func=lambda args: merge_update(args.sidecar, args.pulp_href))
+
+    show_p = sub.add_parser("show", help="Print a compliance document from OCI")
+    show_p.add_argument("--name", default="", help="Package name")
+    show_p.add_argument("--version", default="", help="Package version")
+    show_p.add_argument("--compliance-path", default="", help="Read local JSON file")
+    show_p.set_defaults(func=cmd_show)
+
+    idx_p = sub.add_parser("show-index", help="Print closure index from OCI")
+    idx_p.set_defaults(func=cmd_show_index)
+
+    args = parser.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

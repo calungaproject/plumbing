@@ -192,6 +192,25 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(payload["compliance_level"], "L3")
 
 
+class SkipSidecarTests(unittest.TestCase):
+    def test_skip_sidecar_returns_l3_without_fetch(self):
+        old = os.environ.get("TL_SKIP_COMPLIANCE_SIDECAR")
+        try:
+            os.environ["TL_SKIP_COMPLIANCE_SIDECAR"] = "1"
+            rc, level = lookup.compliance_for_version(
+                "https://example.test/javascript",
+                "ms",
+                "2.1.3",
+            )
+        finally:
+            if old is None:
+                os.environ.pop("TL_SKIP_COMPLIANCE_SIDECAR", None)
+            else:
+                os.environ["TL_SKIP_COMPLIANCE_SIDECAR"] = old
+        self.assertEqual(rc, 0)
+        self.assertEqual(level, "L3")
+
+
 class TmpSidecar(unittest.TestCase):
     """Sanity: script file is executable-shaped (shebang)."""
 

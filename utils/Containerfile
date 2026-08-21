@@ -35,6 +35,7 @@ RUN python3 -m venv /venv && \
 
 ##########################
 # UNIT TESTS (must pass)
+# run_tests.sh: npm-pulp-upload, npm-release-extract/upload, closure index, …
 ##########################
 FROM base AS test
 COPY scripts /src/scripts

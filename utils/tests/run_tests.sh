@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Unit tests for plumbing-utils npm release scripts.
 # Run from repo:  ./utils/tests/run_tests.sh
-# Or via Containerfile test stage.
+# Or via Containerfile test stage (gates the plumbing-utils image build):
+#   upload/extract/populate-release-notes, npm-pulp-upload, update-npm-closure, …
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -465,6 +466,69 @@ envelope_from_statement "$(v02_statement promote-npm calunga-tenant \
 rm -rf "${files_prov}/chains-provenance"
 assert_fail "npm-fetch-chains-provenance rejects subject digest mismatch" \
   run_fetch "${env_bad_hex}"
+
+# --- update-npm-closure (Python) + npm-release-closure-update (release entrypoint) ---
+echo
+echo "=== update-npm-closure unit tests ==="
+if ! python3 "${ROOT}/tests/test_update_npm_closure.py" -v; then
+  echo "FAIL: test_update_npm_closure.py" >&2
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS: test_update_npm_closure.py"
+  PASS=$((PASS + 1))
+fi
+
+closure_sidecar="${tmpdir}/closure-probe.tl-compliance.json"
+jq -nc '{
+  schema_version: 3,
+  name: "lodash",
+  version: "4.17.21",
+  compliance_level: "L3",
+  direct_dependencies: [],
+  missing_gaps: [],
+  pending_l3_gaps: [],
+  compliance_revision: 1
+}' > "${closure_sidecar}"
+
+assert_fail "npm-release-closure-update fails without COMPLIANCE_IMAGE_PREFIX" \
+  env SIDECAR_PATH="${closure_sidecar}" \
+      PULP_USERNAME="user" \
+      PULP_PASSWORD="pass" \
+      npm-release-closure-update
+
+assert_fail "npm-release-closure-update fails with no sidecar under FILES_DIR" \
+  env FILES_DIR="${empty_files}" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/npm-compliance" \
+      PULP_USERNAME="user" \
+      PULP_PASSWORD="pass" \
+      npm-release-closure-update
+
+closure_stub_bin="${tmpdir}/closure-stubs"
+mkdir -p "${closure_stub_bin}"
+cat > "${closure_stub_bin}/update-npm-closure" <<'EOF'
+#!/usr/bin/env bash
+echo "update-npm-closure $*" >> "${CLOSURE_CALL_LOG}"
+exit 0
+EOF
+chmod +x "${closure_stub_bin}/update-npm-closure"
+closure_log="${tmpdir}/closure-calls.log"
+: > "${closure_log}"
+
+assert_ok "npm-release-closure-update delegates to update-npm-closure" \
+  env PATH="${closure_stub_bin}:${SCRIPTS}:${PATH}" \
+      SIDECAR_PATH="${closure_sidecar}" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/npm-compliance" \
+      CLOSURE_CALL_LOG="${closure_log}" \
+      npm-release-closure-update
+
+if grep -q ' update --sidecar ' "${closure_log}"; then
+  echo "PASS: release entrypoint invoked update-npm-closure update"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: expected update-npm-closure update in ${closure_log}" >&2
+  cat "${closure_log}" >&2
+  FAIL=$((FAIL + 1))
+fi
 
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
