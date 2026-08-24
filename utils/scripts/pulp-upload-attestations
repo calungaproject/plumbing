@@ -17,8 +17,9 @@ cd "${FILES_DIR}"
 ls -la .
 
 PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
+AUTH=(-u "${TWINE_USERNAME}:${TWINE_PASSWORD}")
 
-REPO_JSON=$( curl --fail --silent --retry 3 --max-time 30 "${PULP_QUERY_BASE}repositories/python/python/" )
+REPO_JSON=$( curl --fail --silent --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" )
 PULP_REPOSITORY_VERSION=$( echo "$REPO_JSON" \
     | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
 PULP_REPOSITORY_HREF=$( echo "$REPO_JSON" \
@@ -39,7 +40,7 @@ for file in *.whl *.tar.gz; do
         continue
     fi
 
-    PACKAGE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 -G \
+    PACKAGE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 "${AUTH[@]}" -G \
         "${PULP_QUERY_BASE}content/python/packages/" --data-urlencode "filename=${file}" \
         --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" )
     WHEEL_EXISTS=$( echo "$PACKAGE_RESPONSE" | jq '.results | length != 0' )
@@ -52,7 +53,7 @@ for file in *.whl *.tar.gz; do
 
     PACKAGE_HREF=$( echo "$PACKAGE_RESPONSE" | jq -r '.results[0].pulp_href' )
 
-    PROVENANCE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 -G \
+    PROVENANCE_RESPONSE=$( curl --fail --silent --retry 3 --max-time 30 "${AUTH[@]}" -G \
         "${PULP_QUERY_BASE}content/python/provenance/" \
         --data-urlencode "package=${PACKAGE_HREF}" \
         --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" 2>/dev/null ) || true
@@ -71,7 +72,7 @@ for file in *.whl *.tar.gz; do
 
     echo "Uploading attestation for ${file}..."
     if curl --fail --retry 3 --max-time 60 \
-        -u "${TWINE_USERNAME}:${TWINE_PASSWORD}" \
+        "${AUTH[@]}" \
         -X POST \
         -F "file=@${file}.attestation" \
         -F "package=${PACKAGE_HREF}" \
