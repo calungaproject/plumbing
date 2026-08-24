@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Release-pipeline entrypoint: propagate TL npm closure via per-package compliance OCI.
-# Invoked as a Tekton step via:
+# Invoked as a single Tekton step via:
 #   command: ["npm-release-closure-update"]
 #
-# Env:
-#   SIDECAR_PATH or FILES_DIR (finds exactly one *.tl-compliance.json)
-#   PULP_CONTENT_HREF (optional; updater resolves from repo if unset)
-#   COMPLIANCE_IMAGE_PREFIX, PULP_*, TL_NPM_REGISTRY_URL
-#   STATUS_PATH (optional; written on failure via npm-common.sh)
+# Env (from task stepTemplate):
+#   FILES_DIR                 Root of extracted packages (required unless SIDECAR_PATH set)
+#   SIDECAR_PATH              Optional single *.tl-compliance.json (skips FILES_DIR scan)
+#   COMPLIANCE_IMAGE_PREFIX   Quay repo for per-package compliance OCI tags
+#   CLOSURE_INDEX_IMAGE       Global closure index OCI ref (default: PREFIX:npm-closure-index)
+#   PULP_CONTENT_HREF         Optional; updater resolves from repo if unset
+#   PULP_*, TL_NPM_REGISTRY_URL, ORAS_OPTIONS
+#   SECRET_DIR                Pulp credentials (default /etc/service-account-secret)
+#   PULP_USERNAME/PULP_PASSWORD  Alternative to SECRET_DIR (probe / local use)
+#   STATUS_PATH               Optional Tekton results.status path
 #
 set -euo pipefail
 
@@ -20,29 +25,62 @@ else
   source "$(command -v npm-common.sh)"
 fi
 
-SIDECAR="${SIDECAR_PATH:-}"
-PULP_HREF="${PULP_CONTENT_HREF:-}"
+SECRET_DIR="${SECRET_DIR:-/etc/service-account-secret}"
 
-if [[ -z "${SIDECAR}" ]]; then
-  FILES_DIR="${FILES_DIR:?FILES_DIR required when SIDECAR_PATH is unset}"
-  shopt -s nullglob globstar
-  sidecars=("${FILES_DIR}"/*.tl-compliance.json "${FILES_DIR}"/**/*.tl-compliance.json)
-  shopt -u nullglob globstar
-  if [[ ${#sidecars[@]} -ne 1 ]]; then
-    fail_with_status "expected exactly one *.tl-compliance.json under ${FILES_DIR}, got ${#sidecars[@]}"
+_secret_file_creds_ok() {
+  local name path
+  for name in username password; do
+    path="${SECRET_DIR}/${name}"
+    if [[ ! -f "${path}" ]] || [[ -z "$(tr -d '[:space:]' < "${path}")" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+if ! _secret_file_creds_ok; then
+  if [[ -z "${PULP_USERNAME:-}" || -z "${PULP_PASSWORD:-}" ]]; then
+    fail_with_status "Pulp credentials required (SECRET_DIR or PULP_USERNAME/PULP_PASSWORD)"
   fi
-  SIDECAR="${sidecars[0]}"
-fi
-
-if [[ ! -f "${SIDECAR}" ]]; then
-  fail_with_status "sidecar not found: ${SIDECAR}"
 fi
 
 if [[ -z "${COMPLIANCE_IMAGE_PREFIX:-}" ]]; then
   fail_with_status "COMPLIANCE_IMAGE_PREFIX is required"
 fi
 
-update-npm-closure update --sidecar "${SIDECAR}" --pulp-href "${PULP_HREF}" \
-  || fail_with_status "update-npm-closure failed"
+AUTH_REF="${CLOSURE_INDEX_IMAGE:-${COMPLIANCE_IMAGE_PREFIX}:npm-closure-index}"
+AUTHFILE="/tmp/quay-auth.json"
+select-oci-auth "${AUTH_REF}" > "${AUTHFILE}"
+registry_opts="--registry-config ${AUTHFILE}"
+if [[ -n "${ORAS_OPTIONS:-}" ]]; then
+  export ORAS_OPTIONS="${ORAS_OPTIONS} ${registry_opts}"
+else
+  export ORAS_OPTIONS="${registry_opts}"
+fi
+
+PULP_HREF="${PULP_CONTENT_HREF:-}"
+
+sidecars=()
+if [[ -n "${SIDECAR_PATH:-}" ]]; then
+  sidecars=("${SIDECAR_PATH}")
+else
+  FILES_DIR="${FILES_DIR:?FILES_DIR required when SIDECAR_PATH is unset}"
+  while IFS= read -r sidecar; do
+    [[ -n "${sidecar}" ]] || continue
+    sidecars+=("${sidecar}")
+  done < <(find "${FILES_DIR}" -type f -name '*.tl-compliance.json' | sort -u)
+  if [[ ${#sidecars[@]} -eq 0 ]]; then
+    fail_with_status "no *.tl-compliance.json under ${FILES_DIR}"
+  fi
+fi
+
+for sidecar in "${sidecars[@]}"; do
+  if [[ ! -f "${sidecar}" ]]; then
+    fail_with_status "sidecar not found: ${sidecar}"
+  fi
+  echo "Closure update for ${sidecar}"
+  update-npm-closure update --sidecar "${sidecar}" --pulp-href "${PULP_HREF}" \
+    || fail_with_status "update-npm-closure failed for ${sidecar}"
+done
 
 echo "npm-release-closure-update completed"

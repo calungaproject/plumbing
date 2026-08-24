@@ -36,12 +36,13 @@ def rebalance_index(probe_env: ProbeEnv, *, index_only: bool = False) -> None:
     run_pipeline_script(probe_env, script, *args)
 
 
-def publish_closure_update(
+def     publish_closure_update(
     probe_env: ProbeEnv,
     sidecar: Path,
     pulp_href: str,
 ) -> None:
     """Release-path closure update (npm-release-closure-update → update-npm-closure update)."""
+    probe_env.require_pulp_creds()
     probe_env.require_compliance_prefix()
     release_script = probe_env.script_path(
         "utils", "scripts", "npm-release-closure-update"

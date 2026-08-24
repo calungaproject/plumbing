@@ -467,7 +467,7 @@ rm -rf "${files_prov}/chains-provenance"
 assert_fail "npm-fetch-chains-provenance rejects subject digest mismatch" \
   run_fetch "${env_bad_hex}"
 
-# --- update-npm-closure (Python) + npm-release-closure-update (release entrypoint) ---
+# --- npm closure: update-npm-closure (Python) + npm-release-closure-update ---
 echo
 echo "=== update-npm-closure unit tests ==="
 if ! python3 "${ROOT}/tests/test_update_npm_closure.py" -v; then
@@ -478,7 +478,8 @@ else
   PASS=$((PASS + 1))
 fi
 
-closure_sidecar="${tmpdir}/closure-probe.tl-compliance.json"
+closure_files="${tmpdir}/closure-files/sha256_abc"
+mkdir -p "${closure_files}"
 jq -nc '{
   schema_version: 3,
   name: "lodash",
@@ -488,7 +489,29 @@ jq -nc '{
   missing_gaps: [],
   pending_l3_gaps: [],
   compliance_revision: 1
-}' > "${closure_sidecar}"
+}' > "${closure_files}/lodash-4.17.21.tl-compliance.json"
+jq -nc '{schema_version:3,name:"ms",version:"2.1.3"}' \
+  > "${closure_files}/ms-2.1.3.tl-compliance.json"
+closure_sidecar="${closure_files}/lodash-4.17.21.tl-compliance.json"
+
+closure_sec="${tmpdir}/closure-secret"
+mkdir -p "${closure_sec}"
+echo user > "${closure_sec}/username"
+echo pass > "${closure_sec}/password"
+
+closure_stubs="${tmpdir}/closure-stubs"
+mkdir -p "${closure_stubs}"
+closure_log="${tmpdir}/closure-calls.log"
+: > "${closure_log}"
+cat > "${closure_stubs}/update-npm-closure" <<EOF
+#!/usr/bin/env bash
+echo "update-npm-closure \$*" >> "${closure_log}"
+EOF
+cat > "${closure_stubs}/select-oci-auth" <<'EOF'
+#!/usr/bin/env bash
+echo '{"auths":{}}'
+EOF
+chmod +x "${closure_stubs}/update-npm-closure" "${closure_stubs}/select-oci-auth"
 
 assert_fail "npm-release-closure-update fails without COMPLIANCE_IMAGE_PREFIX" \
   env SIDECAR_PATH="${closure_sidecar}" \
@@ -496,33 +519,41 @@ assert_fail "npm-release-closure-update fails without COMPLIANCE_IMAGE_PREFIX" \
       PULP_PASSWORD="pass" \
       npm-release-closure-update
 
-assert_fail "npm-release-closure-update fails with no sidecar under FILES_DIR" \
-  env FILES_DIR="${empty_files}" \
-      COMPLIANCE_IMAGE_PREFIX="quay.example/npm-compliance" \
-      PULP_USERNAME="user" \
-      PULP_PASSWORD="pass" \
+assert_fail "npm-release-closure-update fails without sidecars" \
+  env PATH="${closure_stubs}:${SCRIPTS}:${PATH}" \
+      SECRET_DIR="${closure_sec}" \
+      FILES_DIR="${empty_files}" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/calunga-npm-registry-main" \
       npm-release-closure-update
 
-closure_stub_bin="${tmpdir}/closure-stubs"
-mkdir -p "${closure_stub_bin}"
-cat > "${closure_stub_bin}/update-npm-closure" <<'EOF'
-#!/usr/bin/env bash
-echo "update-npm-closure $*" >> "${CLOSURE_CALL_LOG}"
-exit 0
-EOF
-chmod +x "${closure_stub_bin}/update-npm-closure"
-closure_log="${tmpdir}/closure-calls.log"
+assert_fail "npm-release-closure-update fails on empty credentials" \
+  env PATH="${closure_stubs}:${SCRIPTS}:${PATH}" \
+      SECRET_DIR="${sec}" \
+      FILES_DIR="${tmpdir}/closure-files" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/calunga-npm-registry-main" \
+      npm-release-closure-update
+
+assert_ok "npm-release-closure-update loops all sidecars" \
+  env PATH="${closure_stubs}:${SCRIPTS}:${PATH}" \
+      SECRET_DIR="${closure_sec}" \
+      FILES_DIR="${tmpdir}/closure-files" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/calunga-npm-registry-main" \
+      CLOSURE_INDEX_IMAGE="quay.example/calunga-npm-registry-main:npm-closure-index" \
+      npm-release-closure-update
+assert_eq "$(wc -l < "${closure_log}" | tr -d ' ')" "2" \
+  "closure update calls update-npm-closure for each sidecar"
+
 : > "${closure_log}"
-
-assert_ok "npm-release-closure-update delegates to update-npm-closure" \
-  env PATH="${closure_stub_bin}:${SCRIPTS}:${PATH}" \
+assert_ok "npm-release-closure-update accepts SIDECAR_PATH" \
+  env PATH="${closure_stubs}:${SCRIPTS}:${PATH}" \
+      SECRET_DIR="${closure_sec}" \
       SIDECAR_PATH="${closure_sidecar}" \
-      COMPLIANCE_IMAGE_PREFIX="quay.example/npm-compliance" \
-      CLOSURE_CALL_LOG="${closure_log}" \
+      COMPLIANCE_IMAGE_PREFIX="quay.example/calunga-npm-registry-main" \
       npm-release-closure-update
-
+assert_eq "$(wc -l < "${closure_log}" | tr -d ' ')" "1" \
+  "SIDECAR_PATH runs a single update-npm-closure call"
 if grep -q ' update --sidecar ' "${closure_log}"; then
-  echo "PASS: release entrypoint invoked update-npm-closure update"
+  echo "PASS: release entrypoint invokes update-npm-closure update"
   PASS=$((PASS + 1))
 else
   echo "FAIL: expected update-npm-closure update in ${closure_log}" >&2
