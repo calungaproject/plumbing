@@ -261,6 +261,30 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libtiff.sh
 
 
+FROM build_base AS build_freetype
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY build_scripts/build-freetype.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export FREETYPE_VERSION=2.14.3 && \
+    export FREETYPE_HASH=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f && \
+    export FREETYPE_DOWNLOAD_URL=https://download.savannah.gnu.org/releases/freetype && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-freetype.sh
+
+
+FROM build_base AS build_libwebp
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY build_scripts/build-libwebp.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBWEBP_VERSION=1.4.0 && \
+    export LIBWEBP_HASH=61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5 && \
+    export LIBWEBP_DOWNLOAD_URL=https://storage.googleapis.com/downloads.webmproject.org/releases/webp && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libwebp.sh
+
+
 FROM --platform=${BUILDPLATFORM} ghcr.io/sigstore/cosign/cosign:v${MANYLINUX_COSIGN_VERSION} AS cosign-bin
 
 
@@ -285,6 +309,8 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY --from=build_libwebp /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -303,6 +329,8 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY --from=build_libwebp /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -324,6 +352,8 @@ COPY --from=build_zlib /manylinux-rootfs /
 COPY --from=build_bzip2 /manylinux-rootfs /
 COPY --from=build_libpng /manylinux-rootfs /
 COPY --from=build_libtiff /manylinux-rootfs /
+COPY --from=build_freetype /manylinux-rootfs /
+COPY --from=build_libwebp /manylinux-rootfs /
 COPY --from=build_libjpeg_turbo /manylinux-rootfs /
 COPY --from=build_libyaml /manylinux-rootfs /
 COPY --from=build_libxml2 /manylinux-rootfs /
