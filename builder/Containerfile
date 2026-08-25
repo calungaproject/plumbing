@@ -285,6 +285,49 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libwebp.sh
 
 
+FROM build_base AS build_lcms2
+COPY build_scripts/build-lcms2.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LCMS2_VERSION=2.16 && \
+    export LCMS2_HASH=d873d34ad8b9b4cea010631f1a6228d2087475e4dc5e763eb81acc23d9d45a51 && \
+    export LCMS2_DOWNLOAD_URL=https://github.com/mm2/Little-CMS/releases/download/lcms2.16 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-lcms2.sh
+
+
+FROM build_base AS build_openjpeg
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
+COPY build_scripts/build-openjpeg.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export OPENJPEG_VERSION=2.5.4 && \
+    export OPENJPEG_HASH=a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a && \
+    export OPENJPEG_DOWNLOAD_URL=https://github.com/uclouvain/openjpeg/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openjpeg.sh
+
+
+FROM build_base AS build_aom
+COPY build_scripts/build-aom.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export AOM_VERSION=3.12.1 && \
+    export AOM_HASH=9e9775180dec7dfd61a79e00bda3809d43891aee6b2e331ff7f26986207ea22e && \
+    export AOM_DOWNLOAD_URL=https://storage.googleapis.com/aom-releases && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-aom.sh
+
+
+FROM build_base AS build_libavif
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY build_scripts/build-libavif.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBAVIF_VERSION=1.4.2 && \
+    export LIBAVIF_HASH=2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d && \
+    export LIBAVIF_DOWNLOAD_URL=https://github.com/AOMediaCodec/libavif/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libavif.sh
+
+
 FROM --platform=${BUILDPLATFORM} ghcr.io/sigstore/cosign/cosign:v${MANYLINUX_COSIGN_VERSION} AS cosign-bin
 
 
@@ -311,6 +354,10 @@ COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
 COPY --from=build_freetype /manylinux-buildfs /
 COPY --from=build_libwebp /manylinux-buildfs /
+COPY --from=build_lcms2 /manylinux-buildfs /
+COPY --from=build_openjpeg /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY --from=build_libavif /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -331,6 +378,10 @@ COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
 COPY --from=build_freetype /manylinux-buildfs /
 COPY --from=build_libwebp /manylinux-buildfs /
+COPY --from=build_lcms2 /manylinux-buildfs /
+COPY --from=build_openjpeg /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY --from=build_libavif /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -354,6 +405,10 @@ COPY --from=build_libpng /manylinux-rootfs /
 COPY --from=build_libtiff /manylinux-rootfs /
 COPY --from=build_freetype /manylinux-rootfs /
 COPY --from=build_libwebp /manylinux-rootfs /
+COPY --from=build_lcms2 /manylinux-rootfs /
+COPY --from=build_openjpeg /manylinux-rootfs /
+COPY --from=build_aom /manylinux-rootfs /
+COPY --from=build_libavif /manylinux-rootfs /
 COPY --from=build_libjpeg_turbo /manylinux-rootfs /
 COPY --from=build_libyaml /manylinux-rootfs /
 COPY --from=build_libxml2 /manylinux-rootfs /
@@ -372,13 +427,13 @@ COPY --from=merged_buildfs /usr/local/lib/cmake /usr/local/lib/cmake
 COPY --from=merged_buildfs /usr/local/include /usr/local/include
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
