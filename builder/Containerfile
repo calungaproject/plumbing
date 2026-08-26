@@ -253,6 +253,7 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 FROM build_base AS build_libtiff
 COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_zstd /manylinux-buildfs /
 COPY build_scripts/build-libtiff.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export LIBTIFF_VERSION=4.6.0 && \
@@ -261,15 +262,44 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libtiff.sh
 
 
+FROM build_base AS build_brotli
+COPY build_scripts/build-brotli.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export BROTLI_VERSION=1.1.0 && \
+    export BROTLI_HASH=e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff && \
+    export BROTLI_DOWNLOAD_URL=https://github.com/google/brotli/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-brotli.sh
+
+
+# FreeType is built WITHOUT HarfBuzz (see build-freetype.sh) so that HarfBuzz can
+# be built afterwards WITH FreeType support -- Pillow's vendored raqm needs
+# HarfBuzz's hb-ft integration, which requires linking against libfreetype.
 FROM build_base AS build_freetype
 COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
 COPY build_scripts/build-freetype.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export FREETYPE_VERSION=2.14.3 && \
     export FREETYPE_HASH=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f && \
     export FREETYPE_DOWNLOAD_URL=https://download.savannah.gnu.org/releases/freetype && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-freetype.sh
+
+
+# HarfBuzz is built AFTER FreeType and links against it (HB_HAVE_FREETYPE=ON) so
+# that hb-ft.h and the hb_ft_* symbols exist for Pillow's vendored raqm.
+FROM build_base AS build_harfbuzz
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY build_scripts/build-harfbuzz.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export HARFBUZZ_VERSION=10.4.0 && \
+    export HARFBUZZ_HASH=480b6d25014169300669aa1fc39fb356c142d5028324ea52b3a27648b9beaad8 && \
+    export HARFBUZZ_DOWNLOAD_URL=https://github.com/harfbuzz/harfbuzz/releases/download/10.4.0 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-harfbuzz.sh
 
 
 FROM build_base AS build_libwebp
@@ -352,6 +382,8 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_harfbuzz /manylinux-buildfs /
 COPY --from=build_freetype /manylinux-buildfs /
 COPY --from=build_libwebp /manylinux-buildfs /
 COPY --from=build_lcms2 /manylinux-buildfs /
@@ -376,6 +408,8 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_harfbuzz /manylinux-buildfs /
 COPY --from=build_freetype /manylinux-buildfs /
 COPY --from=build_libwebp /manylinux-buildfs /
 COPY --from=build_lcms2 /manylinux-buildfs /
@@ -403,6 +437,8 @@ COPY --from=build_zlib /manylinux-rootfs /
 COPY --from=build_bzip2 /manylinux-rootfs /
 COPY --from=build_libpng /manylinux-rootfs /
 COPY --from=build_libtiff /manylinux-rootfs /
+COPY --from=build_brotli /manylinux-rootfs /
+COPY --from=build_harfbuzz /manylinux-rootfs /
 COPY --from=build_freetype /manylinux-rootfs /
 COPY --from=build_libwebp /manylinux-rootfs /
 COPY --from=build_lcms2 /manylinux-rootfs /
@@ -427,13 +463,13 @@ COPY --from=merged_buildfs /usr/local/lib/cmake /usr/local/lib/cmake
 COPY --from=merged_buildfs /usr/local/include /usr/local/include
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
