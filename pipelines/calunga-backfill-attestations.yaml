@@ -62,7 +62,7 @@ spec:
           - name: name
             value: get-config
           - name: bundle
-            value: quay.io/redhat-user-workloads/calunga-tenant/task-get-config@sha256:abe408d7365a23a548268b994dc7d758660fc595ba6af0f455f000a4f3f535d7
+            value: quay.io/redhat-user-workloads/calunga-tenant/task-get-config@sha256:f04d257d02e92a73d8f193286a3ca6985181e809b92bba4fe5504e0483ece6a8
           - name: kind
             value: task
         resolver: bundles
