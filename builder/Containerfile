@@ -151,13 +151,13 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 
 
-FROM build_base AS build_arrow
-COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
+FROM build_base AS build_curl
+COPY build_scripts/build-curl.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
-    export ARROW_VERSION=25.0.0 && \
-    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
-    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
-    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
+    export CURL_ROOT=curl-8.17.0 && \
+    export CURL_HASH=e8e74cdeefe5fb78b3ae6e90cd542babf788fa9480029cfcee6fd9ced42b7910 && \
+    export CURL_DOWNLOAD_URL=https://curl.haxx.se/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-curl.sh
 
 
 FROM build_base AS build_libjpeg_turbo
@@ -229,6 +229,22 @@ RUN export ZLIB_VERSION=1.3.1 && \
     export ZLIB_HASH=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 && \
     export ZLIB_DOWNLOAD_URL=https://github.com/madler/zlib/releases/download/v1.3.1 && \
     /opt/_internal/build_scripts/build-zlib.sh
+
+
+FROM build_base AS build_arrow
+# Arrow's bundled cloud SDKs (S3/GCS/Azure) link libcurl, and the Azure SDK
+# also needs libxml2; aws-sdk-cpp/curl pull in zlib. Stage the source-built
+# dev trees so CMake can find them. (build_curl/build_libxml2/build_zlib are all
+# defined earlier so these remain backward stage references.)
+COPY --from=build_curl /manylinux-buildfs /
+COPY --from=build_libxml2 /manylinux-buildfs /
+COPY --from=build_zlib /manylinux-buildfs /
+COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export ARROW_VERSION=25.0.0 && \
+    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
+    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
 
 
 FROM build_base AS build_bzip2
