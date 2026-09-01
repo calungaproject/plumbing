@@ -58,6 +58,14 @@ spec:
         Passed as -c flags to build-wheels. Empty list disables constraints.
       type: array
       default: []
+    - name: DENIED_PACKAGES_FILE
+      description: >-
+        Path to a denylist file relative to source root listing package names
+        (one per line) to exclude from the OCI artifact. Denied packages are
+        still built as transitive dependencies but are not collected or released.
+        Empty string disables filtering.
+      type: string
+      default: ""
   results:
     - name: IMAGE_DIGEST
       description: Digest of the OCI-Artifact just built
@@ -143,11 +151,20 @@ spec:
           "${PACKAGE_ARGS[@]}"
     - name: collect-build-files
       image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:d0ed5c94153b4b6db0b39aa330747dc167e1e4ad98fe3dab844798dd06f586d9
-      command:
-        - collect-build-files
-      args:
-        - /var/workdir/output
-        - /var/workdir/artifact
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+        DENYLIST_ARGS=()
+        DENYLIST_FILE="$(params.DENIED_PACKAGES_FILE)"
+        if [[ -n "$DENYLIST_FILE" ]]; then
+            DENYLIST_PATH="/var/workdir/source/${DENYLIST_FILE}"
+            if [[ ! -r "$DENYLIST_PATH" ]]; then
+                echo "Denylist file is missing or unreadable: $DENYLIST_PATH" >&2
+                exit 1
+            fi
+            DENYLIST_ARGS=(--denylist "$DENYLIST_PATH")
+        fi
+        exec collect-build-files "${DENYLIST_ARGS[@]}" /var/workdir/output /var/workdir/artifact
     - name: create-oci-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
       workingDir: /var/workdir

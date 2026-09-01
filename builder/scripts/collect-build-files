@@ -3,6 +3,7 @@ set -euo pipefail
 
 SOURCE=""
 DESTINATION=""
+DENYLIST_FILE=""
 
 # Help function
 show_help() {
@@ -18,10 +19,13 @@ ARGUMENTS:
                             created if it does not exist, or cleared otherwise.
 
 OPTIONS:
+    --denylist FILE                 Path to a file listing package names (one per line) to exclude
+                                    from collection. Lines starting with # are ignored.
     --help                          Show this help message
 
 EXAMPLES:
     $0 /tmp/build-output /tmp/artifact
+    $0 --denylist /path/to/denied_packages.txt /tmp/build-output /tmp/artifact
 
 ENVIRONMENT:
     DEBUG=1                        Enable debug mode with verbose output
@@ -33,11 +37,86 @@ EOF
     exit 0
 }
 
+# Normalize a Python package name for comparison (PEP 503):
+# lowercase, replace -, ., and consecutive underscores with a single _
+normalize_name() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[-._]\+/_/g'
+}
+
+# Extract the package name from a wheel or sdist filename and normalize it.
+#
+# Wheels (PEP 427): {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+#   name uses underscores, so it never contains hyphens.
+# Sdists (PEP 625): {name}-{version}.tar.gz
+#   name uses hyphens, so splitting on the first hyphen is wrong:
+#   lxml-html-clean-0.4.5.tar.gz is "lxml-html-clean", not "lxml".
+#
+# In both cases the version is the first hyphen-separated token that starts
+# with a digit (PEP 440 public versions, including epochs like 1!2.0).
+extract_pkg_name() {
+    local filename="${1##*/}"
+    local base="$filename"
+
+    case "$base" in
+        *.whl)     base="${base%.whl}" ;;
+        *.tar.gz)  base="${base%.tar.gz}" ;;
+        *.tar.bz2) base="${base%.tar.bz2}" ;;
+        *.zip)     base="${base%.zip}" ;;
+    esac
+
+    local name_parts=()
+    local token rest="$base"
+    while [[ -n "$rest" ]]; do
+        if [[ "$rest" == *-* ]]; then
+            token="${rest%%-*}"
+            rest="${rest#*-}"
+        else
+            token="$rest"
+            rest=""
+        fi
+        if [[ "$token" =~ ^[0-9] ]]; then
+            break
+        fi
+        name_parts+=("$token")
+    done
+
+    if [[ ${#name_parts[@]} -eq 0 ]]; then
+        normalize_name "$base"
+        return
+    fi
+
+    local raw_name
+    printf -v raw_name '%s-' "${name_parts[@]}"
+    normalize_name "${raw_name%-}"
+}
+
+# Check if a normalized package name is in the denylist.
+is_denied() {
+    local pkg_name="$1"
+    if [[ ${#DENIED_PACKAGES[@]} -eq 0 ]]; then
+        return 1
+    fi
+    for denied in "${DENIED_PACKAGES[@]}"; do
+        if [[ "$pkg_name" == "$denied" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help)
             show_help
+            ;;
+        --denylist)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --denylist requires a value" >&2
+                exit 1
+            fi
+            DENYLIST_FILE="$2"
+            shift 2
             ;;
         -*)
             echo "Error: Unknown option $1" >&2
@@ -79,6 +158,25 @@ log() {
     echo "[$(date --utc -Ins)] $1" >&2
 }
 
+# Load denylist if provided. An explicit --denylist that cannot be read must
+# fail; otherwise a typo would silently ship every transitive dependency.
+DENIED_PACKAGES=()
+if [[ -n "$DENYLIST_FILE" ]]; then
+    if [[ ! -r "$DENYLIST_FILE" ]]; then
+        log "ERROR: Denylist file is missing or unreadable: ${DENYLIST_FILE}"
+        exit 1
+    fi
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="$(echo "$line" | xargs)"
+        [[ -z "$line" ]] && continue
+        DENIED_PACKAGES+=("$(normalize_name "$line")")
+    done < "$DENYLIST_FILE"
+    if [[ ${#DENIED_PACKAGES[@]} -gt 0 ]]; then
+        log "Loaded denylist with ${#DENIED_PACKAGES[@]} packages: ${DENIED_PACKAGES[*]}"
+    fi
+fi
+
 log "Collecting build files..."
 
 # Ensure output directory is clear
@@ -94,6 +192,12 @@ if [ -d "${WHEELS_DIR}" ]; then
     
     for file in "${WHEELS_DIR}"/*.whl; do
         FILENAME="${file##*/}"
+
+        pkg_name="$(extract_pkg_name "$FILENAME")"
+        if is_denied "$pkg_name"; then
+            log "DENIED ${FILENAME} - package '${pkg_name}' is on the denylist"
+            continue
+        fi
 
         # check wheel type, only collect valid wheels
         case $FILENAME in
@@ -114,8 +218,20 @@ fi
 SDISTS_DIR="${SOURCE}/sdists-repo/builds"
 # Copy any source distributions
 if [ -d "${SDISTS_DIR}" ]; then
-    find "${SDISTS_DIR}" -name '*.tar.gz' -type f \
-    -exec cp {} "${DESTINATION}/" \; || true
+    if [[ ${#DENIED_PACKAGES[@]} -eq 0 ]]; then
+        find "${SDISTS_DIR}" -name '*.tar.gz' -type f \
+        -exec cp {} "${DESTINATION}/" \; || true
+    else
+        find "${SDISTS_DIR}" -name '*.tar.gz' -type f | while IFS= read -r sdist; do
+            sdist_filename="${sdist##*/}"
+            pkg_name="$(extract_pkg_name "$sdist_filename")"
+            if is_denied "$pkg_name"; then
+                log "DENIED ${sdist_filename} - package '${pkg_name}' is on the denylist"
+            else
+                cp "$sdist" "${DESTINATION}/" || true
+            fi
+        done
+    fi
 fi
 
 # Copy all build sequence summary files (one per package)
