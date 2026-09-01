@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
     - name: Run collect-build-files tests
       run: ./tests/test-collect-build-files.sh
 
@@ -25,7 +25,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
 
     # Always pull the published builder image. Rebuilding it here downloads
     # autoconf/automake from ftpmirror.gnu.org, which is unreliable on GHA.
