@@ -12,5 +12,6 @@ trusted_task_rules:
   allow:
     calunga-build-tasks:
       - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-python-wheels*
+      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-sast-snyk-check-sdist*
       - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-npm-package*
       - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-promote-npm-oci*
