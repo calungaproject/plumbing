@@ -11,47 +11,49 @@ MY_DIR=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source-path=SCRIPTDIR
 source "${MY_DIR}/build_utils.sh"
 
-# Install a more recent libtiff
-check_var "${LIBTIFF_VERSION}"
-check_var "${LIBTIFF_HASH}"
-check_var "${LIBTIFF_DOWNLOAD_URL}"
-LIBTIFF_ROOT="tiff-${LIBTIFF_VERSION}"
+# Install a more recent libaom (AV1 codec, used by libavif for AVIF support)
+check_var "${AOM_VERSION}"
+check_var "${AOM_HASH}"
+check_var "${AOM_DOWNLOAD_URL}"
+AOM_ROOT="libaom-${AOM_VERSION}"
 
-PREFIX=/opt/_internal/libtiff-${LIBTIFF_VERSION%.*}
+PREFIX=/opt/_internal/aom-${AOM_VERSION%.*}
 
-fetch_source "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_DOWNLOAD_URL}"
-check_sha256sum "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_HASH}"
-tar xf "${LIBTIFF_ROOT}.tar.xz"
-pushd "${LIBTIFF_ROOT}"
+fetch_source "${AOM_ROOT}.tar.gz" "${AOM_DOWNLOAD_URL}"
+check_sha256sum "${AOM_ROOT}.tar.gz" "${AOM_HASH}"
+tar xf "${AOM_ROOT}.tar.gz"
+pushd "${AOM_ROOT}"
 
-# Point CMake's module-mode find_package at our source-built deps (headers live
-# under /opt/_internal/<pkg>/, not on the system include path).
-DEP_PREFIX="$(printf '%s;' /opt/_internal/libjpeg-turbo-* /opt/_internal/zstd-*)"
-
-# Build with CMake
+# Build with CMake.
+# AOM_TARGET_CPU=generic: the UBI8 builder base has no assembler (nasm/yasm are
+# not in its repos), and aom's cmake requires one for its hand-written SIMD asm.
+# generic disables that asm and builds a pure-C library that is portable and
+# correct; AVIF encode/decode is slower but functionally complete. SIMD can be
+# restored later by adding a source-built nasm stage.
 mkdir -p _build
 cd _build
-# -Djpeg=ON / -Dzstd=ON force the codecs on: if discovery ever breaks the build
-# fails loudly instead of silently shipping a libtiff without JPEG/ZSTD support.
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
     -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_PREFIX_PATH="${DEP_PREFIX}" \
-    -Djpeg=ON \
-    -Dzstd=ON \
-    -Dtiff-tools=OFF \
-    -Dtiff-tests=OFF \
-    -Dtiff-contrib=OFF \
-    -Dtiff-docs=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DAOM_TARGET_CPU=generic \
+    -DENABLE_NASM=OFF \
+    -DENABLE_DOCS=OFF \
+    -DENABLE_EXAMPLES=OFF \
+    -DENABLE_TESTS=OFF \
+    -DENABLE_TESTDATA=OFF \
+    -DENABLE_TOOLS=OFF \
+    -DCONFIG_AV1_DECODER=1 \
+    -DCONFIG_AV1_ENCODER=1 \
     > /dev/null
 
 make -j"$(nproc)" > /dev/null
 make install DESTDIR=/manylinux-rootfs > /dev/null
 popd
-rm -rf "${LIBTIFF_ROOT}" "${LIBTIFF_ROOT}.tar.xz"
+rm -rf "${AOM_ROOT}" "${AOM_ROOT}.tar.gz"
 
 # Add rpath to pkgconfig
 for pc in /manylinux-rootfs"${PREFIX}"/lib/pkgconfig/*.pc; do

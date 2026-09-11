@@ -35,12 +35,13 @@ elif [ "${AUDITWHEEL_ARCH}" == "i686" ]; then
 fi
 
 # Build OpenBLAS
-# Note: OpenBLAS build requires system GCC for OpenMP support
-# The USE_OPENMP=1 flag enables multi-threaded BLAS operations
+# Note: OpenBLAS build requires system GCC
+# USE_OPENMP=0 uses pthreads instead of OpenMP (matches upstream numpy/scipy,
+# avoids fork()/multiprocessing hazards and FP reduction divergence)
 make -j"$(nproc)" \
     PREFIX="${PREFIX}" \
     DYNAMIC_ARCH=1 \
-    USE_OPENMP=1 \
+    USE_OPENMP=0 \
     NO_STATIC=1 \
     ${TARGET:+TARGET=${TARGET}} \
     CC=gcc \

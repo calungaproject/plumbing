@@ -11,47 +11,44 @@ MY_DIR=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source-path=SCRIPTDIR
 source "${MY_DIR}/build_utils.sh"
 
-# Install a more recent libtiff
-check_var "${LIBTIFF_VERSION}"
-check_var "${LIBTIFF_HASH}"
-check_var "${LIBTIFF_DOWNLOAD_URL}"
-LIBTIFF_ROOT="tiff-${LIBTIFF_VERSION}"
+# Install a more recent libwebp
+check_var "${LIBWEBP_VERSION}"
+check_var "${LIBWEBP_HASH}"
+check_var "${LIBWEBP_DOWNLOAD_URL}"
+LIBWEBP_ROOT="libwebp-${LIBWEBP_VERSION}"
 
-PREFIX=/opt/_internal/libtiff-${LIBTIFF_VERSION%.*}
+PREFIX=/opt/_internal/libwebp-${LIBWEBP_VERSION%.*}
 
-fetch_source "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_DOWNLOAD_URL}"
-check_sha256sum "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_HASH}"
-tar xf "${LIBTIFF_ROOT}.tar.xz"
-pushd "${LIBTIFF_ROOT}"
-
-# Point CMake's module-mode find_package at our source-built deps (headers live
-# under /opt/_internal/<pkg>/, not on the system include path).
-DEP_PREFIX="$(printf '%s;' /opt/_internal/libjpeg-turbo-* /opt/_internal/zstd-*)"
+fetch_source "${LIBWEBP_ROOT}.tar.gz" "${LIBWEBP_DOWNLOAD_URL}"
+check_sha256sum "${LIBWEBP_ROOT}.tar.gz" "${LIBWEBP_HASH}"
+tar xf "${LIBWEBP_ROOT}.tar.gz"
+pushd "${LIBWEBP_ROOT}"
 
 # Build with CMake
 mkdir -p _build
 cd _build
-# -Djpeg=ON / -Dzstd=ON force the codecs on: if discovery ever breaks the build
-# fails loudly instead of silently shipping a libtiff without JPEG/ZSTD support.
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
     -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_PREFIX_PATH="${DEP_PREFIX}" \
-    -Djpeg=ON \
-    -Dzstd=ON \
-    -Dtiff-tools=OFF \
-    -Dtiff-tests=OFF \
-    -Dtiff-contrib=OFF \
-    -Dtiff-docs=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DWEBP_BUILD_ANIM_UTILS=OFF \
+    -DWEBP_BUILD_CWEBP=OFF \
+    -DWEBP_BUILD_DWEBP=OFF \
+    -DWEBP_BUILD_GIF2WEBP=OFF \
+    -DWEBP_BUILD_IMG2WEBP=OFF \
+    -DWEBP_BUILD_VWEBP=OFF \
+    -DWEBP_BUILD_WEBPINFO=OFF \
+    -DWEBP_BUILD_WEBPMUX=OFF \
+    -DWEBP_BUILD_EXTRAS=OFF \
     > /dev/null
 
 make -j"$(nproc)" > /dev/null
 make install DESTDIR=/manylinux-rootfs > /dev/null
 popd
-rm -rf "${LIBTIFF_ROOT}" "${LIBTIFF_ROOT}.tar.xz"
+rm -rf "${LIBWEBP_ROOT}" "${LIBWEBP_ROOT}.tar.gz"
 
 # Add rpath to pkgconfig
 for pc in /manylinux-rootfs"${PREFIX}"/lib/pkgconfig/*.pc; do

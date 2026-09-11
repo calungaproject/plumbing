@@ -11,47 +11,53 @@ MY_DIR=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source-path=SCRIPTDIR
 source "${MY_DIR}/build_utils.sh"
 
-# Install a more recent libtiff
-check_var "${LIBTIFF_VERSION}"
-check_var "${LIBTIFF_HASH}"
-check_var "${LIBTIFF_DOWNLOAD_URL}"
-LIBTIFF_ROOT="tiff-${LIBTIFF_VERSION}"
+# Install a more recent FreeType
+check_var "${FREETYPE_VERSION}"
+check_var "${FREETYPE_HASH}"
+check_var "${FREETYPE_DOWNLOAD_URL}"
+FREETYPE_ROOT="freetype-${FREETYPE_VERSION}"
 
-PREFIX=/opt/_internal/libtiff-${LIBTIFF_VERSION%.*}
+PREFIX=/opt/_internal/freetype-${FREETYPE_VERSION%.*}
 
-fetch_source "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_DOWNLOAD_URL}"
-check_sha256sum "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_HASH}"
-tar xf "${LIBTIFF_ROOT}.tar.xz"
-pushd "${LIBTIFF_ROOT}"
+fetch_source "${FREETYPE_ROOT}.tar.xz" "${FREETYPE_DOWNLOAD_URL}"
+check_sha256sum "${FREETYPE_ROOT}.tar.xz" "${FREETYPE_HASH}"
+tar xf "${FREETYPE_ROOT}.tar.xz"
+pushd "${FREETYPE_ROOT}"
 
 # Point CMake's module-mode find_package at our source-built deps (headers live
 # under /opt/_internal/<pkg>/, not on the system include path).
-DEP_PREFIX="$(printf '%s;' /opt/_internal/libjpeg-turbo-* /opt/_internal/zstd-*)"
+DEP_PREFIX="$(printf '%s;' /opt/_internal/libpng-* /opt/_internal/brotli-*)"
 
 # Build with CMake
 mkdir -p _build
 cd _build
-# -Djpeg=ON / -Dzstd=ON force the codecs on: if discovery ever breaks the build
-# fails loudly instead of silently shipping a libtiff without JPEG/ZSTD support.
+# FT_REQUIRE_* force these optional deps on: if discovery ever breaks the build
+# fails loudly instead of silently shipping a FreeType without PNG (embedded
+# color bitmap / emoji fonts) or Brotli (WOFF2 font loading) support.
+#
+# HarfBuzz is deliberately DISABLED here (matches PyPI's Pillow wheel build,
+# which configures FreeType with --with-harfbuzz=no). FreeType only uses
+# HarfBuzz to improve the auto-hinter for complex scripts; enabling it would
+# create a FreeType<->HarfBuzz build cycle (HarfBuzz needs FreeType for hb-ft).
+# Complex-script shaping is instead provided at the Pillow layer via vendored
+# raqm linking HarfBuzz. HarfBuzz is built AFTER FreeType with freetype support.
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
     -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_SHARED_LIBS=ON \
     -DCMAKE_PREFIX_PATH="${DEP_PREFIX}" \
-    -Djpeg=ON \
-    -Dzstd=ON \
-    -Dtiff-tools=OFF \
-    -Dtiff-tests=OFF \
-    -Dtiff-contrib=OFF \
-    -Dtiff-docs=OFF \
+    -DFT_REQUIRE_PNG=ON \
+    -DFT_DISABLE_HARFBUZZ=ON \
+    -DFT_REQUIRE_BROTLI=ON \
     > /dev/null
 
 make -j"$(nproc)" > /dev/null
 make install DESTDIR=/manylinux-rootfs > /dev/null
 popd
-rm -rf "${LIBTIFF_ROOT}" "${LIBTIFF_ROOT}.tar.xz"
+rm -rf "${FREETYPE_ROOT}" "${FREETYPE_ROOT}.tar.xz"
 
 # Add rpath to pkgconfig
 for pc in /manylinux-rootfs"${PREFIX}"/lib/pkgconfig/*.pc; do

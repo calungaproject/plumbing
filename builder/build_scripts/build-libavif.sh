@@ -11,47 +11,45 @@ MY_DIR=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source-path=SCRIPTDIR
 source "${MY_DIR}/build_utils.sh"
 
-# Install a more recent libtiff
-check_var "${LIBTIFF_VERSION}"
-check_var "${LIBTIFF_HASH}"
-check_var "${LIBTIFF_DOWNLOAD_URL}"
-LIBTIFF_ROOT="tiff-${LIBTIFF_VERSION}"
+# Install a more recent libavif
+check_var "${LIBAVIF_VERSION}"
+check_var "${LIBAVIF_HASH}"
+check_var "${LIBAVIF_DOWNLOAD_URL}"
+LIBAVIF_ROOT="libavif-${LIBAVIF_VERSION}"
 
-PREFIX=/opt/_internal/libtiff-${LIBTIFF_VERSION%.*}
+PREFIX=/opt/_internal/libavif-${LIBAVIF_VERSION%.*}
 
-fetch_source "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_DOWNLOAD_URL}"
-check_sha256sum "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_HASH}"
-tar xf "${LIBTIFF_ROOT}.tar.xz"
-pushd "${LIBTIFF_ROOT}"
-
-# Point CMake's module-mode find_package at our source-built deps (headers live
-# under /opt/_internal/<pkg>/, not on the system include path).
-DEP_PREFIX="$(printf '%s;' /opt/_internal/libjpeg-turbo-* /opt/_internal/zstd-*)"
+# GitHub auto-generated archive is named v<version>.tar.gz; it extracts to ${LIBAVIF_ROOT}/
+fetch_source "v${LIBAVIF_VERSION}.tar.gz" "${LIBAVIF_DOWNLOAD_URL}"
+check_sha256sum "v${LIBAVIF_VERSION}.tar.gz" "${LIBAVIF_HASH}"
+tar xf "v${LIBAVIF_VERSION}.tar.gz"
+pushd "${LIBAVIF_ROOT}"
 
 # Build with CMake
 mkdir -p _build
 cd _build
-# -Djpeg=ON / -Dzstd=ON force the codecs on: if discovery ever breaks the build
-# fails loudly instead of silently shipping a libtiff without JPEG/ZSTD support.
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
     -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_PREFIX_PATH="${DEP_PREFIX}" \
-    -Djpeg=ON \
-    -Dzstd=ON \
-    -Dtiff-tools=OFF \
-    -Dtiff-tests=OFF \
-    -Dtiff-contrib=OFF \
-    -Dtiff-docs=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DAVIF_CODEC_AOM=SYSTEM \
+    -DAVIF_LIBYUV=OFF \
+    -DAVIF_CODEC_DAV1D=OFF \
+    -DAVIF_CODEC_LIBGAV1=OFF \
+    -DAVIF_CODEC_RAV1E=OFF \
+    -DAVIF_CODEC_SVT=OFF \
+    -DAVIF_BUILD_APPS=OFF \
+    -DAVIF_BUILD_EXAMPLES=OFF \
+    -DAVIF_BUILD_TESTS=OFF \
     > /dev/null
 
 make -j"$(nproc)" > /dev/null
 make install DESTDIR=/manylinux-rootfs > /dev/null
 popd
-rm -rf "${LIBTIFF_ROOT}" "${LIBTIFF_ROOT}.tar.xz"
+rm -rf "${LIBAVIF_ROOT}" "v${LIBAVIF_VERSION}.tar.gz"
 
 # Add rpath to pkgconfig
 for pc in /manylinux-rootfs"${PREFIX}"/lib/pkgconfig/*.pc; do

@@ -151,13 +151,13 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 
 
-FROM build_base AS build_arrow
-COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
+FROM build_base AS build_curl
+COPY build_scripts/build-curl.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
-    export ARROW_VERSION=25.0.0 && \
-    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
-    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
-    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
+    export CURL_ROOT=curl-8.17.0 && \
+    export CURL_HASH=e8e74cdeefe5fb78b3ae6e90cd542babf788fa9480029cfcee6fd9ced42b7910 && \
+    export CURL_DOWNLOAD_URL=https://curl.haxx.se/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-curl.sh
 
 
 FROM build_base AS build_libjpeg_turbo
@@ -208,8 +208,8 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 
 FROM build_base AS build_openblas
 COPY build_scripts/build-openblas.sh /opt/_internal/build_scripts/
-RUN export OPENBLAS_VERSION=0.3.31 && \
-    export OPENBLAS_HASH=6dd2a63ac9d32643b7cc636eab57bf4e57d0ed1fff926dfbc5d3d97f2d2be3a6 && \
+RUN export OPENBLAS_VERSION=0.3.34 && \
+    export OPENBLAS_HASH=cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed && \
     export OPENBLAS_DOWNLOAD_URL=https://github.com/OpenMathLib/OpenBLAS/releases/download && \
     /opt/_internal/build_scripts/build-openblas.sh
 
@@ -229,6 +229,22 @@ RUN export ZLIB_VERSION=1.3.1 && \
     export ZLIB_HASH=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 && \
     export ZLIB_DOWNLOAD_URL=https://github.com/madler/zlib/releases/download/v1.3.1 && \
     /opt/_internal/build_scripts/build-zlib.sh
+
+
+FROM build_base AS build_arrow
+# Arrow's bundled cloud SDKs (S3/GCS/Azure) link libcurl, and the Azure SDK
+# also needs libxml2; aws-sdk-cpp/curl pull in zlib. Stage the source-built
+# dev trees so CMake can find them. (build_curl/build_libxml2/build_zlib are all
+# defined earlier so these remain backward stage references.)
+COPY --from=build_curl /manylinux-buildfs /
+COPY --from=build_libxml2 /manylinux-buildfs /
+COPY --from=build_zlib /manylinux-buildfs /
+COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export ARROW_VERSION=25.0.0 && \
+    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
+    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
 
 
 FROM build_base AS build_bzip2
@@ -253,12 +269,119 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 FROM build_base AS build_libtiff
 COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_zstd /manylinux-buildfs /
 COPY build_scripts/build-libtiff.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export LIBTIFF_VERSION=4.6.0 && \
     export LIBTIFF_HASH=e178649607d1e22b51cf361dd20a3753f244f022eefab1f2f218fc62ebaf87d2 && \
     export LIBTIFF_DOWNLOAD_URL=https://download.osgeo.org/libtiff && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libtiff.sh
+
+
+FROM build_base AS build_brotli
+COPY build_scripts/build-brotli.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export BROTLI_VERSION=1.1.0 && \
+    export BROTLI_HASH=e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff && \
+    export BROTLI_DOWNLOAD_URL=https://github.com/google/brotli/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-brotli.sh
+
+
+# FreeType is built WITHOUT HarfBuzz (see build-freetype.sh) so that HarfBuzz can
+# be built afterwards WITH FreeType support -- Pillow's vendored raqm needs
+# HarfBuzz's hb-ft integration, which requires linking against libfreetype.
+FROM build_base AS build_freetype
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY build_scripts/build-freetype.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export FREETYPE_VERSION=2.14.3 && \
+    export FREETYPE_HASH=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f && \
+    export FREETYPE_DOWNLOAD_URL=https://download.savannah.gnu.org/releases/freetype && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-freetype.sh
+
+
+# HarfBuzz is built AFTER FreeType and links against it (HB_HAVE_FREETYPE=ON) so
+# that hb-ft.h and the hb_ft_* symbols exist for Pillow's vendored raqm.
+FROM build_base AS build_harfbuzz
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY build_scripts/build-harfbuzz.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export HARFBUZZ_VERSION=10.4.0 && \
+    export HARFBUZZ_HASH=480b6d25014169300669aa1fc39fb356c142d5028324ea52b3a27648b9beaad8 && \
+    export HARFBUZZ_DOWNLOAD_URL=https://github.com/harfbuzz/harfbuzz/releases/download/10.4.0 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-harfbuzz.sh
+
+
+FROM build_base AS build_libwebp
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY build_scripts/build-libwebp.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBWEBP_VERSION=1.4.0 && \
+    export LIBWEBP_HASH=61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5 && \
+    export LIBWEBP_DOWNLOAD_URL=https://storage.googleapis.com/downloads.webmproject.org/releases/webp && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libwebp.sh
+
+
+FROM build_base AS build_lcms2
+COPY build_scripts/build-lcms2.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LCMS2_VERSION=2.16 && \
+    export LCMS2_HASH=d873d34ad8b9b4cea010631f1a6228d2087475e4dc5e763eb81acc23d9d45a51 && \
+    export LCMS2_DOWNLOAD_URL=https://github.com/mm2/Little-CMS/releases/download/lcms2.16 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-lcms2.sh
+
+
+FROM build_base AS build_openjpeg
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libtiff /manylinux-buildfs /
+COPY build_scripts/build-openjpeg.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export OPENJPEG_VERSION=2.5.4 && \
+    export OPENJPEG_HASH=a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a && \
+    export OPENJPEG_DOWNLOAD_URL=https://github.com/uclouvain/openjpeg/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openjpeg.sh
+
+
+FROM build_base AS build_aom
+COPY build_scripts/build-aom.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export AOM_VERSION=3.12.1 && \
+    export AOM_HASH=9e9775180dec7dfd61a79e00bda3809d43891aee6b2e331ff7f26986207ea22e && \
+    export AOM_DOWNLOAD_URL=https://storage.googleapis.com/aom-releases && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-aom.sh
+
+
+FROM build_base AS build_libavif
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_libpng /manylinux-buildfs /
+COPY --from=build_libjpeg_turbo /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY build_scripts/build-libavif.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBAVIF_VERSION=1.4.2 && \
+    export LIBAVIF_HASH=2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d && \
+    export LIBAVIF_DOWNLOAD_URL=https://github.com/AOMediaCodec/libavif/archive/refs/tags && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libavif.sh
+
+
+FROM build_base AS build_ffmpeg
+COPY --from=build_zlib /manylinux-buildfs /
+COPY build_scripts/build-ffmpeg.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export FFMPEG_VERSION=8.0.3 && \
+    export FFMPEG_HASH=6136812ea6d4e68bdba27e33c2a94382711cdf4f8602ffef056ff792bd6f9818 && \
+    export FFMPEG_DOWNLOAD_URL=https://ffmpeg.org/releases && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-ffmpeg.sh
 
 
 FROM --platform=${BUILDPLATFORM} ghcr.io/sigstore/cosign/cosign:v${MANYLINUX_COSIGN_VERSION} AS cosign-bin
@@ -285,6 +408,14 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_harfbuzz /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY --from=build_libwebp /manylinux-buildfs /
+COPY --from=build_lcms2 /manylinux-buildfs /
+COPY --from=build_openjpeg /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY --from=build_libavif /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -303,6 +434,14 @@ COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
+COPY --from=build_brotli /manylinux-buildfs /
+COPY --from=build_harfbuzz /manylinux-buildfs /
+COPY --from=build_freetype /manylinux-buildfs /
+COPY --from=build_libwebp /manylinux-buildfs /
+COPY --from=build_lcms2 /manylinux-buildfs /
+COPY --from=build_openjpeg /manylinux-buildfs /
+COPY --from=build_aom /manylinux-buildfs /
+COPY --from=build_libavif /manylinux-buildfs /
 COPY --from=build_libjpeg_turbo /manylinux-buildfs /
 COPY --from=build_libyaml /manylinux-buildfs /
 COPY --from=build_libxml2 /manylinux-buildfs /
@@ -311,6 +450,7 @@ COPY --from=build_libffi /manylinux-buildfs /
 COPY --from=build_openblas /manylinux-buildfs /
 COPY --from=build_libomp /manylinux-buildfs /
 COPY --from=build_arrow /manylinux-buildfs /
+COPY --from=build_ffmpeg /manylinux-buildfs /
 
 
 FROM runtime_base
@@ -324,6 +464,14 @@ COPY --from=build_zlib /manylinux-rootfs /
 COPY --from=build_bzip2 /manylinux-rootfs /
 COPY --from=build_libpng /manylinux-rootfs /
 COPY --from=build_libtiff /manylinux-rootfs /
+COPY --from=build_brotli /manylinux-rootfs /
+COPY --from=build_harfbuzz /manylinux-rootfs /
+COPY --from=build_freetype /manylinux-rootfs /
+COPY --from=build_libwebp /manylinux-rootfs /
+COPY --from=build_lcms2 /manylinux-rootfs /
+COPY --from=build_openjpeg /manylinux-rootfs /
+COPY --from=build_aom /manylinux-rootfs /
+COPY --from=build_libavif /manylinux-rootfs /
 COPY --from=build_libjpeg_turbo /manylinux-rootfs /
 COPY --from=build_libyaml /manylinux-rootfs /
 COPY --from=build_libxml2 /manylinux-rootfs /
@@ -332,6 +480,7 @@ COPY --from=build_libffi /manylinux-rootfs /
 COPY --from=build_openblas /manylinux-rootfs /
 COPY --from=build_libomp /manylinux-rootfs /
 COPY --from=build_arrow /manylinux-rootfs /
+COPY --from=build_ffmpeg /manylinux-rootfs /
 RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
     ldconfig
 
@@ -342,13 +491,13 @@ COPY --from=merged_buildfs /usr/local/lib/cmake /usr/local/lib/cmake
 COPY --from=merged_buildfs /usr/local/include /usr/local/include
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include /opt/_internal/ffmpeg*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib /opt/_internal/ffmpeg*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \

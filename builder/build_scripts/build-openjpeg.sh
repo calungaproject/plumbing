@@ -11,47 +11,39 @@ MY_DIR=$(dirname "${BASH_SOURCE[0]}")
 # shellcheck source-path=SCRIPTDIR
 source "${MY_DIR}/build_utils.sh"
 
-# Install a more recent libtiff
-check_var "${LIBTIFF_VERSION}"
-check_var "${LIBTIFF_HASH}"
-check_var "${LIBTIFF_DOWNLOAD_URL}"
-LIBTIFF_ROOT="tiff-${LIBTIFF_VERSION}"
+# Install a more recent OpenJPEG (JPEG2000 codec)
+check_var "${OPENJPEG_VERSION}"
+check_var "${OPENJPEG_HASH}"
+check_var "${OPENJPEG_DOWNLOAD_URL}"
+OPENJPEG_ROOT="openjpeg-${OPENJPEG_VERSION}"
 
-PREFIX=/opt/_internal/libtiff-${LIBTIFF_VERSION%.*}
+PREFIX=/opt/_internal/openjpeg-${OPENJPEG_VERSION%.*}
 
-fetch_source "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_DOWNLOAD_URL}"
-check_sha256sum "${LIBTIFF_ROOT}.tar.xz" "${LIBTIFF_HASH}"
-tar xf "${LIBTIFF_ROOT}.tar.xz"
-pushd "${LIBTIFF_ROOT}"
-
-# Point CMake's module-mode find_package at our source-built deps (headers live
-# under /opt/_internal/<pkg>/, not on the system include path).
-DEP_PREFIX="$(printf '%s;' /opt/_internal/libjpeg-turbo-* /opt/_internal/zstd-*)"
+# GitHub auto-generated archive is named v<version>.tar.gz; it extracts to ${OPENJPEG_ROOT}/
+fetch_source "v${OPENJPEG_VERSION}.tar.gz" "${OPENJPEG_DOWNLOAD_URL}"
+check_sha256sum "v${OPENJPEG_VERSION}.tar.gz" "${OPENJPEG_HASH}"
+tar xf "v${OPENJPEG_VERSION}.tar.gz"
+pushd "${OPENJPEG_ROOT}"
 
 # Build with CMake
 mkdir -p _build
 cd _build
-# -Djpeg=ON / -Dzstd=ON force the codecs on: if discovery ever breaks the build
-# fails loudly instead of silently shipping a libtiff without JPEG/ZSTD support.
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_FLAGS="${MANYLINUX_CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${MANYLINUX_CXXFLAGS}" \
     -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_PREFIX_PATH="${DEP_PREFIX}" \
-    -Djpeg=ON \
-    -Dzstd=ON \
-    -Dtiff-tools=OFF \
-    -Dtiff-tests=OFF \
-    -Dtiff-contrib=OFF \
-    -Dtiff-docs=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DBUILD_STATIC_LIBS=OFF \
+    -DBUILD_CODEC=OFF \
+    -DBUILD_PKGCONFIG_FILES=ON \
     > /dev/null
 
 make -j"$(nproc)" > /dev/null
 make install DESTDIR=/manylinux-rootfs > /dev/null
 popd
-rm -rf "${LIBTIFF_ROOT}" "${LIBTIFF_ROOT}.tar.xz"
+rm -rf "${OPENJPEG_ROOT}" "v${OPENJPEG_VERSION}.tar.gz"
 
 # Add rpath to pkgconfig
 for pc in /manylinux-rootfs"${PREFIX}"/lib/pkgconfig/*.pc; do
