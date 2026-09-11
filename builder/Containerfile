@@ -145,8 +145,8 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 FROM build_base AS build_rust
 COPY build_scripts/build-rust.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
-    export RUST_VERSION=1.95.0 && \
-    export RUST_HASH=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 && \
+    export RUST_VERSION=1.98.1 && \
+    export RUST_HASH=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 && \
     export RUST_DOWNLOAD_URL=https://static.rust-lang.org/rustup/dist && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 
