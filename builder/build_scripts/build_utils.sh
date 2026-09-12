@@ -14,6 +14,11 @@ export BASE_POLICY=manylinux
 PACKAGE_MANAGER=dnf
 OS_ID_LIKE=rhel
 
+# Auto-detect architecture when not explicitly set (multi-arch builds)
+: "${AUDITWHEEL_ARCH:=$(uname -m)}"
+AUDITWHEEL_PLAT="${AUDITWHEEL_POLICY}_${AUDITWHEEL_ARCH}"
+export AUDITWHEEL_ARCH AUDITWHEEL_PLAT
+
 function check_var {
 	if [ -z "$1" ]; then
 		echo "required variable not defined"

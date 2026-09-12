@@ -2,6 +2,11 @@
 
 set -eu
 
+# Auto-detect architecture when not explicitly set (multi-arch builds)
+: "${AUDITWHEEL_ARCH:=$(uname -m)}"
+AUDITWHEEL_PLAT="${AUDITWHEEL_POLICY}_${AUDITWHEEL_ARCH}"
+export AUDITWHEEL_ARCH AUDITWHEEL_PLAT
+
 if [ "${AUDITWHEEL_ARCH}" == "i686" ] && [ "$(uname -m)" == "x86_64" ]; then
 	linux32 "$@"
 elif [ "${AUDITWHEEL_ARCH}" == "armv7l" ] && [ "$(uname -m)" != "armv7l" ]; then
