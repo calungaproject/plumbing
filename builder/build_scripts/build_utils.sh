@@ -24,16 +24,55 @@ function check_var {
 
 function fetch_source {
 	# This is called both inside and outside the build context (e.g. in Travis) to prefetch
-	# source tarballs, where curl exists (and works)
+	# source tarballs, where curl exists (and works).
+	# Optional third argument: fallback URL tried after all preferred-source attempts are exhausted.
+	# Without a fallback the original single-URL behaviour (--retry 10) is preserved.
 	local file=$1
 	check_var "${file}"
 	local url=$2
 	check_var "${url}"
+	local fallback_url=${3:-}
+
 	if [ -f "${file}" ]; then
 		echo "${file} exists, skipping fetch"
-	else
-		curl -fsSL --retry 10 -o "${file}" "${url}/${file}"
+		return 0
 	fi
+
+	if [ -z "${fallback_url}" ]; then
+		curl -fsSL --retry 10 -o "${file}" "${url}/${file}"
+		return
+	fi
+
+	local preferred_attempts=3
+	local fallback_attempts=3
+	local attempt rc
+
+	for ((attempt = 1; attempt <= preferred_attempts; attempt++)); do
+		echo "Fetching ${file} from ${url} (attempt ${attempt}/${preferred_attempts})"
+		if curl -fsSL -o "${file}" "${url}/${file}"; then
+			return 0
+		else
+			rc=$?
+		fi
+		echo "Attempt ${attempt}/${preferred_attempts} failed (curl exit code: ${rc})" >&2
+		rm -f "${file}"
+	done
+
+	echo "Preferred source ${url} unavailable after ${preferred_attempts} attempts; falling back to ${fallback_url}" >&2
+
+	for ((attempt = 1; attempt <= fallback_attempts; attempt++)); do
+		echo "Fetching ${file} from ${fallback_url} (attempt ${attempt}/${fallback_attempts})"
+		if curl -fsSL -o "${file}" "${fallback_url}/${file}"; then
+			return 0
+		else
+			rc=$?
+		fi
+		echo "Fallback attempt ${attempt}/${fallback_attempts} failed (curl exit code: ${rc})" >&2
+		rm -f "${file}"
+	done
+
+	echo "Both preferred and fallback sources failed" >&2
+	return "${rc}"
 }
 
 

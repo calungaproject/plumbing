@@ -30,7 +30,7 @@ if autoconf --version > /dev/null 2>&1; then
 fi
 
 
-fetch_source "${AUTOCONF_ROOT}.tar.gz" "${AUTOCONF_DOWNLOAD_URL}"
+fetch_source "${AUTOCONF_ROOT}.tar.gz" "${AUTOCONF_DOWNLOAD_URL}" "${AUTOCONF_FALLBACK_URL:-}"
 check_sha256sum "${AUTOCONF_ROOT}.tar.gz" "${AUTOCONF_HASH}"
 tar -zxf "${AUTOCONF_ROOT}.tar.gz"
 pushd "${AUTOCONF_ROOT}"
