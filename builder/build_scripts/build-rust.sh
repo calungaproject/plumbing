@@ -13,8 +13,8 @@ source "${MY_DIR}/build_utils.sh"
 
 # Install a more recent Rust
 check_var "${RUST_VERSION}"
-check_var "${RUST_HASH}"
-check_var "${RUST_DOWNLOAD_URL}"
+check_var "${RUSTUP_HASH}"
+check_var "${RUSTUP_DOWNLOAD_URL}"
 
 PREFIX=/opt/_internal/rust-${RUST_VERSION}
 
@@ -33,8 +33,8 @@ else
     exit 1
 fi
 
-fetch_source "${RUSTUP_INIT}" "${RUST_DOWNLOAD_URL}/${RUSTUP_ARCH}"
-check_sha256sum "${RUSTUP_INIT}" "${RUST_HASH}"
+fetch_source "${RUSTUP_INIT}" "${RUSTUP_DOWNLOAD_URL}/${RUSTUP_ARCH}"
+check_sha256sum "${RUSTUP_INIT}" "${RUSTUP_HASH}"
 chmod +x "${RUSTUP_INIT}"
 
 # Install Rust using rustup to PREFIX
