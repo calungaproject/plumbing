@@ -144,16 +144,13 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 
 FROM build_base AS build_rust
 COPY build_scripts/build-rust.sh /opt/_internal/build_scripts/
-# RUST_HASH is the sha256 of rustup-init (the installer), not of the Rust
-# toolchain: RUSTUP_VERSION and RUST_VERSION move independently. The unversioned
-# .../rustup/dist path always serves the newest rustup, so RUSTUP_VERSION is
-# pinned in the URL; otherwise the hash breaks on every rustup release. Bumping
-# RUSTUP_VERSION therefore requires a matching RUST_HASH.
+# The unversioned .../rustup/dist path always serves the newest rustup, so the
+# version is pinned in the URL; otherwise RUSTUP_HASH breaks on every release.
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export RUST_VERSION=1.98.1 && \
     export RUSTUP_VERSION=1.29.1 && \
-    export RUST_HASH=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 && \
-    export RUST_DOWNLOAD_URL=https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION} && \
+    export RUSTUP_HASH=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 && \
+    export RUSTUP_DOWNLOAD_URL=https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION} && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rust.sh
 
 
