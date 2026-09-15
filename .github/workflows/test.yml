@@ -27,8 +27,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
 
-    # Always pull the published builder image. Rebuilding it here downloads
-    # autoconf/automake from ftpmirror.gnu.org, which is unreliable on GHA.
-    # Konflux builds the real image; denylist coverage is the job above.
+    # Always pull the published builder image rather than rebuilding it here:
+    # Konflux builds the real image, and denylist coverage is the job above.
     - name: Run test suite (pull published builder image)
       run: ./tests/test-build-wheels.sh --skip-build
