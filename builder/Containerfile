@@ -540,6 +540,28 @@ RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
     if test -n "$(find /build_cpython_base/opt/_internal -maxdepth 1 -name 'static-openssl*' -print -quit)"; then cp -rf /build_cpython_base/opt/_internal/static-openssl* /opt/_internal/; fi && \
     manylinux-entrypoint /opt/_internal/build_scripts/finalize.sh \
       pp311-pypy311_pp73
+# build-openssl-static.sh asserts the legacy provider is in libcrypto.a, but it
+# runs in build_cpython, two stages back, and cannot see anything that happens
+# to the archive after that -- finalize.sh above purges *.a out of
+# /opt/_internal. Re-assert on the finished filesystem, where a wheel would
+# actually find it.
+RUN set -e && \
+    STATIC_LIBCRYPTO=/opt/_internal/static-openssl/lib/libcrypto.a && \
+    if [ ! -f "${STATIC_LIBCRYPTO}" ]; then \
+        echo "ERROR: ${STATIC_LIBCRYPTO} is missing from the final image." >&2; \
+        echo "The static OpenSSL built, but something between that stage and" >&2; \
+        echo "here removed its archives -- check the *.a purge in" >&2; \
+        echo "build_scripts/finalize.sh. A wheel setting OPENSSL_DIR and" >&2; \
+        echo "OPENSSL_STATIC cannot link against headers alone." >&2; \
+        exit 1; \
+    fi && \
+    LEGACY_SYMS=$(nm "${STATIC_LIBCRYPTO}" | grep -c ossl_legacy_provider_init || true) && \
+    if [ "${LEGACY_SYMS}" -eq 0 ]; then \
+        echo "ERROR: ${STATIC_LIBCRYPTO} survived but has no" >&2; \
+        echo "ossl_legacy_provider_init; a wheel linking it would silently lose" >&2; \
+        echo "Blowfish, CAST5, IDEA, SEED, ARC4 and RC2." >&2; \
+        exit 1; \
+    fi
 # Make source-built OpenSSL available system-wide so packages like cmake and
 # duckdb find it instead of the old system OpenSSL 1.1.1k headers
 RUN set -e && \
