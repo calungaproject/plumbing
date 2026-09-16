@@ -396,17 +396,36 @@ COPY --from=build_mpdecimal /manylinux-buildfs /
 COPY --from=build_zstd /manylinux-buildfs /
 COPY --from=build_sqlite3 /manylinux-buildfs /
 RUN ldconfig
-# build-openssl-static.sh builds a second, static-only OpenSSL from the same
-# tarball, for packages that embed OpenSSL instead of linking it dynamically
-# (cryptography). It shares this stage's version and hash so the two builds
-# cannot drift apart; see the script for why it exists and why it stays
-# isolated from the shared build.
+# Two OpenSSL builds, from two different upstream lines, with two different
+# consumers. See build-openssl-static.sh for why the second one exists and how
+# its prefix stays isolated from the shared build.
+#
+# The shared build is what CPython, curl and everything auditwheel bundles into
+# a wheel link against (currently cmake and snowflake-connector-python). It has
+# to stay on 3.x: OpenSSL 4.0 made struct asn1_string_st opaque, and CPython
+# 3.12's Modules/_ssl.c still dereferences it directly -- name->d.ip->length,
+# uri->data and six more -- so 3.12.12 against 4.0.2 dies with eight
+# "incomplete definition of type 'ASN1_OCTET_STRING'" errors. Moving this pin
+# to 4.x needs a CPython that went through ASN1_STRING_get0_data() first.
+#
+# The static build is reachable only by a package that asks for it by setting
+# OPENSSL_DIR and OPENSSL_STATIC, which today means cryptography alone. It
+# tracks 4.x because cryptography's own PyPI wheels are built against 4.x, and
+# nothing on that path goes through CPython's _ssl.
+#
+# Track the newest upstream release of each line here. Parity review compares
+# the OpenSSL version embedded in our wheels against the PyPI ones, and both
+# builds end up inside wheels.
 COPY build_scripts/build-openssl.sh build_scripts/build-openssl-static.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
-    export OPENSSL_ROOT=openssl-3.5.4 && \
-    export OPENSSL_HASH=967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99 && \
+    export OPENSSL_ROOT=openssl-3.6.4 && \
+    export OPENSSL_HASH=9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef && \
     export OPENSSL_DOWNLOAD_URL=https://github.com/openssl/openssl/releases/download/${OPENSSL_ROOT} && \
-    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openssl.sh && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openssl.sh
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export OPENSSL_ROOT=openssl-4.0.2 && \
+    export OPENSSL_HASH=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8 && \
+    export OPENSSL_DOWNLOAD_URL=https://github.com/openssl/openssl/releases/download/${OPENSSL_ROOT} && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openssl-static.sh
 COPY --from=cosign-bin /ko-app/cosign /usr/local/bin/cosign
 COPY build_scripts/build-cpython.sh /opt/_internal/build_scripts/
