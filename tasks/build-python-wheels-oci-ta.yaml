@@ -106,7 +106,7 @@ spec:
           readOnly: true
           subPath: ca-bundle.crt
     - name: build-wheels
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:2d599ce01dc092fc9d4fe79f96893a22e39a1f703e7672e220ca4a8dab39a910
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:d8355de03d57adef033743da1f1a3bb2f0ff038192e3220b155e9dd7dba5d37c
       workingDir: /var/workdir
       volumeMounts:
         - mountPath: /mnt/trusted-ca
@@ -150,7 +150,7 @@ spec:
           --package-settings-dir "$(params.PACKAGE_SETTINGS_DIR)" \
           "${PACKAGE_ARGS[@]}"
     - name: collect-build-files
-      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:2d599ce01dc092fc9d4fe79f96893a22e39a1f703e7672e220ca4a8dab39a910
+      image: quay.io/redhat-user-workloads/calunga-tenant/plumbing-builder@sha256:d8355de03d57adef033743da1f1a3bb2f0ff038192e3220b155e9dd7dba5d37c
       script: |
         #!/bin/bash
         set -euo pipefail
