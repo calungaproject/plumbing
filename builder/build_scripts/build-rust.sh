@@ -49,6 +49,12 @@ mkdir -p /manylinux-rootfs"${PREFIX}"
 cp -r "${CARGO_HOME}" /manylinux-rootfs"${PREFIX}"/
 cp -r "${RUSTUP_HOME}" /manylinux-rootfs"${PREFIX}"/
 
+# OCP runs containers with an arbitrary UID but GID 0. Make only the runtime
+# cache directories group-writable so non-root users can create the registry
+# cache at runtime without making executables writable.
+mkdir -p /manylinux-rootfs"${PREFIX}"/cargo/{registry,git}
+chmod -R g+w /manylinux-rootfs"${PREFIX}"/cargo/{registry,git}/
+
 # Create wrapper scripts that set environment variables
 mkdir -p /manylinux-rootfs/usr/local/bin
 cat > /manylinux-rootfs/usr/local/bin/rustc <<EOF
