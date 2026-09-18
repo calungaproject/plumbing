@@ -30,6 +30,22 @@ if [[ "$target_arch" == "x86_64" ]]; then
     cmake_extra_args+=( -DBOOST_UUID_LINK_LIBATOMIC=OFF )
 fi
 
+# Arrow's bundled cloud SDKs (S3/GCS/Azure) link libcurl, so libarrow carries a
+# NEEDED on libcurl.so.4. That soname also exists in /lib64 -- UBI8's curl
+# 7.61.1 -- and the image deliberately does NOT put our curl prefix on the
+# default library search path, because our build omits HTTP/2 and UBI's curl
+# binary would start failing https fetches with CURLE_NOT_BUILT_IN. Carry an
+# rpath instead, the same way this script does for arrow's own .pc files below,
+# so the loader and auditwheel both reach the 8.17.0 we compile against rather
+# than resolving to the older /lib64 copy. Without it the wheel bundles 7.61.1
+# and dies on import with "undefined symbol: curl_multi_poll".
+CURL_PREFIX=$(find /opt/_internal -maxdepth 1 -name 'curl-*')
+if [ -n "${CURL_PREFIX}" ]; then
+    cmake_extra_args+=(
+        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--enable-new-dtags,-rpath=${CURL_PREFIX}/lib"
+    )
+fi
+
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
