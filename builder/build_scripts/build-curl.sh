@@ -15,6 +15,11 @@ source "${MY_DIR}/build_utils.sh"
 check_var "${CURL_ROOT}"
 check_var "${CURL_HASH}"
 check_var "${CURL_DOWNLOAD_URL}"
+# Link the shared OpenSSL this image builds, not UBI's. A bare --with-openssl
+# lets configure pick up the system openssl-devel, which on UBI8 is 1.1.1k --
+# end of life since 2023-09-11 -- and every wheel that bundles libcurl then
+# carries it. Passing the prefix explicitly is what keeps the two in step.
+check_var "${CURL_OPENSSL_PREFIX}"
 
 # Check if curl-devel is available from packages
 # On UBI images, curl-devel is not available, so we need to build from source
@@ -37,7 +42,7 @@ fetch_source "${CURL_ROOT}.tar.gz" "${CURL_DOWNLOAD_URL}"
 check_sha256sum "${CURL_ROOT}.tar.gz" "${CURL_HASH}"
 tar -xzf "${CURL_ROOT}.tar.gz"
 pushd "${CURL_ROOT}"
-./configure --prefix=${PREFIX} --disable-static --without-libpsl --with-openssl CPPFLAGS="${MANYLINUX_CPPFLAGS}" CFLAGS="${MANYLINUX_CFLAGS}" CXXFLAGS="${MANYLINUX_CXXFLAGS}" LDFLAGS="${MANYLINUX_LDFLAGS} -Wl,-rpath=\$(LIBRPATH)" > /dev/null
+./configure --prefix=${PREFIX} --disable-static --without-libpsl --with-openssl=${CURL_OPENSSL_PREFIX} CPPFLAGS="${MANYLINUX_CPPFLAGS}" CFLAGS="${MANYLINUX_CFLAGS}" CXXFLAGS="${MANYLINUX_CXXFLAGS}" LDFLAGS="${MANYLINUX_LDFLAGS} -Wl,-rpath=\$(LIBRPATH)" > /dev/null
 make > /dev/null
 make install > /dev/null
 popd
@@ -53,6 +58,25 @@ strip_ ${PREFIX}
 
 ${PREFIX}/bin/curl --version
 ${PREFIX}/bin/curl-config --features
+
+# Assert configure honoured CURL_OPENSSL_PREFIX. A fallback to the system
+# openssl-devel is silent otherwise, and only shows up much later as an EOL
+# OpenSSL bundled inside somebody's wheel. Read into a variable rather than
+# piping into `grep -q`, which trips pipefail via SIGPIPE.
+CURL_DYNAMIC=$(readelf -d "${PREFIX}/lib/libcurl.so")
+case "${CURL_DYNAMIC}" in
+*libssl.so.1.1*)
+	echo "libcurl linked the system OpenSSL 1.1.x, not ${CURL_OPENSSL_PREFIX}"
+	echo "${CURL_DYNAMIC}" | grep NEEDED
+	exit 1
+	;;
+*libssl.so.3*) ;;
+*)
+	echo "libcurl links no recognised libssl; check ${CURL_OPENSSL_PREFIX}"
+	echo "${CURL_DYNAMIC}" | grep NEEDED
+	exit 1
+	;;
+esac
 
 mkdir -p /manylinux-rootfs/${PREFIX}/lib
 cp -f ${PREFIX}/lib/libcurl.so.${SO_COMPAT} /manylinux-rootfs/${PREFIX}/lib/
