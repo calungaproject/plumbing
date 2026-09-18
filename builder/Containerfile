@@ -293,9 +293,9 @@ COPY --from=build_openssl ${OPENSSL_SHARED_PREFIX} ${OPENSSL_SHARED_PREFIX}
 RUN echo "${OPENSSL_SHARED_PREFIX}/lib" > /etc/ld.so.conf.d/00-openssl.conf && ldconfig
 COPY build_scripts/build-arrow.sh /opt/_internal/build_scripts/
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
-    export ARROW_VERSION=25.0.0 && \
-    export ARROW_HASH=12afc2dc8137bdd4a68876cec939f664c9d55cfc7b75f55b45163ebb4e344d81 && \
-    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-25.0.0 && \
+    export ARROW_VERSION=25.0.1 && \
+    export ARROW_HASH=43d5de0a581f43cf63a2c06b4dcf13b9ff6fcd800f023324596e5781093bc500 && \
+    export ARROW_DOWNLOAD_URL=https://archive.apache.org/dist/arrow/arrow-${ARROW_VERSION} && \
     export OPENSSL_ROOT_DIR=${OPENSSL_SHARED_PREFIX} && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-arrow.sh
 
