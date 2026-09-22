@@ -85,6 +85,55 @@ assert_fail "npm-pulp-upload fails with no .tgz" \
       PULP_REPOSITORY="r" \
       npm-pulp-upload
 
+# --- pulp-upload repository URL derivation and override ---
+upload_stub_bin="${tmpdir}/upload-stubs"
+mkdir -p "${upload_stub_bin}"
+upload_log="${tmpdir}/twine-upload.log"
+cat > "${upload_stub_bin}/twine" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${TWINE_LOG_PATH}"
+exit 0
+EOF
+cat > "${upload_stub_bin}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"/content/python/packages"* ]]; then
+  echo '{"results":[]}'
+  exit 0
+fi
+if [[ "$*" == *"/repositories/python/python/"* ]]; then
+  echo '{"results":[{"name":"r","latest_version_href":"/api/pulp/d/api/v3/repositories/python/python/r/versions/1/"}]}'
+  exit 0
+fi
+echo "mock curl: unhandled: $*" >&2
+exit 22
+EOF
+chmod +x "${upload_stub_bin}/twine" "${upload_stub_bin}/curl"
+
+pulp_upload_files="${tmpdir}/pulp-upload-files"
+mkdir -p "${pulp_upload_files}"
+printf 'wheel-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl"
+printf 'attestation-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl.attestation"
+
+   : > "${upload_log}"
+assert_ok "pulp-upload uses repository as distribution path by default" \
+  env PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" TWINE_LOG_PATH="${upload_log}" \
+      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
+      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
+      PULP_REPOSITORY="r" pulp-upload
+assert_ok "pulp-upload default URL passed to twine" \
+  grep -Fq -- '--repository-url https://example.invalid/api/pypi/d/r/simple/' "${upload_log}"
+
+: > "${upload_log}"
+assert_ok "pulp-upload uses distribution base path when present" \
+  env PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" TWINE_LOG_PATH="${upload_log}" \
+      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
+      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
+      PULP_REPOSITORY="r" PULP_DISTRIBUTION_BASE_PATH="python-dist" pulp-upload
+assert_ok "pulp-upload distribution URL passed to twine" \
+  grep -Fq -- '--repository-url https://example.invalid/api/pypi/d/python-dist/simple/' "${upload_log}"
+
 # --- npm-release-upload missing secret fails ---
 sec="${tmpdir}/secret-empty"
 mkdir -p "${sec}"
