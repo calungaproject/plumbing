@@ -85,7 +85,7 @@ assert_fail "npm-pulp-upload fails with no .tgz" \
       PULP_REPOSITORY="r" \
       npm-pulp-upload
 
-# --- pulp-upload repository URL derivation and override ---
+# --- pulp-upload repository URL derivation and distribution path ---
 upload_stub_bin="${tmpdir}/upload-stubs"
 mkdir -p "${upload_stub_bin}"
 upload_log="${tmpdir}/twine-upload.log"
@@ -116,7 +116,7 @@ mkdir -p "${pulp_upload_files}"
 printf 'wheel-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl"
 printf 'attestation-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl.attestation"
 
-   : > "${upload_log}"
+: > "${upload_log}"
 assert_ok "pulp-upload uses repository as distribution path by default" \
   env PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" TWINE_LOG_PATH="${upload_log}" \
       FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
