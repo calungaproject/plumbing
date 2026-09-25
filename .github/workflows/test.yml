@@ -31,3 +31,6 @@ jobs:
     # Konflux builds the real image, and denylist coverage is the job above.
     - name: Run test suite (pull published builder image)
       run: ./tests/test-build-wheels.sh --skip-build
+
+    - name: Run pulp upload debug shell test
+      run: ./utils/tests/pulp_upload_debug_test.sh
