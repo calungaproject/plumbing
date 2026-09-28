@@ -474,4 +474,9 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    # Tekton pipes this step's stdout, so Python block-buffers it and a timeout
+    # kill discards the buffer: a wheel-check that ran for four hours logged
+    # nothing at all. Line-buffer so the log always shows which wheel it died
+    # on. Not in main(), because the tests patch sys.stdout with a StringIO.
+    sys.stdout.reconfigure(line_buffering=True)
     sys.exit(main())
