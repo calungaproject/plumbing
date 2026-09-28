@@ -338,6 +338,41 @@ class TestCheckImport(unittest.TestCase):
             check_import('json', timeout=0)
         mock_alarm.assert_not_called()
 
+    def test_callers_pending_alarm_is_restored(self):
+        fired = []
+
+        def callers_handler(signum, frame):
+            fired.append(True)
+
+        previous = signal.signal(signal.SIGALRM, callers_handler)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        self.addCleanup(signal.alarm, 0)
+
+        signal.alarm(30)
+        check_import('json', timeout=10)
+
+        remaining = signal.alarm(0)
+        self.assertGreater(remaining, 0)
+        self.assertLessEqual(remaining, 30)
+        self.assertIs(signal.getsignal(signal.SIGALRM), callers_handler)
+        self.assertEqual(fired, [])
+
+    def test_expired_outer_alarm_is_rearmed_not_cancelled(self):
+        previous = signal.signal(signal.SIGALRM, lambda s, f: None)
+        self.addCleanup(signal.signal, signal.SIGALRM, previous)
+        self.addCleanup(signal.alarm, 0)
+
+        def slow(name):
+            time.sleep(10)
+
+        signal.alarm(1)
+        with patch('verify_import.importlib.import_module', side_effect=slow):
+            check_import('slowmod', timeout=2)
+
+        # The caller's 1s deadline passed while we held the signal; it must be
+        # rearmed to fire, not silently dropped.
+        self.assertEqual(signal.alarm(0), 1)
+
 
 class TestParseArgs(unittest.TestCase):
     def test_wheel_only(self):

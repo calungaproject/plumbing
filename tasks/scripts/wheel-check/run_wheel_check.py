@@ -220,6 +220,7 @@ def print_summary(results_dir, title='              SUMMARY REPORT'):
     pass_count = 0
     fail_count = 0
     skip_count = 0
+    timeout_count = 0
 
     print(f'{"WHEEL":<60s} {"STATUS":<8s} {"DETAILS"}')
     print(f'{"-----":<60s} {"------":<8s} {"-------"}')
@@ -230,22 +231,27 @@ def print_summary(results_dir, title='              SUMMARY REPORT'):
         status, wheel, reason = format_summary_row(rfile)
         print(f'{wheel:<60s} {status:<8s} {reason}')
 
-        if status == 'FAIL':
+        if status in ('FAIL', 'TIMEOUT'):
             print_failed_imports(rfile, prefix='  -> ')
 
         if status == 'PASS':
             pass_count += 1
         elif status == 'SKIP':
             skip_count += 1
+        elif status == 'TIMEOUT':
+            # Counted apart from FAIL so the tally keeps the distinction the
+            # per-wheel row makes. Still a failure to the caller.
+            timeout_count += 1
         else:
             fail_count += 1
 
-    total = pass_count + fail_count + skip_count
+    total = pass_count + fail_count + skip_count + timeout_count
     print()
-    print(f'Total: {total}  |  PASS: {pass_count}  |  FAIL: {fail_count}  |  SKIP: {skip_count}')
+    print(f'Total: {total}  |  PASS: {pass_count}  |  FAIL: {fail_count}  '
+          f'|  TIMEOUT: {timeout_count}  |  SKIP: {skip_count}')
     print()
 
-    return pass_count, fail_count, skip_count
+    return pass_count, fail_count, skip_count, timeout_count
 
 
 def run_phase2(summary_files, built_set, results_dir, combined_dir, python, files_dir, script_dir):
@@ -494,15 +500,15 @@ def main(argv=None):
     run_phase2(summary_files, built_set, RESULTS_DIR, COMBINED_RESULTS_DIR,
                python, files_dir, script_dir)
 
-    pass_count, fail_count, skip_count = print_summary(
+    pass_count, fail_count, skip_count, timeout_count = print_summary(
         COMBINED_RESULTS_DIR, title='         BUILD GROUP SUMMARY REPORT')
 
-    total = pass_count + fail_count + skip_count
+    total = pass_count + fail_count + skip_count + timeout_count
     if total == 0:
         print('RESULT: NO TESTS RUN')
         return 1
 
-    if fail_count > 0:
+    if fail_count > 0 or timeout_count > 0:
         print('RESULT: FAILED')
         return 1
 

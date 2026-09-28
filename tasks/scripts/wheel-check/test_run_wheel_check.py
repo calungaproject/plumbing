@@ -380,16 +380,37 @@ class TestPrintSummary(unittest.TestCase):
             os.path.join(self.tmpdir, 'c.json'),
             {'wheel': 'c.whl', 'status': 'SKIP', 'reason': 'cached', 'imports_tested': []})
 
-        p, f, s = run_wheel_check.print_summary(self.tmpdir)
+        p, f, s, t = run_wheel_check.print_summary(self.tmpdir)
         self.assertEqual(p, 1)
         self.assertEqual(f, 1)
         self.assertEqual(s, 1)
+        self.assertEqual(t, 0)
 
     def test_empty_dir(self):
-        p, f, s = run_wheel_check.print_summary(self.tmpdir)
+        p, f, s, t = run_wheel_check.print_summary(self.tmpdir)
         self.assertEqual(p, 0)
         self.assertEqual(f, 0)
         self.assertEqual(s, 0)
+        self.assertEqual(t, 0)
+
+    def test_timeout_counted_apart_from_fail(self):
+        run_wheel_check.write_result(
+            os.path.join(self.tmpdir, 'a.json'),
+            {'wheel': 'a.whl', 'status': 'TIMEOUT',
+             'reason': 'import of deep.mod exceeded 120s',
+             'imports_tested': [{'name': 'deep.mod', 'success': False,
+                                 'message': 'Timeout: import exceeded 120s'}]})
+
+        import io
+        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
+            p, f, s, t = run_wheel_check.print_summary(self.tmpdir)
+        self.assertEqual((p, f, s, t), (0, 0, 0, 1))
+        out = mock_out.getvalue()
+        self.assertIn('Total: 1', out)
+        self.assertIn('FAIL: 0', out)
+        self.assertIn('TIMEOUT: 1', out)
+        # The offending import is listed, as it is for a FAIL row.
+        self.assertIn('deep.mod', out)
 
 
 class TestRunPhase2(unittest.TestCase):
@@ -627,6 +648,22 @@ class TestMainFunction(unittest.TestCase):
                               '--import-timeout', '30', '--wheel-timeout', '60'])
         self.assertEqual(run_wheel_check.IMPORT_TIMEOUT, 30)
         self.assertEqual(run_wheel_check.WHEEL_TIMEOUT, 60)
+
+    @patch('run_wheel_check.print_summary', return_value=(0, 0, 0, 1))
+    @patch('run_wheel_check.run_phase2')
+    @patch('run_wheel_check.run_phase1', return_value=True)
+    @patch('run_wheel_check.read_built_status', return_value='')
+    @patch('run_wheel_check.detect_built_wheels.main')
+    @patch('run_wheel_check.build_wheel_index.main')
+    def test_timeout_only_run_still_fails(self, *mocks):
+        files_dir = os.path.join(self.tmpdir, 'files')
+        os.makedirs(files_dir)
+        make_wheel(files_dir, 'hangpkg', '1.0')
+        with open(os.path.join(files_dir, 'build-sequence-summary-x.json'), 'w') as f:
+            f.write('{}')
+
+        rc = run_wheel_check.main(['--files-dir', files_dir])
+        self.assertEqual(rc, 1)
 
     def test_negative_timeout_rejected(self):
         files_dir = os.path.join(self.tmpdir, 'files')

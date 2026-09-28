@@ -4,6 +4,7 @@ import importlib
 import json
 import signal
 import sys
+import time
 import zipfile
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
@@ -200,7 +201,10 @@ def check_import(name, timeout=0):
     armed = timeout > 0 and ALARM_AVAILABLE
     if armed:
         previous_handler = signal.signal(signal.SIGALRM, _raise_import_timeout)
-        signal.alarm(timeout)
+        # alarm() returns the seconds left on whatever the caller had pending,
+        # which arming ours would otherwise silently discard.
+        previous_alarm = signal.alarm(timeout)
+        started = time.monotonic()
     try:
         importlib.import_module(name)
         return True, f"Successfully imported {name}", False
@@ -214,6 +218,11 @@ def check_import(name, timeout=0):
         if armed:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous_handler)
+            if previous_alarm:
+                remaining = previous_alarm - (time.monotonic() - started)
+                # An outer deadline that expired while we were importing must
+                # still fire; alarm(0) would cancel it instead.
+                signal.alarm(max(1, int(remaining)))
 
 
 def parse_args(argv):
