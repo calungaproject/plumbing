@@ -17,6 +17,18 @@ spec:
       name: PYTHON_VERSION
       type: string
       default: "3.12"
+    - description: >-
+        Seconds allowed for a single import before the wheel is reported
+        TIMEOUT. 0 disables the limit.
+      name: IMPORT_TIMEOUT
+      type: string
+      default: "120"
+    - description: >-
+        Seconds allowed for one wheel's whole import check. Backstop for hangs
+        the per-import limit cannot interrupt. 0 disables the limit.
+      name: WHEEL_TIMEOUT
+      type: string
+      default: "900"
   volumes:
     - name: workdir
       emptyDir: {}
@@ -30,6 +42,10 @@ spec:
         value: /var/workdir/images.txt
       - name: FILES_DIR
         value: /var/workdir/files
+      - name: IMPORT_TIMEOUT
+        value: $(params.IMPORT_TIMEOUT)
+      - name: WHEEL_TIMEOUT
+        value: $(params.WHEEL_TIMEOUT)
     volumeMounts:
       - name: workdir
         mountPath: /var/workdir
@@ -109,4 +125,6 @@ spec:
         echo "Changing directory to ${FILES_DIR}"
         cd "${FILES_DIR}"
 
-        $PYTHON /opt/wheel-check/run_wheel_check.py --python "$PYTHON"
+        $PYTHON /opt/wheel-check/run_wheel_check.py --python "$PYTHON" \
+            --import-timeout "${IMPORT_TIMEOUT}" \
+            --wheel-timeout "${WHEEL_TIMEOUT}"

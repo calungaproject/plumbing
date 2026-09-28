@@ -2,10 +2,13 @@
 """Install a wheel via pip and verify its top-level imports succeed."""
 import importlib
 import json
+import signal
 import sys
 import zipfile
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
+
+ALARM_AVAILABLE = hasattr(signal, 'SIGALRM')
 
 
 def inspect_wheel(wheel_path):
@@ -176,30 +179,89 @@ def detect_import_names(inspection):
     return import_names
 
 
-def check_import(name):
-    """Try to import a module by name; return (success, message)."""
+class ImportTimeout(Exception):
+    """Raised by the SIGALRM handler when one import overruns its budget."""
+
+
+def _raise_import_timeout(signum, frame):
+    raise ImportTimeout()
+
+
+def check_import(name, timeout=0):
+    """Try to import a module by name; return (success, message, timed_out).
+
+    A positive timeout (seconds) bounds the import with SIGALRM. Some import
+    pathologies are not defects in the wheel but in the interpreter — namespace
+    package resolution is exponential in nesting depth before Python 3.14 — and
+    without a bound one such import consumes the whole pipeline budget. The
+    alarm only interrupts Python-level work, so a hang inside a C extension's
+    module init still needs the caller's subprocess timeout.
+    """
+    armed = timeout > 0 and ALARM_AVAILABLE
+    if armed:
+        previous_handler = signal.signal(signal.SIGALRM, _raise_import_timeout)
+        signal.alarm(timeout)
     try:
         importlib.import_module(name)
-        return True, f"Successfully imported {name}"
+        return True, f"Successfully imported {name}", False
+    except ImportTimeout:
+        return False, f"Timeout: import exceeded {timeout}s", True
     except ImportError as e:
-        return False, f"ImportError: {e}"
+        return False, f"ImportError: {e}", False
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", False
+    finally:
+        if armed:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+
+def parse_args(argv):
+    """Parse argv; return (wheel, classify_only, import_timeout), or None if unusable."""
+    classify_only = False
+    import_timeout = 0
+    positional = []
+
+    remaining = list(argv)
+    while remaining:
+        arg = remaining.pop(0)
+        if arg == '--classify-only':
+            classify_only = True
+        elif arg == '--import-timeout' or arg.startswith('--import-timeout='):
+            if arg.startswith('--import-timeout='):
+                value = arg.split('=', 1)[1]
+            elif remaining:
+                value = remaining.pop(0)
+            else:
+                return None
+            try:
+                import_timeout = int(value)
+            except ValueError:
+                return None
+            if import_timeout < 0:
+                return None
+        else:
+            positional.append(arg)
+
+    if len(positional) != 1:
+        return None
+    return positional[0], classify_only, import_timeout
 
 
 def main():
     """Classify a wheel and verify its imports; output a single JSON result line."""
-    classify_only = '--classify-only' in sys.argv
-    args = [a for a in sys.argv[1:] if a != '--classify-only']
+    parsed = parse_args(sys.argv[1:])
 
-    if len(args) != 1:
+    if parsed is None:
         print(json.dumps({
             "status": "ERROR",
-            "reason": "Usage: verify_import.py [--classify-only] <wheel>",
+            "reason": "Usage: verify_import.py [--classify-only] "
+                      "[--import-timeout SECONDS] <wheel>",
         }))
         sys.exit(2)
 
-    wheel_path = Path(args[0])
+    wheel, classify_only, import_timeout = parsed
+    wheel_path = Path(wheel)
     if not wheel_path.exists():
         print(json.dumps({"wheel": wheel_path.name, "status": "ERROR",
                           "reason": f"File not found: {wheel_path}"}))
@@ -241,17 +303,30 @@ def main():
 
     results = []
     any_failed = False
+    timed_out_on = None
     for name in sorted(import_names):
-        success, message = check_import(name)
+        success, message, timed_out = check_import(name, import_timeout)
         results.append({"name": name, "success": success, "message": message})
         if not success:
             any_failed = True
+        if timed_out:
+            # Stop here. Whatever made this import overrun almost always applies
+            # to its siblings too, and a wheel like ansible 14.3.0 offers 200 of
+            # them — running the rest would multiply the budget, not spend it.
+            timed_out_on = name
+            break
 
-    status = "FAIL" if any_failed else "PASS"
+    if timed_out_on:
+        status = "TIMEOUT"
+        reason = f"import of {timed_out_on} exceeded {import_timeout}s"
+    elif any_failed:
+        status, reason = "FAIL", "import failures"
+    else:
+        status, reason = "PASS", ""
+
     print(json.dumps({"wheel": wheel_path.name, "dist_name": dist_name,
                       "version": version, "status": status,
-                      "reason": "import failures" if any_failed else "",
-                      "imports_tested": results}))
+                      "reason": reason, "imports_tested": results}))
     sys.exit(1 if any_failed else 0)
 
 

@@ -119,6 +119,50 @@ class TestPipListJson(unittest.TestCase):
         self.assertIn('WARNING', mock_err.getvalue())
 
 
+class TestVerifyInVenv(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+        self.rpath = os.path.join(self.tmpdir, 'result.json')
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_passes_import_timeout_to_verify_import(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='{}', stderr='')
+        with patch.object(run_wheel_check, 'IMPORT_TIMEOUT', 45), \
+             patch.object(run_wheel_check, 'WHEEL_TIMEOUT', 300):
+            run_wheel_check.verify_in_venv('/tmp/venv', '/opt/wc', 'a.whl', self.rpath)
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[-3:], ['--import-timeout', '45', 'a.whl'])
+        self.assertEqual(mock_run.call_args[1]['timeout'], 300)
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_zero_timeouts_disable_both(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='{}', stderr='')
+        with patch.object(run_wheel_check, 'IMPORT_TIMEOUT', 0), \
+             patch.object(run_wheel_check, 'WHEEL_TIMEOUT', 0):
+            run_wheel_check.verify_in_venv('/tmp/venv', '/opt/wc', 'a.whl', self.rpath)
+        cmd = mock_run.call_args[0][0]
+        self.assertNotIn('--import-timeout', cmd)
+        self.assertIsNone(mock_run.call_args[1]['timeout'])
+
+    @patch('run_wheel_check.subprocess.run',
+           side_effect=subprocess.TimeoutExpired(cmd='verify_import.py', timeout=42))
+    def test_subprocess_timeout_writes_timeout_result(self, mock_run):
+        import io
+        with patch.object(run_wheel_check, 'WHEEL_TIMEOUT', 42), \
+             patch('sys.stderr', new_callable=io.StringIO) as mock_err:
+            rc = run_wheel_check.verify_in_venv(
+                '/tmp/venv', '/opt/wc', 'a.whl', self.rpath)
+        self.assertNotEqual(rc, 0)
+        self.assertNotEqual(rc, run_wheel_check.RC_SCRIPT_ERROR)
+        with open(self.rpath) as f:
+            data = json.load(f)
+        self.assertEqual(data['status'], 'TIMEOUT')
+        self.assertEqual(data['wheel'], 'a.whl')
+        self.assertIn('42', data['reason'])
+        self.assertIn('a.whl', mock_err.getvalue())
+
+
 class TestWriteResult(unittest.TestCase):
     def test_writes_json(self):
         with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
@@ -207,6 +251,26 @@ class TestRunPhase1(unittest.TestCase):
         result = run_wheel_check.run_phase1(
             [whl], None, self.results_dir, 'python3.12', self.tmpdir, self.script_dir)
         self.assertTrue(result)
+
+    @patch('run_wheel_check.verify_in_venv', return_value=1)
+    @patch('run_wheel_check.pip_install', return_value=True)
+    @patch('run_wheel_check.create_venv', return_value='/tmp/test-venv')
+    def test_timeout_is_logged_as_timeout_not_fail(self, mock_venv, mock_pip, mock_verify):
+        whl = make_wheel(self.tmpdir, 'hangpkg', '1.0')
+
+        def write_timeout_result(venv, sd, wheel, rf):
+            run_wheel_check.write_result(rf, {
+                'wheel': wheel, 'status': 'TIMEOUT',
+                'reason': 'import check exceeded 900s', 'imports_tested': []})
+            return 1
+        mock_verify.side_effect = write_timeout_result
+
+        import io
+        with patch('sys.stdout', new_callable=io.StringIO) as mock_out:
+            result = run_wheel_check.run_phase1(
+                [whl], None, self.results_dir, 'python3.12', self.tmpdir, self.script_dir)
+        self.assertTrue(result)
+        self.assertIn(f'TIMEOUT: {whl}', mock_out.getvalue())
 
     @patch('run_wheel_check.create_venv', return_value='/tmp/test-venv')
     @patch('run_wheel_check.pip_install', return_value=False)
@@ -536,6 +600,8 @@ class TestMainFunction(unittest.TestCase):
         self.orig_wheel_index = run_wheel_check.WHEEL_INDEX_PATH
         self.orig_built_wheels = run_wheel_check.BUILT_WHEELS_PATH
         self.orig_import_map = run_wheel_check.IMPORT_MAP_PATH
+        self.orig_import_timeout = run_wheel_check.IMPORT_TIMEOUT
+        self.orig_wheel_timeout = run_wheel_check.WHEEL_TIMEOUT
 
         run_wheel_check.RESULTS_DIR = os.path.join(self.tmpdir, 'results')
         run_wheel_check.COMBINED_RESULTS_DIR = os.path.join(self.tmpdir, 'combined')
@@ -550,6 +616,26 @@ class TestMainFunction(unittest.TestCase):
         run_wheel_check.WHEEL_INDEX_PATH = self.orig_wheel_index
         run_wheel_check.BUILT_WHEELS_PATH = self.orig_built_wheels
         run_wheel_check.IMPORT_MAP_PATH = self.orig_import_map
+        run_wheel_check.IMPORT_TIMEOUT = self.orig_import_timeout
+        run_wheel_check.WHEEL_TIMEOUT = self.orig_wheel_timeout
+
+    def test_timeout_options_override_defaults(self):
+        files_dir = os.path.join(self.tmpdir, 'files')
+        os.makedirs(files_dir)
+        make_wheel(files_dir, 'click', '8.1.0')
+        run_wheel_check.main(['--python', 'bogus', '--files-dir', files_dir,
+                              '--import-timeout', '30', '--wheel-timeout', '60'])
+        self.assertEqual(run_wheel_check.IMPORT_TIMEOUT, 30)
+        self.assertEqual(run_wheel_check.WHEEL_TIMEOUT, 60)
+
+    def test_negative_timeout_rejected(self):
+        files_dir = os.path.join(self.tmpdir, 'files')
+        os.makedirs(files_dir)
+        make_wheel(files_dir, 'click', '8.1.0')
+        rc = run_wheel_check.main(['--files-dir', files_dir,
+                                   '--import-timeout', '-1'])
+        self.assertEqual(rc, 1)
+        self.assertEqual(run_wheel_check.IMPORT_TIMEOUT, self.orig_import_timeout)
 
     def test_invalid_python_rejected(self):
         files_dir = os.path.join(self.tmpdir, 'files')

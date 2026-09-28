@@ -42,6 +42,15 @@ SEPARATOR = '=' * 50
 RC_SCRIPT_ERROR = 2
 PYTHON_PATTERN = re.compile(r'^python\d+\.\d+$')
 
+# Budgets for one wheel's import check, overridable on the command line and so
+# from the Tekton task's params. The per-import figure is ~70x the slowest
+# legitimate import measured across the heaviest onboarded packages in the CI
+# image (litellm, 1.7s); the per-wheel one is ~7x the slowest whole-task run
+# seen in the cluster. They exist to turn an unbounded hang into a named
+# failure, not to police slow-but-working imports. 0 disables either.
+IMPORT_TIMEOUT = 120
+WHEEL_TIMEOUT = 900
+
 
 def create_venv(python, path):
     shutil.rmtree(path, ignore_errors=True)
@@ -88,10 +97,25 @@ def pip_list_json(venv):
 
 
 def verify_in_venv(venv, script_dir, wheel, result_file):
-    result = subprocess.run(  # nosemgrep
-        [os.path.join(venv, 'bin', 'python'),
-         os.path.join(script_dir, 'verify_import.py'), wheel],
-        capture_output=True, text=True)
+    cmd = [os.path.join(venv, 'bin', 'python'),
+           os.path.join(script_dir, 'verify_import.py')]
+    if IMPORT_TIMEOUT > 0:
+        cmd += ['--import-timeout', str(IMPORT_TIMEOUT)]
+    cmd.append(wheel)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,  # nosemgrep
+                                timeout=WHEEL_TIMEOUT or None)
+    except subprocess.TimeoutExpired:
+        # The per-import alarm cannot interrupt a C extension's module init, so
+        # this is the backstop that keeps one wheel from eating the pipeline.
+        print(f'ERROR: verify_import.py exceeded {WHEEL_TIMEOUT}s for {wheel}',
+              file=sys.stderr)
+        write_result(result_file, {
+            'wheel': wheel, 'status': 'TIMEOUT',
+            'reason': f'import check exceeded {WHEEL_TIMEOUT}s',
+            'imports_tested': [],
+        })
+        return 1
     if result.stdout.strip():
         with open(result_file, 'w') as f:
             f.write(result.stdout)
@@ -179,7 +203,7 @@ def run_phase1(wheels, built_set, results_dir, python, files_dir, script_dir):
             if status == 'SKIP':
                 print(f'SKIP: {wheel}')
             else:
-                print(f'FAIL: {wheel}')
+                print(f'{status}: {wheel}')
                 had_failures = True
                 print_failed_imports(rpath, prefix='  ')
 
@@ -384,7 +408,7 @@ def run_phase2(summary_files, built_set, results_dir, combined_dir, python, file
                 print(f'  WARNING: Could not restore group venv for {label}, skipping remaining wheels')
                 break
 
-            print(f'  FAIL: {wheel}')
+            print(f'  {read_result_status(rpath)}: {wheel}')
             group_failed = True
             print_failed_imports(rpath, prefix='    -> ')
 
@@ -393,11 +417,24 @@ def run_phase2(summary_files, built_set, results_dir, combined_dir, python, file
 
 
 def main(argv=None):
+    global IMPORT_TIMEOUT, WHEEL_TIMEOUT
+
     parser = argparse.ArgumentParser(description='Wheel-check orchestrator')
     parser.add_argument('--python', default='python3.12')
     parser.add_argument('--files-dir', default=None)
     parser.add_argument('--script-dir', default=None)
+    parser.add_argument('--import-timeout', type=int, default=IMPORT_TIMEOUT,
+                        help='seconds allowed for a single import (0 disables)')
+    parser.add_argument('--wheel-timeout', type=int, default=WHEEL_TIMEOUT,
+                        help="seconds allowed for one wheel's whole import "
+                             'check (0 disables)')
     args = parser.parse_args(argv)
+
+    if args.import_timeout < 0 or args.wheel_timeout < 0:
+        print('ERROR: timeouts must not be negative', file=sys.stderr)
+        return 1
+    IMPORT_TIMEOUT = args.import_timeout
+    WHEEL_TIMEOUT = args.wheel_timeout
 
     files_dir = args.files_dir or os.getcwd()
     script_dir = args.script_dir or str(Path(__file__).resolve().parent)

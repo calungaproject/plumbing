@@ -2,8 +2,10 @@
 import io
 import json
 import os
+import signal
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -16,6 +18,7 @@ from verify_import import (
     detect_import_names,
     inspect_wheel,
     main,
+    parse_args,
     parse_dist_info,
 )
 
@@ -289,21 +292,83 @@ class TestDetectImportNames(unittest.TestCase):
 
 class TestCheckImport(unittest.TestCase):
     def test_stdlib_module(self):
-        success, msg = check_import('json')
+        success, msg, timed_out = check_import('json')
         self.assertTrue(success)
         self.assertIn('json', msg)
+        self.assertFalse(timed_out)
 
     def test_nonexistent_module(self):
-        success, msg = check_import('nonexistent_module_xyz_12345')
+        success, msg, timed_out = check_import('nonexistent_module_xyz_12345')
         self.assertFalse(success)
         self.assertIn('ImportError', msg)
+        self.assertFalse(timed_out)
 
     def test_non_import_error(self):
         with patch('verify_import.importlib.import_module', side_effect=RuntimeError('boom')):
-            success, msg = check_import('anything')
+            success, msg, timed_out = check_import('anything')
             self.assertFalse(success)
             self.assertIn('RuntimeError', msg)
             self.assertIn('boom', msg)
+            self.assertFalse(timed_out)
+
+    def test_fast_import_under_timeout(self):
+        before = signal.getsignal(signal.SIGALRM)
+        success, msg, timed_out = check_import('json', timeout=30)
+        self.assertTrue(success)
+        self.assertFalse(timed_out)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), before)
+        # alarm(0) returns the seconds left on any pending alarm; a leaked one
+        # would fire into whatever the process does next.
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_slow_import_times_out(self):
+        def slow(name):
+            time.sleep(10)
+        with patch('verify_import.importlib.import_module', side_effect=slow):
+            started = time.monotonic()
+            success, msg, timed_out = check_import('slowmod', timeout=1)
+        self.assertFalse(success)
+        self.assertTrue(timed_out)
+        self.assertIn('exceeded 1s', msg)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(signal.alarm(0), 0)
+
+    def test_timeout_zero_leaves_alarm_unarmed(self):
+        with patch('verify_import.signal.alarm') as mock_alarm:
+            check_import('json', timeout=0)
+        mock_alarm.assert_not_called()
+
+
+class TestParseArgs(unittest.TestCase):
+    def test_wheel_only(self):
+        self.assertEqual(parse_args(['a.whl']), ('a.whl', False, 0))
+
+    def test_classify_only(self):
+        self.assertEqual(parse_args(['--classify-only', 'a.whl']),
+                         ('a.whl', True, 0))
+
+    def test_import_timeout_separate_value(self):
+        self.assertEqual(parse_args(['--import-timeout', '90', 'a.whl']),
+                         ('a.whl', False, 90))
+
+    def test_import_timeout_equals_form(self):
+        self.assertEqual(parse_args(['--import-timeout=90', 'a.whl']),
+                         ('a.whl', False, 90))
+
+    def test_import_timeout_missing_value(self):
+        self.assertIsNone(parse_args(['a.whl', '--import-timeout']))
+
+    def test_import_timeout_not_a_number(self):
+        self.assertIsNone(parse_args(['--import-timeout', 'soon', 'a.whl']))
+
+    def test_import_timeout_negative(self):
+        self.assertIsNone(parse_args(['--import-timeout', '-5', 'a.whl']))
+
+    def test_no_wheel(self):
+        self.assertIsNone(parse_args(['--classify-only']))
+
+    def test_two_wheels(self):
+        self.assertIsNone(parse_args(['a.whl', 'b.whl']))
 
 
 class TestMain(unittest.TestCase):
@@ -372,6 +437,32 @@ class TestMain(unittest.TestCase):
         self.assertEqual(d['status'], 'FAIL')
         self.assertEqual(rc, 1)
         self.assertTrue(any(not t['success'] for t in d['imports_tested']))
+
+    def test_import_timeout_reports_timeout_status(self):
+        path = self._wheel('slowpkg', '1.0', {
+            'alpha/__init__.py': '', 'beta/__init__.py': '',
+        })
+
+        def timed_out(name, timeout=0):
+            return False, f'Timeout: import exceeded {timeout}s', True
+
+        with patch('verify_import.check_import', side_effect=timed_out):
+            rc, out = self._run_main('--import-timeout', '1', path)
+
+        d = json.loads(out)
+        self.assertEqual(d['status'], 'TIMEOUT')
+        self.assertIn('alpha', d['reason'])
+        self.assertIn('exceeded 1s', d['reason'])
+        self.assertEqual(rc, 1)
+        # Stopped at the first overrun rather than spending the budget again
+        # on beta.
+        self.assertEqual([t['name'] for t in d['imports_tested']], ['alpha'])
+
+    def test_bad_import_timeout_is_a_usage_error(self):
+        path = self._wheel('okpkg', '1.0', {'okpkg/__init__.py': ''})
+        rc, out = self._run_main('--import-timeout', 'later', path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(json.loads(out)['status'], 'ERROR')
 
     def test_private_only_imports(self):
         path = self._wheel('odd', '1.0', {'_only_private/__init__.py': ''})
