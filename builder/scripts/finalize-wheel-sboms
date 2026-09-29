@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Synchronize the SPDX identity of the primary package's built wheels."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import zipfile
+from email.parser import BytesParser
+from pathlib import Path
+
+from packaging.utils import canonicalize_name
+from sync_wheel_sbom import SyncWheelSbomError, sync_wheel_sbom
+
+
+class FinalizeWheelSbomsError(ValueError):
+    """Raised when a version-overridden primary wheel cannot be finalized."""
+
+
+def _identity(path: Path) -> tuple[str, str]:
+    with zipfile.ZipFile(path) as wheel:
+        members = [
+            name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(members) != 1:
+            raise FinalizeWheelSbomsError(
+                f"expected one METADATA file in {path.name}, found {len(members)}"
+            )
+        metadata = BytesParser().parsebytes(wheel.read(members[0]))
+        name, version = metadata.get("Name"), metadata.get("Version")
+        if not name or not version:
+            raise FinalizeWheelSbomsError(
+                f"wheel {path.name} has incomplete Name/Version metadata"
+            )
+        return canonicalize_name(name), version
+
+
+def finalize_wheels(package: str, override: str, directory: Path) -> tuple[Path, ...]:
+    """Apply the version override to all platform variants of the primary package."""
+    if not directory.is_dir():
+        raise FinalizeWheelSbomsError(f"wheel directory does not exist: {directory}")
+    name = canonicalize_name(package)
+    primary = [
+        path
+        for path in sorted(directory.glob("*.whl"))
+        if _identity(path) == (name, override)
+    ]
+    if not primary:
+        raise FinalizeWheelSbomsError(f"no wheel matches {package}=={override}")
+
+    for wheel in primary:
+        try:
+            sync_wheel_sbom(wheel, override)
+        except (OSError, zipfile.BadZipFile, SyncWheelSbomError) as exc:
+            raise FinalizeWheelSbomsError(
+                f"failed to synchronize {wheel.name}: {exc}"
+            ) from exc
+        if _identity(wheel) != (name, override):
+            raise FinalizeWheelSbomsError(
+                f"wheel identity changed unexpectedly: {wheel.name}"
+            )
+        print(f"Synchronized SPDX for {wheel.name}")
+    return tuple(primary)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package")
+    parser.add_argument("version")
+    parser.add_argument("wheels_dir", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        finalize_wheels(args.package, args.version, args.wheels_dir)
+    except (OSError, FinalizeWheelSbomsError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -40,6 +40,8 @@ EXAMPLES:
 
 ENVIRONMENT:
     DEBUG=1                        Enable debug mode with verbose output
+    VERSION_OVERRIDE=<version>     Optional final version for the primary package wheel;
+                                    when set, update its Red Hat SPDX identity.
 
 OUTPUT:
     The script creates wheels and source distributions in the output directory
@@ -283,6 +285,16 @@ for PACKAGE in "${PACKAGES[@]}"; do
         [ -f "$whl" ] || continue
         "$SCRIPT_DIR/patch-sbom-purl" "$whl"
     done
+
+    # Opt-in version synchronization for a single primary package; unset for ordinary builds.
+    if [ -n "${VERSION_OVERRIDE:-}" ]; then
+        if [ "${#PACKAGES[@]}" -ne 1 ]; then
+            echo "ERROR: VERSION_OVERRIDE requires exactly one requested package" >&2
+            exit 1
+        fi
+        requested_package="${PACKAGE%%==*}"
+        finalize-wheel-sboms "$requested_package" "$VERSION_OVERRIDE" wheels-repo/downloads
+    fi
 
     # Clear work-dir after processing package (but preserve sdists-repo and wheels-repo)
     log "Clearing work-dir after processing $PACKAGE (preserving sdists-repo and wheels-repo)"
