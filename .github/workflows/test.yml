@@ -31,3 +31,6 @@ jobs:
     # Konflux builds the real image, and denylist coverage is the job above.
     - name: Run test suite (pull published builder image)
       run: ./tests/test-build-wheels.sh --skip-build
+
+    - name: Test wheel SPDX finalization
+      run: python3 tests/test_finalize_wheel_sboms.py
