@@ -10,6 +10,7 @@ from email.parser import BytesParser
 from pathlib import Path
 
 from packaging.utils import canonicalize_name
+from prune_wheel_sboms import PruneWheelSbomError, prune_wheel_sboms
 from sync_wheel_sbom import SyncWheelSbomError, sync_wheel_sbom
 
 
@@ -51,10 +52,18 @@ def finalize_wheels(package: str, override: str, directory: Path) -> tuple[Path,
     for wheel in primary:
         try:
             sync_wheel_sbom(wheel, override)
-        except (OSError, zipfile.BadZipFile, SyncWheelSbomError) as exc:
+            removed = prune_wheel_sboms(wheel)
+        except (
+            OSError,
+            zipfile.BadZipFile,
+            SyncWheelSbomError,
+            PruneWheelSbomError,
+        ) as exc:
             raise FinalizeWheelSbomsError(
-                f"failed to synchronize {wheel.name}: {exc}"
+                f"failed to finalize {wheel.name}: {exc}"
             ) from exc
+        for member in removed:
+            print(f"Removed non-Red-Hat SBOM from {wheel.name}: {member}")
         if _identity(wheel) != (name, override):
             raise FinalizeWheelSbomsError(
                 f"wheel identity changed unexpectedly: {wheel.name}"

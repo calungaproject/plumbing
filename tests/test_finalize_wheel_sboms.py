@@ -108,7 +108,9 @@ class WheelSbomTests(unittest.TestCase):
             primary = []
             for tag in ("py3-none-any", "cp312-cp312-manylinux_x86_64"):
                 wheel = directory / f"demo-pkg-1.0+vendor.1-{tag}.whl"
-                sbom, record = _write_wheel(wheel, "demo-pkg", "1.0+vendor.1")
+                sbom, record = _write_wheel(
+                    wheel, "demo-pkg", "1.0+vendor.1", "virtualenv.cdx.json"
+                )
                 primary.append((wheel, sbom, record))
             finalized = finalize_wheels("demo-pkg", "1.0+vendor.1", directory)
 
@@ -136,6 +138,9 @@ class WheelSbomTests(unittest.TestCase):
                 )
                 self.assertNotIn("download_url=", purl)
                 self.assertEqual(packages["SPDXRef-upstream"]["versionInfo"], "1.0")
+                self.assertFalse(
+                    any("virtualenv.cdx.json" in name for name in archive.namelist())
+                )
                 record = {row[0]: row for row in rows}
                 self.assertEqual(
                     record[sbom_path][1:], [_digest(sbom_bytes), str(len(sbom_bytes))]
