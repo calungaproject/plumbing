@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import stat
 import sys
 import tempfile
 import zipfile
@@ -77,6 +78,7 @@ def prune_wheel_sboms(path):
                             if info.filename == records[0]
                             else src.read(info.filename),
                         )
+            tmp_path.chmod(stat.S_IMODE(path.stat().st_mode))
             tmp_path.replace(path)
         except Exception:
             tmp_path.unlink(missing_ok=True)

@@ -9,7 +9,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-from packaging.utils import canonicalize_name
+from packaging.utils import canonicalize_name, parse_wheel_filename
 from prune_wheel_sboms import PruneWheelSbomError, prune_wheel_sboms
 from sync_wheel_sbom import SyncWheelSbomError, sync_wheel_sbom
 
@@ -19,6 +19,7 @@ class FinalizeWheelSbomsError(ValueError):
 
 
 def _identity(path: Path) -> tuple[str, str]:
+    """Read the wheel's package identity from its single dist-info METADATA."""
     with zipfile.ZipFile(path) as wheel:
         members = [
             name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
@@ -36,16 +37,29 @@ def _identity(path: Path) -> tuple[str, str]:
         return canonicalize_name(name), version
 
 
+def _is_candidate_wheel(path: Path, package: str) -> bool:
+    """Use the wheel filename to exclude dependency wheels before opening them."""
+    try:
+        wheel_name, _version, _build, _tags = parse_wheel_filename(path.name)
+    except (ValueError, TypeError):
+        return False
+    return canonicalize_name(wheel_name) == package
+
+
 def finalize_wheels(package: str, override: str, directory: Path) -> tuple[Path, ...]:
     """Apply the version override to all platform variants of the primary package."""
     if not directory.is_dir():
         raise FinalizeWheelSbomsError(f"wheel directory does not exist: {directory}")
     name = canonicalize_name(package)
-    primary = [
+    # Filter by the PEP 427 wheel filename first. Dependency wheels must remain
+    # completely untouched and may have unusual archive contents; inspect
+    # METADATA only for filename-matched primary candidates.
+    candidates = [
         path
         for path in sorted(directory.glob("*.whl"))
-        if _identity(path) == (name, override)
+        if _is_candidate_wheel(path, name)
     ]
+    primary = [path for path in candidates if _identity(path) == (name, override)]
     if not primary:
         raise FinalizeWheelSbomsError(f"no wheel matches {package}=={override}")
 

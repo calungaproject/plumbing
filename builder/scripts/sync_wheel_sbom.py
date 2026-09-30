@@ -8,6 +8,7 @@ import base64
 import csv
 import hashlib
 import json
+import stat
 import sys
 import tempfile
 import zipfile
@@ -144,6 +145,7 @@ def sync_wheel_sbom(path, version):
                         if info.filename == rec
                         else src.read(info.filename),
                     )
+            tmp_path.chmod(stat.S_IMODE(path.stat().st_mode))
             tmp_path.replace(path)
         except Exception:
             tmp_path.unlink(missing_ok=True)
