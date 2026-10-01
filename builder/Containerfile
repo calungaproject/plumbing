@@ -446,9 +446,9 @@ COPY --from=build_mpdecimal /manylinux-buildfs /
 COPY --from=build_zstd /manylinux-buildfs /
 COPY --from=build_sqlite3 /manylinux-buildfs /
 RUN ldconfig
-# Two OpenSSL builds, from two different upstream lines, with two different
-# consumers. See build-openssl-static.sh for why the second one exists and how
-# its prefix stays isolated from the shared build.
+# Three OpenSSL builds: one shared, two static. See build-openssl-static.sh for
+# why the static ones exist and how their prefixes stay isolated from the
+# shared build.
 #
 # The shared build is what CPython, curl and everything auditwheel bundles into
 # a wheel link against (currently cmake and snowflake-connector-python). It has
@@ -458,19 +458,36 @@ RUN ldconfig
 # "incomplete definition of type 'ASN1_OCTET_STRING'" errors. Moving this pin
 # to 4.x needs a CPython that went through ASN1_STRING_get0_data() first.
 #
-# The static build is reachable only by a package that asks for it by setting
-# OPENSSL_DIR and OPENSSL_STATIC, which today means cryptography alone. It
-# tracks 4.x because cryptography's own PyPI wheels are built against 4.x, and
-# nothing on that path goes through CPython's _ssl.
+# The static builds are reachable only by a package that asks for one by
+# setting OPENSSL_DIR and OPENSSL_STATIC, which today means cryptography alone.
+# There are two, on two lines, because cryptography needs both:
+#
+#   4.x  the default, /opt/_internal/static-openssl, matching how
+#        cryptography's own PyPI wheels are built. Nothing on this path goes
+#        through CPython's _ssl, so the 3.x constraint above does not apply.
+#   3.x  /opt/_internal/static-openssl-3, for cryptography < 47 only. Those
+#        releases vendor openssl-sys < 0.9.114, whose build script rejects
+#        OpenSSL 4 outright -- "only compatible with OpenSSL (version 1.0.2
+#        through 1.1.1, or 3)" -- and aborts. 47.0.0 is the first release to
+#        pick up 0.9.114, which added 4.x support, so the cutoff is exact.
+#        package_plugins.cryptography is what redirects OPENSSL_DIR below it.
+#
+# Older cryptography is not hypothetical: any install requirement in the graph
+# can pin it. snowflake-connector-python 3.18.1 resolves pyOpenSSL<26 -> 25.3.0
+# -> cryptography<47 -> 46.0.7, and the index serves no wheel in [45.0.7, 47)
+# to download instead of building.
 #
 # Track the newest upstream release of each line here. Parity review compares
-# the OpenSSL version embedded in our wheels against the PyPI ones, and both
-# builds end up inside wheels.
+# the OpenSSL version embedded in our wheels against the PyPI ones, and all
+# three builds end up inside wheels. Keeping 4.x as the default is part of
+# that: cryptography >= 47 must not regress to 3.x just because 3.x is now
+# available.
 #
 # The shared build is repeated here rather than copied from build_openssl
 # because build-openssl.sh also removes UBI's openssl-devel from the stage it
 # runs in, and CPython's configure is sensitive to what else is installed
-# alongside it. The pin lives in OPENSSL_SHARED_ROOT so the two cannot drift.
+# alongside it. The pin lives in OPENSSL_SHARED_ROOT, which the static 3.x
+# build reuses, so all three cannot drift.
 COPY build_scripts/build-openssl.sh build_scripts/build-openssl-static.sh /opt/_internal/build_scripts/
 ARG OPENSSL_SHARED_ROOT
 ARG OPENSSL_SHARED_HASH
@@ -482,6 +499,12 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
 RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     export OPENSSL_ROOT=openssl-4.0.2 && \
     export OPENSSL_HASH=736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8 && \
+    export OPENSSL_DOWNLOAD_URL=https://github.com/openssl/openssl/releases/download/${OPENSSL_ROOT} && \
+    export OPENSSL_STATIC_DEFAULT=1 && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openssl-static.sh
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export OPENSSL_ROOT=${OPENSSL_SHARED_ROOT} && \
+    export OPENSSL_HASH=${OPENSSL_SHARED_HASH} && \
     export OPENSSL_DOWNLOAD_URL=https://github.com/openssl/openssl/releases/download/${OPENSSL_ROOT} && \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-openssl-static.sh
 COPY --from=cosign-bin /ko-app/cosign /usr/local/bin/cosign
@@ -602,23 +625,39 @@ RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
 # to the archive after that -- finalize.sh above purges *.a out of
 # /opt/_internal. Re-assert on the finished filesystem, where a wheel would
 # actually find it.
+#
+# Both static prefixes are checked. static-openssl is the default that
+# cryptography >= 47 links; static-openssl-3 is what package_plugins.cryptography
+# redirects older releases to, and a missing archive there fails the build it is
+# meant to rescue rather than the one everything else uses.
 RUN set -e && \
-    STATIC_LIBCRYPTO=/opt/_internal/static-openssl/lib/libcrypto.a && \
-    if [ ! -f "${STATIC_LIBCRYPTO}" ]; then \
-        echo "ERROR: ${STATIC_LIBCRYPTO} is missing from the final image." >&2; \
-        echo "The static OpenSSL built, but something between that stage and" >&2; \
-        echo "here removed its archives -- check the *.a purge in" >&2; \
-        echo "build_scripts/finalize.sh. A wheel setting OPENSSL_DIR and" >&2; \
-        echo "OPENSSL_STATIC cannot link against headers alone." >&2; \
-        exit 1; \
-    fi && \
-    LEGACY_SYMS=$(nm "${STATIC_LIBCRYPTO}" | grep -c ossl_legacy_provider_init || true) && \
-    if [ "${LEGACY_SYMS}" -eq 0 ]; then \
-        echo "ERROR: ${STATIC_LIBCRYPTO} survived but has no" >&2; \
-        echo "ossl_legacy_provider_init; a wheel linking it would silently lose" >&2; \
-        echo "Blowfish, CAST5, IDEA, SEED, ARC4 and RC2." >&2; \
-        exit 1; \
-    fi
+    for STATIC_PREFIX in /opt/_internal/static-openssl /opt/_internal/static-openssl-3; do \
+        STATIC_LIBCRYPTO="${STATIC_PREFIX}/lib/libcrypto.a"; \
+        if [ ! -f "${STATIC_LIBCRYPTO}" ]; then \
+            echo "ERROR: ${STATIC_LIBCRYPTO} is missing from the final image." >&2; \
+            echo "The static OpenSSL built, but something between that stage and" >&2; \
+            echo "here removed its archives -- check the *.a purge in" >&2; \
+            echo "build_scripts/finalize.sh. A wheel setting OPENSSL_DIR and" >&2; \
+            echo "OPENSSL_STATIC cannot link against headers alone." >&2; \
+            exit 1; \
+        fi; \
+        LEGACY_SYMS=$(nm "${STATIC_LIBCRYPTO}" | grep -c ossl_legacy_provider_init || true); \
+        if [ "${LEGACY_SYMS}" -eq 0 ]; then \
+            echo "ERROR: ${STATIC_LIBCRYPTO} survived but has no" >&2; \
+            echo "ossl_legacy_provider_init; a wheel linking it would silently lose" >&2; \
+            echo "Blowfish, CAST5, IDEA, SEED, ARC4 and RC2." >&2; \
+            exit 1; \
+        fi; \
+    done && \
+    STATIC_DEFAULT=$(readlink -f /opt/_internal/static-openssl) && \
+    case "${STATIC_DEFAULT}" in \
+        */static-openssl-4*) ;; \
+        *) echo "ERROR: /opt/_internal/static-openssl resolves to ${STATIC_DEFAULT}," >&2; \
+           echo "not a 4.x prefix. cryptography >= 47 would silently regress to an" >&2; \
+           echo "older OpenSSL than its PyPI wheel embeds. Exactly one" >&2; \
+           echo "build-openssl-static.sh invocation may set OPENSSL_STATIC_DEFAULT=1." >&2; \
+           exit 1;; \
+    esac
 # Make source-built OpenSSL available system-wide so packages like cmake and
 # duckdb find it instead of the old system OpenSSL 1.1.1k headers
 RUN set -e && \
