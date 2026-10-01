@@ -7,5 +7,6 @@ name = "calunga-package-plugins"
 version = "0.1.0"
 
 [project.entry-points."fromager.project_overrides"]
+cryptography = "package_plugins.cryptography"
 debugpy = "package_plugins.debugpy"
 faiss_cpu = "package_plugins.faiss_cpu"

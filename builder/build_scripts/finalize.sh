@@ -17,11 +17,14 @@ if [ "$(find /opt/_internal -path '/opt/_internal/cpython-*/lib/libpython*.a' | 
 	XZ_OPT=-9e tar -cJf static-libs-for-embedding-only.tar.xz cpython-*/lib/libpython*.a
 	popd
 fi
-# The static OpenSSL prefix is the one place where the archives are the point:
-# cryptography links libcrypto.a into _rust.abi3.so via OPENSSL_STATIC. It is
-# built two stages back and copied in just before this script runs, so an
-# unscoped purge deletes it and leaves behind a prefix of headers, .pc files and
-# an empty lib/ that looks populated but cannot link. Roughly 10 MB to keep.
+# The static OpenSSL prefixes are the one place where the archives are the
+# point: cryptography links libcrypto.a into _rust.abi3.so via OPENSSL_STATIC.
+# They are built two stages back and copied in just before this script runs, so
+# an unscoped purge deletes them and leaves behind prefixes of headers, .pc
+# files and an empty lib/ that look populated but cannot link. Roughly 10 MB
+# each to keep.
+#
+# The glob covers every static-openssl-<version> prefix.
 find /opt/_internal -name '*.a' -not -path '/opt/_internal/static-openssl-*/*' -print0 | xargs -0 rm -f
 
 # disable some pip warnings

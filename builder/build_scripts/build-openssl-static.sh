@@ -35,6 +35,15 @@ source "${MY_DIR}/build_utils.sh"
 # /usr/local/{include,lib,lib/pkgconfig} -- it must stay off PKG_CONFIG_PATH and
 # out of ldconfig so nothing links it by accident. A package opts in explicitly
 # by setting OPENSSL_DIR and OPENSSL_STATIC.
+#
+# This script runs once per OpenSSL major line we need statically, so it lays
+# down three names per build:
+#
+#   static-openssl-<major>.<minor>  the real prefix
+#   static-openssl-<major>          stable per-line path, what a consumer that
+#                                   cares which major it gets should name
+#   static-openssl                  the default, claimed by exactly one build
+#                                   via OPENSSL_STATIC_DEFAULT=1
 
 check_var "${OPENSSL_ROOT}"
 check_var "${OPENSSL_HASH}"
@@ -79,9 +88,15 @@ rm -rf "${OPENSSL_ROOT}" "${OPENSSL_ROOT}.tar.gz"
 # binary, so dropping it does not change the wheel.
 rm -rf "${PREFIX}/bin"
 
+# Stable per-line path, so a consumer that needs a specific major does not have
+# to track the minor across repositories.
+ln -sfn "${PREFIX}" "/opt/_internal/static-openssl-${OPENSSL_VERSION%%.*}"
+
 # Version-independent path, so consumers do not have to track the OpenSSL
-# version across repositories.
-ln -sfn "${PREFIX}" /opt/_internal/static-openssl
+# version across repositories. Exactly one build may claim it.
+if [ "${OPENSSL_STATIC_DEFAULT:-0}" = "1" ]; then
+	ln -sfn "${PREFIX}" /opt/_internal/static-openssl
+fi
 
 # The archives must keep their symbol tables to be linkable, so this is not
 # passed through strip_.
