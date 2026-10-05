@@ -106,6 +106,69 @@ spec:
             exit 1
         fi
 
+        # Tools some wheels need at import time, as opposed to build time.
+        # Installed unconditionally: both package managers treat an
+        # already-present package as a no-op and exit 0, so there is nothing to
+        # detect first. Failures are tolerated here and judged below on whether
+        # the tool actually ended up present -- the hummingbird image runs as
+        # uid 65532 and cannot install anything.
+        #
+        # git: GitPython resolves the binary at import time and raises "Bad git
+        # executable" without it, so gitpython cannot be imported. git is absent
+        # from all six test images. This is a prerequisite of the package under
+        # test rather than a defect in our wheel; PyPI's gitpython needs it too.
+        RUNTIME_TOOLS=(git)
+
+        if command -v dnf >/dev/null 2>&1; then
+            dnf install -y "${RUNTIME_TOOLS[@]}" || true
+        elif command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update && apt-get install -y "${RUNTIME_TOOLS[@]}" || true
+        fi
+
+        # Fallback for an image that cannot install as root. The hummingbird
+        # image runs as uid 65532 with no capabilities and no setuid helper, so
+        # it can never become root and dnf cannot write to /usr. It can still
+        # download, though, and the payload unpacks into a writable prefix.
+        # git-core carries the binary without the perl tooling: 5 packages and
+        # 7 MB, against 71 packages for the full git.
+        if ! command -v git >/dev/null 2>&1 \
+           && command -v dnf >/dev/null 2>&1 \
+           && command -v rpm2archive >/dev/null 2>&1; then
+            echo "Cannot install git as root; unpacking git-core into a prefix"
+            GIT_PREFIX=/tmp/git-core-prefix
+            RPM_DIR="$(mktemp -d)"
+            if (cd "$RPM_DIR" && dnf download --resolve git-core >/dev/null 2>&1); then
+                mkdir -p "$GIT_PREFIX"
+                # rpm2archive writes the tarball to stdout here, so redirect it.
+                for r in "$RPM_DIR"/*.rpm; do rpm2archive "$r" > "$r.tgz" || true; done
+                "$PYTHON" - "$RPM_DIR" "$GIT_PREFIX" <<'UNPACK_RPMS' || true
+        import glob
+        import sys
+        import tarfile
+
+        src, dest = sys.argv[1], sys.argv[2]
+        for archive in sorted(glob.glob(f'{src}/*.tgz')):
+            with tarfile.open(archive) as tar:
+                tar.extractall(dest, filter='tar')
+        UNPACK_RPMS
+                # git has compiled-in paths for its helpers and templates, so a
+                # relocated copy needs both pointed at the prefix. These are
+                # exported, not just set, because run_wheel_check.py reaches git
+                # through a venv subprocess.
+                export PATH="$GIT_PREFIX/usr/bin:$PATH"
+                export LD_LIBRARY_PATH="$GIT_PREFIX/usr/lib64:${LD_LIBRARY_PATH:-}"
+                export GIT_EXEC_PATH="$GIT_PREFIX/usr/libexec/git-core"
+                export GIT_TEMPLATE_DIR="$GIT_PREFIX/usr/share/git-core/templates"
+            fi
+            rm -rf "$RPM_DIR"
+        fi
+
+        for tool in "${RUNTIME_TOOLS[@]}"; do
+            command -v "$tool" >/dev/null 2>&1 || echo "WARNING: $tool is" \
+                "unavailable; wheels that resolve it at import time will fail here"
+        done
+
         echo "Changing directory to ${FILES_DIR}"
         cd "${FILES_DIR}"
 
