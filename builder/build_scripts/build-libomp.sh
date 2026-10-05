@@ -21,6 +21,9 @@ LLVM_CMAKE_ROOT="cmake-${LIBOMP_VERSION}.src"
 
 PREFIX=/opt/_internal/libomp-${LIBOMP_VERSION%%.*}
 
+# Set LD_LIBRARY_PATH to include libomp libraries
+export LD_LIBRARY_PATH="${PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+
 # Python3 is required by libomp's cmake build to generate string tables
 manylinux_pkg_install python3
 
