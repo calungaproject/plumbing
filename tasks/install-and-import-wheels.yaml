@@ -119,6 +119,12 @@ spec:
         # test rather than a defect in our wheel; PyPI's gitpython needs it too.
         RUNTIME_TOOLS=(git)
 
+        # A PATH lookup is not enough. A partial unpack can leave usr/bin/git
+        # in place while a shared library it needs is missing, and `command -v`
+        # still reports it as available -- GitPython would then fail at import
+        # with the very error this is meant to prevent. Run the tool instead.
+        works() { command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1; }
+
         if command -v dnf >/dev/null 2>&1; then
             dnf install -y "${RUNTIME_TOOLS[@]}" || true
         elif command -v apt-get >/dev/null 2>&1; then
@@ -132,7 +138,7 @@ spec:
         # download, though, and the payload unpacks into a writable prefix.
         # git-core carries the binary without the perl tooling: 5 packages and
         # 7 MB, against 71 packages for the full git.
-        if ! command -v git >/dev/null 2>&1 \
+        if ! works git \
            && command -v dnf >/dev/null 2>&1 \
            && command -v rpm2archive >/dev/null 2>&1; then
             echo "Cannot install git as root; unpacking git-core into a prefix"
@@ -141,8 +147,12 @@ spec:
             if (cd "$RPM_DIR" && dnf download --resolve git-core >/dev/null 2>&1); then
                 mkdir -p "$GIT_PREFIX"
                 # rpm2archive writes the tarball to stdout here, so redirect it.
-                for r in "$RPM_DIR"/*.rpm; do rpm2archive "$r" > "$r.tgz" || true; done
-                "$PYTHON" - "$RPM_DIR" "$GIT_PREFIX" <<'UNPACK_RPMS' || true
+                for r in "$RPM_DIR"/*.rpm; do
+                    rpm2archive "$r" > "$r.tgz" \
+                        || echo "WARNING: rpm2archive failed for $(basename "$r")"
+                done
+                "$PYTHON" - "$RPM_DIR" "$GIT_PREFIX" <<'UNPACK_RPMS' \
+                    || echo "WARNING: unpacking git-core did not complete"
         import glob
         import sys
         import tarfile
@@ -165,8 +175,8 @@ spec:
         fi
 
         for tool in "${RUNTIME_TOOLS[@]}"; do
-            command -v "$tool" >/dev/null 2>&1 || echo "WARNING: $tool is" \
-                "unavailable; wheels that resolve it at import time will fail here"
+            works "$tool" || echo "WARNING: $tool is unavailable or does not" \
+                "run; wheels that resolve it at import time will fail here"
         done
 
         echo "Changing directory to ${FILES_DIR}"
