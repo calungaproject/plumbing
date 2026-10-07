@@ -151,15 +151,20 @@ spec:
         # image runs as uid 65532 with no capabilities and no setuid helper, so
         # it can never become root and dnf cannot write to /usr. It can still
         # download, though, and the payload unpacks into a writable prefix.
-        # git-core carries the binary without the perl tooling: 5 packages and
-        # 7 MB, against 71 packages for the full git.
+        # git-core and nothing else. The full git pulls 71 packages of perl
+        # tooling git never calls here, and --resolve on git-core still drags
+        # in openssh, openssh-clients and less -- which would put ssh, scp,
+        # sftp, ssh-keygen and less on PATH ahead of the image's own, and
+        # libedit on the loader path, for every wheel imported afterwards.
+        # git-core alone is one package whose dynamic dependencies the image
+        # already satisfies.
         if ! works git \
            && command -v dnf >/dev/null 2>&1 \
            && command -v rpm2archive >/dev/null 2>&1; then
             echo "Cannot install git as root; unpacking git-core into a prefix"
             GIT_PREFIX=/tmp/git-core-prefix
             RPM_DIR="$(mktemp -d)"
-            if (cd "$RPM_DIR" && dnf download --resolve git-core >/dev/null 2>&1); then
+            if (cd "$RPM_DIR" && dnf download git-core >/dev/null 2>&1); then
                 mkdir -p "$GIT_PREFIX"
                 # rpm2archive writes the tarball to stdout here, so redirect it.
                 for r in "$RPM_DIR"/*.rpm; do
@@ -180,9 +185,11 @@ spec:
                 # git has compiled-in paths for its helpers and templates, so a
                 # relocated copy needs both pointed at the prefix. These are
                 # exported, not just set, because run_wheel_check.py reaches git
-                # through a venv subprocess.
+                # through a venv subprocess -- which is also why LD_LIBRARY_PATH
+                # is deliberately not set: git-core ships no libraries, and
+                # putting a directory on the loader path would apply to every
+                # wheel imported afterwards, not just to git.
                 export PATH="$GIT_PREFIX/usr/bin:$PATH"
-                export LD_LIBRARY_PATH="$GIT_PREFIX/usr/lib64:${LD_LIBRARY_PATH:-}"
                 export GIT_EXEC_PATH="$GIT_PREFIX/usr/libexec/git-core"
                 export GIT_TEMPLATE_DIR="$GIT_PREFIX/usr/share/git-core/templates"
             fi
