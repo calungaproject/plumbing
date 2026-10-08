@@ -88,6 +88,10 @@ spec:
 
     - name: install-and-import
       image: $(params.TEST_IMAGE)
+      # Run as root so hummingbird matches the other five images and can
+      # install the packages below.
+      securityContext:
+        runAsUser: 0
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -106,94 +110,22 @@ spec:
             exit 1
         fi
 
-        # Tools some wheels need at import time, as opposed to build time.
-        # Installed unconditionally: both package managers treat an
-        # already-present package as a no-op and exit 0, so there is nothing to
-        # detect first. Failures are tolerated here and judged below on whether
-        # the tool actually ended up present -- the hummingbird image runs as
-        # uid 65532 and cannot install anything.
-        #
-        # git: GitPython resolves the binary at import time and raises "Bad git
-        # executable" without it, so gitpython cannot be imported. git is absent
-        # from all six test images.
-        #
-        # libgomp: pythran ships two top-level modules, `pythran` and `omp`.
-        # The second ctypes-probes for libomp/libgomp/libiomp5 at import and
-        # raises without one. ubi8 and ubuntu are the only two images with no
-        # libgomp.so.1, which is exactly the pair that fails. Its package name
-        # differs by distro -- libgomp on RPM, libgomp1 on Debian -- so unlike
-        # git it cannot share a single list.
-        #
-        # Both are prerequisites of the package under test rather than defects
-        # in our wheels: PyPI's gitpython and pythran need them too.
+        # Runtime dependencies of the packages under test. Package names differ
+        # by manager; the checks below use tool names and sonames, which do not.
+        RUNTIME_DEPS_DNF=(git libgomp)
+        RUNTIME_DEPS_APT=(git libgomp1)
         RUNTIME_TOOLS=(git)
         RUNTIME_LIBS=(libgomp.so.1)
 
-        # A PATH lookup is not enough. A partial unpack can leave usr/bin/git
-        # in place while a shared library it needs is missing, and `command -v`
-        # still reports it as available -- GitPython would then fail at import
-        # with the very error this is meant to prevent. Run the tool instead.
         works() { command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1; }
 
-        # Libraries are not on PATH and have no --version, so they are checked
-        # through the loader cache instead. A soname is stable across distros
-        # even where the package name is not.
         lib_present() { ldconfig -p 2>/dev/null | grep -qF "$1"; }
 
         if command -v dnf >/dev/null 2>&1; then
-            dnf install -y "${RUNTIME_TOOLS[@]}" libgomp || true
+            dnf install -y "${RUNTIME_DEPS_DNF[@]}" || true
         elif command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get install -y "${RUNTIME_TOOLS[@]}" libgomp1 || true
-        fi
-
-        # Fallback for an image that cannot install as root. The hummingbird
-        # image runs as uid 65532 with no capabilities and no setuid helper, so
-        # it can never become root and dnf cannot write to /usr. It can still
-        # download, though, and the payload unpacks into a writable prefix.
-        # git-core and nothing else. The full git pulls 71 packages of perl
-        # tooling git never calls here, and --resolve on git-core still drags
-        # in openssh, openssh-clients and less -- which would put ssh, scp,
-        # sftp, ssh-keygen and less on PATH ahead of the image's own, and
-        # libedit on the loader path, for every wheel imported afterwards.
-        # git-core alone is one package whose dynamic dependencies the image
-        # already satisfies.
-        if ! works git \
-           && command -v dnf >/dev/null 2>&1 \
-           && command -v rpm2archive >/dev/null 2>&1; then
-            echo "Cannot install git as root; unpacking git-core into a prefix"
-            GIT_PREFIX=/tmp/git-core-prefix
-            RPM_DIR="$(mktemp -d)"
-            if (cd "$RPM_DIR" && dnf download git-core >/dev/null 2>&1); then
-                mkdir -p "$GIT_PREFIX"
-                # rpm2archive writes the tarball to stdout here, so redirect it.
-                for r in "$RPM_DIR"/*.rpm; do
-                    rpm2archive "$r" > "$r.tgz" \
-                        || echo "WARNING: rpm2archive failed for $(basename "$r")"
-                done
-                "$PYTHON" - "$RPM_DIR" "$GIT_PREFIX" <<'UNPACK_RPMS' \
-                    || echo "WARNING: unpacking git-core did not complete"
-        import glob
-        import sys
-        import tarfile
-
-        src, dest = sys.argv[1], sys.argv[2]
-        for archive in sorted(glob.glob(f'{src}/*.tgz')):
-            with tarfile.open(archive) as tar:
-                tar.extractall(dest, filter='tar')
-        UNPACK_RPMS
-                # git has compiled-in paths for its helpers and templates, so a
-                # relocated copy needs both pointed at the prefix. These are
-                # exported, not just set, because run_wheel_check.py reaches git
-                # through a venv subprocess -- which is also why LD_LIBRARY_PATH
-                # is deliberately not set: git-core ships no libraries, and
-                # putting a directory on the loader path would apply to every
-                # wheel imported afterwards, not just to git.
-                export PATH="$GIT_PREFIX/usr/bin:$PATH"
-                export GIT_EXEC_PATH="$GIT_PREFIX/usr/libexec/git-core"
-                export GIT_TEMPLATE_DIR="$GIT_PREFIX/usr/share/git-core/templates"
-            fi
-            rm -rf "$RPM_DIR"
+            apt-get update && apt-get install -y "${RUNTIME_DEPS_APT[@]}" || true
         fi
 
         for tool in "${RUNTIME_TOOLS[@]}"; do
