@@ -1,5 +1,5 @@
 ---
-# Required Tekton tasks for Calunga npm factory / promote pipelines.
+# Required Tekton tasks for Calunga npm factory pipelines.
 #
 # Keys must match the selector Conforma reads from the attestation:
 #   1. build.appstudio.redhat.com/build_type on the build Task, or
@@ -18,10 +18,11 @@ pipeline-required-tasks:
         - git-clone-oci-ta
         - run-script-oci-ta
         - build-npm-package-oci-ta
-  promote-npm:
+  build-npm-compliance:
     - effective_on: "2026-01-01T00:00:00Z"
       tasks:
         - init
         - git-clone-oci-ta
         - run-script-oci-ta
-        - promote-npm-oci-ta
+        - build-npm-package-oci-ta
+        - assess-npm-compliance-oci-ta

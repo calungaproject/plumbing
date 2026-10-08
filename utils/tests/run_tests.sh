@@ -480,22 +480,28 @@ run_fetch() {
 }
 
 env_v02="${tmpdir}/env-v02.json"
-envelope_from_statement "$(v02_statement promote-npm calunga-tenant "${HEX}")" > "${env_v02}"
+envelope_from_statement "$(v02_statement build-npm-compliance calunga-tenant "${HEX}")" > "${env_v02}"
 rm -rf "${files_prov}/chains-provenance"
-assert_ok "npm-fetch-chains-provenance accepts SLSA v0.2 promote-npm" \
+assert_ok "npm-fetch-chains-provenance accepts SLSA v0.2 build-npm-compliance" \
   run_fetch "${env_v02}"
 assert_ok "v0.2 provenance file has tekton Chains builder" \
   jq -e '.predicate.builder.id == "https://tekton.dev/chains/v2"' \
     "${files_prov}/chains-provenance/sha256_${HEX}.json" >/dev/null
 
 env_v1="${tmpdir}/env-v1.json"
-envelope_from_statement "$(v1_statement promote-npm "calunga-tenant/pr-1" "${HEX}")" > "${env_v1}"
+envelope_from_statement "$(v1_statement build-npm-compliance "calunga-tenant/pr-1" "${HEX}")" > "${env_v1}"
 rm -rf "${files_prov}/chains-provenance"
-assert_ok "npm-fetch-chains-provenance accepts SLSA v1 promote-npm" \
+assert_ok "npm-fetch-chains-provenance accepts SLSA v1 build-npm-compliance" \
   run_fetch "${env_v1}"
 assert_ok "v1 provenance file has buildDefinition" \
   jq -e '.predicate.buildDefinition.buildType == "https://tekton.dev/chains/v2/slsa"' \
     "${files_prov}/chains-provenance/sha256_${HEX}.json" >/dev/null
+
+env_legacy="${tmpdir}/env-legacy-promote.json"
+envelope_from_statement "$(v02_statement promote-npm calunga-tenant "${HEX}")" > "${env_legacy}"
+rm -rf "${files_prov}/chains-provenance"
+assert_ok "npm-fetch-chains-provenance accepts legacy SLSA v0.2 promote-npm" \
+  run_fetch "${env_legacy}"
 
 env_bad_rt="${tmpdir}/env-bad-rt.json"
 envelope_from_statement "$(v02_statement docker-build calunga-tenant "${HEX}")" > "${env_bad_rt}"
@@ -504,13 +510,13 @@ assert_fail "npm-fetch-chains-provenance rejects non-npm pipeline runtime" \
   run_fetch "${env_bad_rt}"
 
 env_bad_ns="${tmpdir}/env-bad-ns.json"
-envelope_from_statement "$(v02_statement promote-npm other-tenant "${HEX}")" > "${env_bad_ns}"
+envelope_from_statement "$(v02_statement build-npm-compliance other-tenant "${HEX}")" > "${env_bad_ns}"
 rm -rf "${files_prov}/chains-provenance"
 assert_fail "npm-fetch-chains-provenance rejects other tenant namespace" \
   run_fetch "${env_bad_ns}"
 
 env_bad_hex="${tmpdir}/env-bad-hex.json"
-envelope_from_statement "$(v02_statement promote-npm calunga-tenant \
+envelope_from_statement "$(v02_statement build-npm-compliance calunga-tenant \
   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")" > "${env_bad_hex}"
 rm -rf "${files_prov}/chains-provenance"
 assert_fail "npm-fetch-chains-provenance rejects subject digest mismatch" \

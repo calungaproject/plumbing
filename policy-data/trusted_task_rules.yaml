@@ -1,5 +1,5 @@
 ---
-# Register Calunga factory/promote Tekton task bundles as trusted in Enterprise Contract.
+# Register Calunga factory/assess Tekton task bundles as trusted in Enterprise Contract.
 #
 # This file is referenced as a data source in Calunga's EC policies so that
 # Conforma can verify the build task without maintaining a separate
