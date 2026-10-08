@@ -95,8 +95,10 @@ while read -r IMAGE; do
       | (
         .predicate.invocation.environment.labels["pipelines.openshift.io/runtime"] // ""
       ) as $rt
-      | ($v1 == "promote-npm" or $v1 == "build-npm"
-         or $rt == "promote-npm" or $rt == "build-npm");
+      | ($v1 == "build-npm-compliance" or $v1 == "build-npm"
+         or $v1 == "promote-npm"
+         or $rt == "build-npm-compliance" or $rt == "build-npm"
+         or $rt == "promote-npm");
     def trusted_ns:
       (
         (.predicate.runDetails.metadata.invocationId // "") as $id
@@ -116,7 +118,7 @@ while read -r IMAGE; do
     echo "ERROR: No trusted Chains SLSA provenance for ${DIGEST}" >&2
     echo "  accepted builders: https://tekton.dev/chains/v2, https://konflux-ci.dev/chains/v2" >&2
     echo "  accepted buildType: tekton.dev/v1/PipelineRun (SLSA v0.2) or https://tekton.dev/chains/v2/slsa (v1)" >&2
-    echo "  expected npm pipeline: pipelineRef.name or pipelines.openshift.io/runtime in {promote-npm,build-npm}" >&2
+    echo "  expected npm pipeline: pipelineRef.name or pipelines.openshift.io/runtime in {build-npm-compliance,build-npm} (legacy promote-npm also accepted)" >&2
     echo "  expected namespace in invocationId or PAC log-url: ${TRUSTED_NS_JSON}" >&2
     cat "${COSIGN_STDERR}" >&2
     cat "${COSIGN_STDOUT}" >&2

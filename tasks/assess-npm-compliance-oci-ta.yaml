@@ -2,31 +2,32 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: promote-npm-oci-ta
+  name: assess-npm-compliance-oci-ta
   annotations:
     tekton.dev/pipelines.minVersion: 0.12.1
     tekton.dev/tags: npm, konflux, trusted-libraries
   labels:
     app.kubernetes.io/version: "0.1"
     # Conforma pipeline-required-tasks selector (see policy-data/).
-    build.appstudio.redhat.com/build_type: promote-npm
+    build.appstudio.redhat.com/build_type: build-npm-compliance
 
 spec:
   description: >-
-    Promote a PR npm OCI artifact (on-pr-<sha>.npm) to a durable snapshot tag
-    (<sha>.npm): oras pull → verify embedded SPDX SBOM → assess compliance
-    against the public TL npm registry (*.tl-compliance.json) → oras push.
-    No rebuild. Requires PACKAGES_STATUS=has-packages and at least one .tgz
-    in the on-pr artifact (PAC should only start promote when packages/ change).
+    Finalize a freshly built npm OCI artifact for release: oras pull the build
+    output → verify embedded SPDX SBOM → assess compliance against the public
+    TL npm registry (*.tl-compliance.json sidecars) → oras push the durable
+    snapshot tag. Used on-push after build-npm-package-oci-ta (no on-pr promote).
+    Requires PACKAGES_STATUS=has-packages and at least one .tgz in the source OCI.
   params:
     - name: SOURCE_IMAGE
       description: >-
-        Quay OCI reference for the PR artifact to promote
-        (e.g. …/calunga-npm-registry-main:on-pr-<sha>.npm)
+        Quay OCI reference produced by build-npm-package-oci-ta
+        (e.g. …/calunga-npm-registry-main:<sha>.npm)
       type: string
     - name: IMAGE
       description: >-
-        Durable Quay OCI reference to push
+        Durable Quay OCI reference to push (usually the same as SOURCE_IMAGE,
+        re-pushed with compliance sidecars)
         (e.g. …/calunga-npm-registry-main:<sha>.npm)
       type: string
     - name: BUILDER_IMAGE
@@ -37,7 +38,7 @@ spec:
       type: string
     - name: PACKAGES
       description: >-
-        Package directories in this promote (manifests group outputs / built_from;
+        Package directories in this run (manifests group outputs / built_from;
         packed package.json dependencies are the compliance input)
         (e.g. ["packages/express/5.2.1"])
       type: array
@@ -75,7 +76,7 @@ spec:
     - name: IMAGE_REF
       description: OCI artifact reference (image@digest)
     - name: SOURCE_IMAGE
-      description: Source (on-pr) OCI reference that was promoted
+      description: Build OCI reference that was assessed
   volumes:
     - name: trusted-ca
       configMap:
@@ -111,7 +112,7 @@ spec:
           readOnly: true
           subPath: ca-bundle.crt
 
-    - name: pull-on-pr-artifact
+    - name: pull-build-artifact
       image: quay.io/konflux-ci/oras:latest@sha256:1beeecce012c99794568f74265c065839f9703d28306a8430b667f639343a98b
       workingDir: $(params.WORKDIR_ROOT)
       volumeMounts:
@@ -134,7 +135,7 @@ spec:
           exit 1
         fi
 
-        echo "[$(date --utc -Ins)] Pulling on-pr npm OCI artifact: ${SOURCE_IMAGE}"
+        echo "[$(date --utc -Ins)] Pulling built npm OCI artifact: ${SOURCE_IMAGE}"
 
         select-oci-auth "${SOURCE_IMAGE}" > auth.json
         AUTHFILE="$(realpath auth.json)"
@@ -142,10 +143,7 @@ spec:
         if ! retry oras pull --registry-config "${AUTHFILE}" "${SOURCE_IMAGE}" -o "${ARTIFACT_ROOT}"
         then
           echo "Failed to pull ${SOURCE_IMAGE}" >&2
-          echo "Promote requires a green on-pr OCI for this commit." >&2
-          echo "Note: GitHub merge/squash SHAs usually differ from the PR head SHA used" >&2
-          echo "for on-pr-<sha>.npm — the push revision must match the PR build revision," >&2
-          echo "or promote must resolve the PR artifact another way." >&2
+          echo "Assess requires a green build-npm-package OCI for this revision." >&2
           exit 1
         fi
 
@@ -164,7 +162,7 @@ spec:
 
         echo -n "${SOURCE_IMAGE}" | tee "$(results.SOURCE_IMAGE.path)"
         ls -la "${ARTIFACT_ROOT}"
-        echo "[$(date --utc -Ins)] End pull-on-pr-artifact"
+        echo "[$(date --utc -Ins)] End pull-build-artifact"
       computeResources:
         limits:
           memory: 1Gi
@@ -242,7 +240,7 @@ spec:
         shopt -s nullglob dotglob
         artifact_files=(*)
         if [[ ${#artifact_files[@]} -eq 0 ]]; then
-          echo "No artifacts to push after promote staging" >&2
+          echo "No artifacts to push after compliance staging" >&2
           exit 1
         fi
         # Require at least one package tarball (oras image has no find(1)).
