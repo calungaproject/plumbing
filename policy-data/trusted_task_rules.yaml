@@ -1,17 +1,19 @@
 ---
 # Register Calunga factory/assess Tekton task bundles as trusted in Enterprise Contract.
 #
-# This file is referenced as a data source in Calunga's EC policies so that
-# Conforma can verify the build task without maintaining a separate
-# data-acceptable-bundles OCI artifact.  See ADR 0053 for background:
-# https://konflux-ci.dev/architecture/ADR/0053-trusted-task-model/
+# Must live under rule_data: — Conforma reads lib_rule_data("trusted_task_rules")
+# (data.rule_data / rule_data_custom), not a top-level trusted_task_rules key.
+# See stackrox/konflux-tasks and conforma acceptance testdata for the same shape.
 #
-# Consumed by ECP e.g. calunga-npm / index policies via:
+# ADR 0053: https://konflux-ci.dev/architecture/ADR/0053-trusted-task-model/
+#
+# Consumed by ECP e.g. calunga-npm via:
 #   github.com/calungaproject/plumbing//policy-data?ref=main
-trusted_task_rules:
-  allow:
-    calunga-build-tasks:
-      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-python-wheels*
-      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-sast-snyk-check-sdist*
-      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-npm-package*
-      - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-promote-npm-oci*
+rule_data:
+  trusted_task_rules:
+    allow:
+      calunga-build-tasks:
+        - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-python-wheels*
+        - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-sast-snyk-check-sdist*
+        - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-build-npm-package*
+        - pattern: oci://quay.io/redhat-user-workloads/calunga-tenant/task-promote-npm-oci*
