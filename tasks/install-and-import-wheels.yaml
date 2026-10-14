@@ -17,6 +17,21 @@ spec:
       name: PYTHON_VERSION
       type: string
       default: "3.12"
+    - description: >-
+        Optional URL of a wheel server (PEP 503 simple index) used to resolve
+        the dependencies of the wheels under test. Must use https and must not
+        embed credentials. When empty, pip runs with --no-index and only the
+        wheels extracted from the SNAPSHOT can be installed.
+      name: WHEEL_SERVER_URL
+      type: string
+      default: ""
+    - description: >-
+        Name of the Kubernetes secret with the wheel server's basic-auth
+        credentials. The secret must provide username and password keys.
+        Only consulted when WHEEL_SERVER_URL is set.
+      name: SERVICE_ACCOUNT_SECRET_NAME
+      type: string
+      default: "builder-service-account"
   volumes:
     - name: workdir
       emptyDir: {}
@@ -92,6 +107,25 @@ spec:
       # install the packages below.
       securityContext:
         runAsUser: 0
+      env:
+        - name: WHEEL_SERVER_URL
+          value: $(params.WHEEL_SERVER_URL)
+        # Basic-auth credentials for the wheel server, read from the secret
+        # named by SERVICE_ACCOUNT_SECRET_NAME (username/password keys).
+        # Optional so tenants that never set WHEEL_SERVER_URL need not
+        # create the secret.
+        - name: WHEEL_SERVER_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
+              key: username
+              optional: true
+        - name: WHEEL_SERVER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: $(params.SERVICE_ACCOUNT_SECRET_NAME)
+              key: password
+              optional: true
       script: |
         #!/bin/bash
         set -euo pipefail

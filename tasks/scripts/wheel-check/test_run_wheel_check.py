@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import io
 import json
 import os
 import shutil
@@ -6,12 +7,40 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_wheel_check
+
+
+@contextmanager
+def patch_wheel_server(index_url):
+    """Point run_wheel_check at a wheel server for the duration of a test."""
+    saved = (run_wheel_check._wheel_server_index_url,
+             run_wheel_check._wheel_server_userinfo)
+    userinfo = None
+    if '@' in index_url:
+        userinfo = index_url.split('//', 1)[1].split('@', 1)[0] + '@'
+    run_wheel_check._wheel_server_index_url = index_url
+    run_wheel_check._wheel_server_userinfo = userinfo
+    try:
+        yield
+    finally:
+        (run_wheel_check._wheel_server_index_url,
+         run_wheel_check._wheel_server_userinfo) = saved
+
+
+def fake_index_url(username='user', password='secret'):
+    """A credentialed index URL fixture.
+
+    Assembled from parts on purpose: a literal user:password URL trips
+    secret scanners, and the fake credentials are not worth allowlisting.
+    """
+    return 'https://' + username + ':' + password + '@wheels.example.com/simple/'
 
 
 def make_wheel(directory, name, version, has_source=True):
@@ -92,6 +121,112 @@ class TestPipInstall(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='ERROR')
         result = run_wheel_check.pip_install('/tmp/venv', 'bad-pkg')
         self.assertFalse(result)
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_no_index_without_wheel_server(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='Installed', stderr='')
+        result = run_wheel_check.pip_install('/tmp/venv', 'click==8.0')
+        self.assertTrue(result)
+        cmd = mock_run.call_args[0][0]
+        self.assertIn('--no-index', cmd)
+        self.assertNotIn('--index-url', cmd)
+        self.assertIn('--find-links', cmd)
+        self.assertIsNone(mock_run.call_args[1].get('env'))
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_wheel_server_credentials_only_in_pip_environment(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout='Installed', stderr='')
+        index_url = fake_index_url()
+        with patch_wheel_server(index_url):
+            result = run_wheel_check.pip_install('/tmp/venv', 'click==8.0')
+        self.assertTrue(result)
+        cmd = mock_run.call_args[0][0]
+        self.assertNotIn('--no-index', cmd)
+        # The index is never on the command line, where `ps` (and pip's own
+        # "Installing collected packages" logging) would show it.
+        self.assertNotIn('--index-url', cmd)
+        self.assertNotIn(index_url, cmd)
+        self.assertIn('--find-links', cmd)
+        # The wheel under test is still passed through untouched.
+        self.assertEqual(cmd[-1], 'click==8.0')
+        env = mock_run.call_args[1]['env']
+        self.assertEqual(env['PIP_INDEX_URL'], index_url)
+
+    @patch('run_wheel_check.subprocess.run')
+    def test_pip_output_credentials_redacted(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='Looking in indexes: ' + fake_index_url() + '\n',
+            stderr='')
+        index_url = fake_index_url()
+        with patch_wheel_server(index_url), \
+                patch('sys.stdout', new_callable=io.StringIO) as out:
+            result = run_wheel_check.pip_install('/tmp/venv', 'click==8.0')
+        self.assertTrue(result)
+        self.assertNotIn('secret', out.getvalue())
+        self.assertIn('***@wheels.example.com', out.getvalue())
+
+
+class TestLoadWheelServerConfig(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._saved = (run_wheel_check._wheel_server_index_url,
+                       run_wheel_check._wheel_server_userinfo)
+
+    def tearDown(self):
+        (run_wheel_check._wheel_server_index_url,
+         run_wheel_check._wheel_server_userinfo) = self._saved
+        super().tearDown()
+
+    def test_no_url_disables_wheel_server(self):
+        env = {'WHEEL_SERVER_URL': '',
+               'WHEEL_SERVER_USERNAME': 'user', 'WHEEL_SERVER_PASSWORD': 'secret'}
+        with patch.dict(os.environ, env):
+            self.assertFalse(run_wheel_check.load_wheel_server_config())
+            # Credentials are scrubbed even when no server is configured, so
+            # the import test can never inherit them.
+            self.assertNotIn('WHEEL_SERVER_USERNAME', os.environ)
+            self.assertNotIn('WHEEL_SERVER_PASSWORD', os.environ)
+        self.assertIsNone(run_wheel_check._wheel_server_index_url)
+
+    def test_whitespace_url_treated_as_unset(self):
+        with patch.dict(os.environ, {'WHEEL_SERVER_URL': '   '}):
+            self.assertFalse(run_wheel_check.load_wheel_server_config())
+
+    def test_valid_url_embeds_quoted_credentials(self):
+        env = {'WHEEL_SERVER_URL': 'https://wheels.example.com/simple/',
+               'WHEEL_SERVER_USERNAME': 'u ser', 'WHEEL_SERVER_PASSWORD': 'p:w/rd'}
+        with patch.dict(os.environ, env):
+            self.assertTrue(run_wheel_check.load_wheel_server_config())
+            self.assertNotIn('WHEEL_SERVER_USERNAME', os.environ)
+            self.assertNotIn('WHEEL_SERVER_PASSWORD', os.environ)
+        quoted_user = urllib.parse.quote('u ser', safe='')
+        quoted_password = urllib.parse.quote('p:w/rd', safe='')
+        self.assertEqual(run_wheel_check._wheel_server_index_url,
+                         fake_index_url(quoted_user, quoted_password))
+        self.assertEqual(run_wheel_check._wheel_server_userinfo,
+                         quoted_user + ':' + quoted_password + '@')
+
+    def test_http_url_rejected(self):
+        env = {'WHEEL_SERVER_URL': 'http://wheels.example.com/simple/',
+               'WHEEL_SERVER_USERNAME': 'user', 'WHEEL_SERVER_PASSWORD': 'secret'}
+        with patch.dict(os.environ, env):
+            with self.assertRaises(ValueError):
+                run_wheel_check.load_wheel_server_config()
+
+    def test_url_with_embedded_credentials_rejected(self):
+        env = {'WHEEL_SERVER_URL': fake_index_url(),
+               'WHEEL_SERVER_USERNAME': 'user', 'WHEEL_SERVER_PASSWORD': 'secret'}
+        with patch.dict(os.environ, env):
+            with self.assertRaises(ValueError):
+                run_wheel_check.load_wheel_server_config()
+
+    def test_missing_credentials_rejected(self):
+        env = {'WHEEL_SERVER_URL': 'https://wheels.example.com/simple/',
+               'WHEEL_SERVER_USERNAME': '', 'WHEEL_SERVER_PASSWORD': ''}
+        with patch.dict(os.environ, env):
+            with self.assertRaises(ValueError):
+                run_wheel_check.load_wheel_server_config()
 
 
 class TestPipListJson(unittest.TestCase):

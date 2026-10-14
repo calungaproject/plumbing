@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,15 +61,95 @@ def create_venv(python, path):
     return path
 
 
+# The optional wheel server is a PEP 503 simple index behind HTTP basic
+# auth. Its credentials come from the Kubernetes secret named by the task's
+# SERVICE_ACCOUNT_SECRET_NAME param, which must provide 'username' and
+# 'password' keys; the task exposes them to this script as the two
+# WHEEL_SERVER_* variables below.
+WHEEL_SERVER_URL_ENV = 'WHEEL_SERVER_URL'
+WHEEL_SERVER_USERNAME_ENV = 'WHEEL_SERVER_USERNAME'
+WHEEL_SERVER_PASSWORD_ENV = 'WHEEL_SERVER_PASSWORD'
+
+# Index URL (credentials embedded) of the optional wheel server, resolved once
+# by load_wheel_server_config(). Module-level because pip_install is called
+# from several places that should not each have to thread it through.
+_wheel_server_index_url = None
+# The percent-encoded userinfo of that URL, kept only to redact it from pip's
+# captured output before printing.
+_wheel_server_userinfo = None
+
+
+def load_wheel_server_config():
+    """Resolve the optional wheel server configuration from the environment.
+
+    Combines WHEEL_SERVER_URL with the WHEEL_SERVER_USERNAME/PASSWORD
+    credentials into an index URL with the credentials embedded and returns
+    True when a wheel server is configured, False when WHEEL_SERVER_URL is
+    unset (or blank).
+
+    The credentials are removed from os.environ as a side effect. The import
+    test executes untrusted package code, and every subprocess spawned from
+    here on -- pip and the import test alike -- would otherwise inherit them.
+    pip still gets them, but only through the environment of the pip processes
+    themselves (see pip_install), never on a command line or in a file.
+    """
+    global _wheel_server_index_url, _wheel_server_userinfo
+    url = os.environ.get(WHEEL_SERVER_URL_ENV, '').strip()
+    username = os.environ.pop(WHEEL_SERVER_USERNAME_ENV, '')
+    password = os.environ.pop(WHEEL_SERVER_PASSWORD_ENV, '')
+    if not url:
+        return False
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https':
+        raise ValueError(f'{WHEEL_SERVER_URL_ENV} must use https: {url}')
+    if not parsed.hostname:
+        raise ValueError(f'{WHEEL_SERVER_URL_ENV} has no host: {url}')
+    if parsed.username or parsed.password:
+        raise ValueError(
+            f'{WHEEL_SERVER_URL_ENV} must not embed credentials; provide them '
+            f'via {WHEEL_SERVER_USERNAME_ENV}/{WHEEL_SERVER_PASSWORD_ENV}')
+    if not username or not password:
+        raise ValueError(
+            f'{WHEEL_SERVER_URL_ENV} is set but no '
+            f'{WHEEL_SERVER_USERNAME_ENV}/{WHEEL_SERVER_PASSWORD_ENV} '
+            'credentials were provided')
+    userinfo = ':'.join(urllib.parse.quote(part, safe='')
+                        for part in (username, password))
+    _wheel_server_userinfo = userinfo + '@'
+    _wheel_server_index_url = urllib.parse.urlunsplit(
+        (parsed.scheme, f'{userinfo}@{parsed.netloc}',
+         parsed.path, parsed.query, parsed.fragment))
+    return True
+
+
+def _redact_credentials(text):
+    """Strip the wheel server credentials from pip output before printing."""
+    if _wheel_server_userinfo and text:
+        return text.replace(_wheel_server_userinfo, '***@')
+    return text
+
+
 def pip_install(venv, *packages):
-    cmd = [os.path.join(venv, 'bin', 'pip'), 'install',
-           '--no-index', '--find-links', '.'] + list(packages)
-    result = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep
+    # An optional wheel server (PEP 503 simple index) supplies the dependencies
+    # of the wheels under test, which matters when the release bundle carries
+    # only the primary package. Without one, pip must not consult any index:
+    # the wheels extracted from the SNAPSHOT are the only installable files.
+    cmd = [os.path.join(venv, 'bin', 'pip'), 'install']
+    env = None
+    if _wheel_server_index_url:
+        # The credentials reach pip through its environment only: not on the
+        # command line (visible in `ps`), not in a file, and not in the
+        # environment inherited by the untrusted import test.
+        env = dict(os.environ, PIP_INDEX_URL=_wheel_server_index_url)
+    else:
+        cmd += ['--no-index']
+    cmd += ['--find-links', '.'] + list(packages)
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)  # nosemgrep
     if result.stdout:
-        print(result.stdout, end='')
+        print(_redact_credentials(result.stdout), end='')
     if result.returncode != 0:
         if result.stderr:
-            print(result.stderr, end='', file=sys.stderr)
+            print(_redact_credentials(result.stderr), end='', file=sys.stderr)
         return False
     return True
 
@@ -405,6 +486,12 @@ def main(argv=None):
 
     if not PYTHON_PATTERN.match(python):
         print(f'ERROR: Invalid python interpreter: {python!r}', file=sys.stderr)
+        return 1
+
+    try:
+        load_wheel_server_config()
+    except ValueError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
         return 1
 
     os.chdir(files_dir)
