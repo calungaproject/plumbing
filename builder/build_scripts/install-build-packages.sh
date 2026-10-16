@@ -16,7 +16,7 @@ source "${MY_DIR}/build_utils.sh"
 
 # Base dependencies that should be available in all RHEL-like distributions
 # cmake is needed for libjpeg-turbo, libtiff, and other CMake-based builds
-COMPILE_DEPS=(bzip2-devel ncurses-devel gdbm-devel xz-devel openssl openssl-devel libffi-devel kernel-headers perl-IPC-Cmd cmake)
+COMPILE_DEPS=(bzip2-devel ncurses-devel gdbm-devel openssl openssl-devel libffi-devel kernel-headers perl-IPC-Cmd cmake)
 
 # Optional dependencies (not available in minimal UBI images)
 # We build curl and Tcl/Tk from source, so curl-devel and tk-devel are optional
