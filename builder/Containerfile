@@ -8,7 +8,7 @@ ARG PREPEND_PATH=/usr/local/bin:${DEVTOOLSET_ROOTPATH}/usr/bin:
 ARG MANYLINUX_BUILDARCH=${BUILDARCH}
 ARG MANYLINUX_DISABLE_CLANG=0
 ARG MANYLINUX_DISABLE_CLANG_FOR_CPYTHON=0
-ARG MANYLINUX_CLANG_VERSION=21.1.5.0
+ARG MANYLINUX_CLANG_VERSION=21.1.8.1
 ARG MANYLINUX_COSIGN_VERSION=3.0.2
 # The shared OpenSSL pin, in one place. Two stages build it -- build_openssl,
 # which curl links, and build_cpython -- and if they ever drift the image ends
