@@ -536,6 +536,7 @@ COPY --from=build_openblas /manylinux-buildfs /
 COPY --from=build_libomp /manylinux-buildfs /
 COPY --from=build_arrow /manylinux-buildfs /
 COPY --from=build_ffmpeg /manylinux-buildfs /
+COPY --from=build_curl /manylinux-buildfs /
 
 
 FROM runtime_base
@@ -576,13 +577,13 @@ COPY --from=merged_buildfs /usr/local/lib/cmake /usr/local/lib/cmake
 COPY --from=merged_buildfs /usr/local/include /usr/local/include
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include /opt/_internal/ffmpeg*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include /opt/_internal/ffmpeg*/include /opt/_internal/curl*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib /opt/_internal/ffmpeg*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib /opt/_internal/ffmpeg*/lib /opt/_internal/curl*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
