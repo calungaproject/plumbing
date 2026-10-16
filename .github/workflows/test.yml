@@ -42,3 +42,6 @@ jobs:
     - name: Run test suite (skip build, pull image)
       if: steps.filter.outputs.builder_changed == 'false'
       run: ./tests/test-build-wheels.sh --skip-build
+
+    - name: Run pulp upload debug shell test
+      run: ./utils/tests/pulp_upload_debug_test.sh

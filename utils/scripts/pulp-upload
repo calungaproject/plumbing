@@ -1,6 +1,77 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DEBUG_ENABLED="${PULP_UPLOAD_DEBUG:-false}"
+DEFAULT_DEBUG_MAX_BODY_CHARS=512
+DEBUG_MAX_BODY_CHARS_RAW="${PULP_UPLOAD_DEBUG_MAX_BODY_CHARS:-${DEFAULT_DEBUG_MAX_BODY_CHARS}}"
+if [[ "${DEBUG_MAX_BODY_CHARS_RAW}" =~ ^[0-9]+$ ]]; then
+    DEBUG_MAX_BODY_CHARS="${DEBUG_MAX_BODY_CHARS_RAW}"
+else
+    DEBUG_MAX_BODY_CHARS="${DEFAULT_DEBUG_MAX_BODY_CHARS}"
+fi
+
+debug_enabled() {
+    [[ "${DEBUG_ENABLED}" == "true" ]]
+}
+
+sanitize_url() {
+    local url="$1"
+    # redact credentials in URLs (e.g. https://user:pass@example)
+    sed -E 's#(https?://)[^/@:]+:[^/@]+@#\1***:***@#g' <<<"${url}"
+}
+
+redact_sensitive_body() {
+    local body="$1"
+    sed -E \
+      -e 's#("?(authorization|token|access_token|refresh_token|id_token|password|passwd|pwd|secret|api[_-]?key|credentials)"?[[:space:]]*[:=][[:space:]]*)"[^"]*"#\1"***"#Ig' \
+      -e "s#(authorization:[[:space:]]*)(basic|bearer)[[:space:]]+[^[:space:]]+#\1\2 ***#Ig" \
+      <<<"${body}"
+}
+
+truncate_body() {
+    local body="$1"
+    local redacted
+    redacted="$(redact_sensitive_body "${body}")"
+    if (( ${#redacted} > DEBUG_MAX_BODY_CHARS )); then
+        printf '%s…<truncated>' "${redacted:0:DEBUG_MAX_BODY_CHARS}"
+    else
+        printf '%s' "${redacted}"
+    fi
+}
+
+debug_log_http() {
+    local op="$1" method="$2" url="$3" status="$4" body="$5"
+    debug_enabled || return 0
+    printf 'DEBUG pulp-upload op=%s method=%s url=%s status=%s body=%q\n' \
+      "${op}" "${method}" "$(sanitize_url "${url}")" "${status}" "$(truncate_body "${body}")" >&2
+}
+
+curl_json_with_debug() {
+    local op="$1" method="$2" url="$3"
+    shift 3
+    local out_file status rc
+    out_file="$(mktemp)"
+    set +e
+    status="$(curl -sS --retry 3 --max-time 30 -w '%{http_code}' -o "${out_file}" "$@")"
+    rc=$?
+    set -e
+    local body
+    body="$(cat "${out_file}")"
+    rm -f "${out_file}"
+    local printable_status="${status}"
+    if [[ ${rc} -ne 0 ]]; then
+        printable_status="curl_exit_${rc}/http_${status}"
+    fi
+    debug_log_http "${op}" "${method}" "${url}" "${printable_status}" "${body}"
+    if [[ ${rc} -ne 0 ]]; then
+        return "${rc}"
+    fi
+    if [[ ! "${status}" =~ ^2 ]]; then
+        return 22
+    fi
+    printf '%s' "${body}"
+}
+
 cd "${FILES_DIR}"
 ls -la .
 
@@ -13,7 +84,7 @@ PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
 AUTH=(-u "${TWINE_USERNAME}:${TWINE_PASSWORD}")
 
 # get most recent repository version for PULP_REPOSITORY
-PULP_REPOSITORY_VERSION=$( curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" \
+PULP_REPOSITORY_VERSION=$( curl_json_with_debug "repository_list_lookup" "GET" "${PULP_QUERY_BASE}repositories/python/python/" "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" \
     | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
 
 if [[ -z "${PULP_REPOSITORY_VERSION}" ]]; then
@@ -36,8 +107,8 @@ for file in *.whl *.tar.gz; do
     fi
 
     echo "Checking if ${file} exists in Pulp..."
-    WHEEL_EXISTS=$(curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" -G \
-        "${PULP_QUERY_BASE}content/python/packages/" \
+    WHEEL_EXISTS=$(curl_json_with_debug "package_existence_lookup:${file}" "GET" "${PULP_QUERY_BASE}content/python/packages/" \
+        "${AUTH[@]}" -G "${PULP_QUERY_BASE}content/python/packages/" \
         --data-urlencode "filename=${file}" \
         --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" \
         | jq '.results | length != 0')
@@ -47,10 +118,13 @@ for file in *.whl *.tar.gz; do
         continue
     fi
 
-    if twine upload --non-interactive --verbose --disable-progress-bar --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
+    debug_log_http "twine_upload_attempt:${file}" "POST" "${REPOSITORY_URL}" "attempt" "twine upload starting"
+    if twine upload --non-interactive --verbose --disable-progress-bar --repository-url "${REPOSITORY_URL}" --attestations "${file}" "${file}.attestation"; then
+        debug_log_http "twine_upload_result:${file}" "POST" "${REPOSITORY_URL}" "success" "twine upload succeeded"
         echo "Uploaded $file with attestation."
         uploaded+=("$file")
     else
+        debug_log_http "twine_upload_result:${file}" "POST" "${REPOSITORY_URL}" "failed" "twine upload failed"
         echo "ERROR: Failed to upload $file"
         failed+=("$file")
     fi
