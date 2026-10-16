@@ -471,9 +471,9 @@ soupsieve==2.8.3 \
     --hash=sha256:3267f1eeea4251fb42728b6dfb746edc9acaffc4a45b27e19450b676586e8349 \
     --hash=sha256:ed64f2ba4eebeab06cc4962affce381647455978ffc1e36bb79a545b91f45a95
     # via beautifulsoup4
-starlette==0.52.1 \
-    --hash=sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74 \
-    --hash=sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933
+starlette==1.8.0 \
+    --hash=sha256:1565dc0b35d5737a271ed1e0e04e949f4e81198799f216d2667b0a0fb9cf9522 \
+    --hash=sha256:dfdd6b29c26483288088d990eee59631dedadd66ce20d203402a7ca8e3c4656f
     # via fromager
 stevedore==5.7.0 \
     --hash=sha256:31dd6fe6b3cbe921e21dcefabc9a5f1cf848cf538a1f27543721b8ca09948aa3 \
