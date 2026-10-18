@@ -159,9 +159,9 @@ pbr==6.1.1 \
     --hash=sha256:38d4daea5d9fa63b3f626131b9d34947fd0c8be9b05a29276870580050a25a76 \
     --hash=sha256:93ea72ce6989eb2eed99d0f75721474f69ad88128afdef5ac377eb797c4bf76b
     # via stevedore
-pluggy==1.6.0 \
-    --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
-    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec \
+    --hash=sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8
     # via hatchling
 poetry-core==2.1.3 \
     --hash=sha256:0522a015477ed622c89aad56a477a57813cace0c8e7ff2a2906b7ef4a2e296a4 \
