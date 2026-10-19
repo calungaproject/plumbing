@@ -479,9 +479,9 @@ stevedore==5.7.0 \
     --hash=sha256:31dd6fe6b3cbe921e21dcefabc9a5f1cf848cf538a1f27543721b8ca09948aa3 \
     --hash=sha256:fd25efbb32f1abb4c9e502f385f0018632baac11f9ee5d1b70f88cc5e22ad4ed
     # via fromager
-tomlkit==0.14.0 \
-    --hash=sha256:592064ed85b40fa213469f81ac584f67a4f2992509a7c3ea2d632208623a3680 \
-    --hash=sha256:cf00efca415dbd57575befb1f6634c4f42d2d87dbba376128adb42c121b87064
+tomlkit==0.15.2 \
+    --hash=sha256:05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437 \
+    --hash=sha256:83e32755ba1d20d9340bd069ee97e9f6232ba2346b63ffcba425de01f7e327a6
     # via fromager
 tqdm==4.67.3 \
     --hash=sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb \
