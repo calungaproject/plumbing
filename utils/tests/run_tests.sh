@@ -433,6 +433,34 @@ v02_statement() {
   }'
 }
 
+# Orchestrator / non-PAC builds: no PAC log-url or SLSA v1 invocationId;
+# namespace appears on Tekton Results annotations only.
+v02_statement_results_ns() {
+  local runtime="$1" ns="$2" hex="$3"
+  jq -nc --arg runtime "${runtime}" --arg ns "${ns}" --arg hex "${hex}" '{
+    "_type": "https://in-toto.io/Statement/v0.1",
+    "predicateType": "https://slsa.dev/provenance/v0.2",
+    "subject": [{"name": "quay.example/npm", "digest": {"sha256": $hex}}],
+    "predicate": {
+      "builder": {"id": "https://tekton.dev/chains/v2"},
+      "buildType": "tekton.dev/v1/PipelineRun",
+      "invocation": {
+        "configSource": {},
+        "parameters": {},
+        "environment": {
+          "labels": {"pipelines.openshift.io/runtime": $runtime},
+          "annotations": {
+            "results.tekton.dev/result": ($ns + "/results/mock-result-id"),
+            "results.tekton.dev/record": ($ns + "/results/mock-result-id/records/mock-record-id")
+          }
+        }
+      },
+      "buildConfig": {"tasks": []},
+      "metadata": {"buildStartedOn": "2026-08-13T15:53:47Z"}
+    }
+  }'
+}
+
 v1_statement() {
   local pname="$1" invoc="$2" hex="$3"
   jq -nc --arg pname "${pname}" --arg invoc "${invoc}" --arg hex "${hex}" '{
@@ -503,6 +531,41 @@ rm -rf "${files_prov}/chains-provenance"
 assert_ok "npm-fetch-chains-provenance accepts legacy SLSA v0.2 promote-npm" \
   run_fetch "${env_legacy}"
 
+env_results_ns="${tmpdir}/env-results-ns.json"
+envelope_from_statement "$(v02_statement_results_ns build-npm-compliance calunga-tenant "${HEX}")" \
+  > "${env_results_ns}"
+rm -rf "${files_prov}/chains-provenance"
+assert_ok "npm-fetch-chains-provenance accepts SLSA v0.2 Tekton Results namespace" \
+  run_fetch "${env_results_ns}"
+
+# result annotation empty / wrong must not mask a trusted record annotation
+env_record_only="${tmpdir}/env-record-only.json"
+envelope_from_statement "$(jq -nc --arg hex "${HEX}" '{
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [{"name": "quay.example/npm", "digest": {"sha256": $hex}}],
+  "predicate": {
+    "builder": {"id": "https://tekton.dev/chains/v2"},
+    "buildType": "tekton.dev/v1/PipelineRun",
+    "invocation": {
+      "configSource": {},
+      "parameters": {},
+      "environment": {
+        "labels": {"pipelines.openshift.io/runtime": "build-npm-compliance"},
+        "annotations": {
+          "results.tekton.dev/result": "",
+          "results.tekton.dev/record": "calunga-tenant/results/mock/records/mock"
+        }
+      }
+    },
+    "buildConfig": {"tasks": []},
+    "metadata": {"buildStartedOn": "2026-08-13T15:53:47Z"}
+  }
+}')" > "${env_record_only}"
+rm -rf "${files_prov}/chains-provenance"
+assert_ok "npm-fetch-chains-provenance accepts trusted record when result is empty" \
+  run_fetch "${env_record_only}"
+
 env_bad_rt="${tmpdir}/env-bad-rt.json"
 envelope_from_statement "$(v02_statement docker-build calunga-tenant "${HEX}")" > "${env_bad_rt}"
 rm -rf "${files_prov}/chains-provenance"
@@ -514,6 +577,13 @@ envelope_from_statement "$(v02_statement build-npm-compliance other-tenant "${HE
 rm -rf "${files_prov}/chains-provenance"
 assert_fail "npm-fetch-chains-provenance rejects other tenant namespace" \
   run_fetch "${env_bad_ns}"
+
+env_bad_results_ns="${tmpdir}/env-bad-results-ns.json"
+envelope_from_statement "$(v02_statement_results_ns build-npm-compliance other-tenant "${HEX}")" \
+  > "${env_bad_results_ns}"
+rm -rf "${files_prov}/chains-provenance"
+assert_fail "npm-fetch-chains-provenance rejects other tenant via Results annotations" \
+  run_fetch "${env_bad_results_ns}"
 
 env_bad_hex="${tmpdir}/env-bad-hex.json"
 envelope_from_statement "$(v02_statement build-npm-compliance calunga-tenant \

@@ -11,6 +11,12 @@
 #     builder https://tekton.dev/chains/v2, buildType tekton.dev/v1/PipelineRun)
 #   - SLSA v1 (buildDefinition / runDetails) if the cluster migrates
 #
+# Trusted namespace is matched against (any one):
+#   - SLSA v1 runDetails.metadata.invocationId "<ns>/..."
+#   - PAC log-url containing "/ns/<ns>/"
+#   - Tekton Results annotations results.tekton.dev/{result,record}
+#     starting with "<ns>/" (orchestrator / non-PAC builds)
+#
 set -euo pipefail
 
 FILES_DIR="${FILES_DIR:?FILES_DIR required}"
@@ -107,6 +113,14 @@ while read -r IMAGE; do
       or (
         (.predicate.invocation.environment.annotations["pipelinesascode.tekton.dev/log-url"] // "") as $url
         | any($trustedNs[]; . as $n | ($url | contains("/ns/" + $n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["results.tekton.dev/result"] // "") as $result
+        | any($trustedNs[]; . as $n | ($result | startswith($n + "/")))
+      )
+      or (
+        (.predicate.invocation.environment.annotations["results.tekton.dev/record"] // "") as $record
+        | any($trustedNs[]; . as $n | ($record | startswith($n + "/")))
       );
     def subject_ok:
       any(.subject[]?; (.digest.sha256 // "") == $want);
@@ -119,7 +133,7 @@ while read -r IMAGE; do
     echo "  accepted builders: https://tekton.dev/chains/v2, https://konflux-ci.dev/chains/v2" >&2
     echo "  accepted buildType: tekton.dev/v1/PipelineRun (SLSA v0.2) or https://tekton.dev/chains/v2/slsa (v1)" >&2
     echo "  expected npm pipeline: pipelineRef.name or pipelines.openshift.io/runtime in {build-npm-compliance,build-npm} (legacy promote-npm also accepted)" >&2
-    echo "  expected namespace in invocationId or PAC log-url: ${TRUSTED_NS_JSON}" >&2
+    echo "  expected namespace in invocationId, PAC log-url, or Tekton Results annotations: ${TRUSTED_NS_JSON}" >&2
     cat "${COSIGN_STDERR}" >&2
     cat "${COSIGN_STDOUT}" >&2
     exit 1
