@@ -21,20 +21,6 @@ check_var "${CURL_DOWNLOAD_URL}"
 # carries it. Passing the prefix explicitly is what keeps the two in step.
 check_var "${CURL_OPENSSL_PREFIX}"
 
-# Check if curl-devel is available from packages
-# On UBI images, curl-devel is not available, so we need to build from source
-if dnf list available curl-devel &>/dev/null; then
-	echo "skipping installation of ${CURL_ROOT} - using system curl-devel"
-	# Ensure the buildfs dir always exists so `COPY --from=build_curl
-	# /manylinux-buildfs /` succeeds even when we skip the source build
-	# (system curl-devel already provides headers/pkgconfig to consumers).
-	mkdir -p /manylinux-buildfs
-	exit 0
-fi
-
-# Remove system curl-devel if present (we're building from source)
-dnf erase -y curl-devel 2>/dev/null || true
-
 SO_COMPAT=4
 PREFIX=/opt/_internal/curl-${SO_COMPAT}
 
