@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """Look up TL npm registry presence and compliance level for a name + spec.
 
-Public registry only (no credentials). Used by assess-npm-compliance.
+Used by assess-npm-compliance. Public registries need no credentials. For gated
+registries (e.g. lightwell-stage), set basic-auth via environment:
+
+  SERVICE_ACCOUNT_USERNAME / SERVICE_ACCOUNT_PASSWORD
+  or username / password
+
+Credentials are only sent when the registry URL is https and matches an
+allowlisted host/path (default: packages.redhat.com under lightwell pulp-content
+or /lightwell/). This avoids leaking the read token to a wrong TL_NPM_REGISTRY_URL.
 
 The spec may be an exact version or an npm range (^1.5.0, ~1.2.3, >=1.0.0 <2).
 Ranges are resolved against the TL packument (highest matching version).
@@ -17,6 +25,7 @@ Usage:
 """
 from __future__ import print_function
 
+import base64
 import json
 import os
 import re
@@ -347,13 +356,88 @@ def _retryable_registry_error(exc):
     return "timed out" in msg or "timeout" in msg
 
 
+# Only attach basic-auth when the request URL matches these hosts/path prefixes.
+# Prevents leaking read credentials to a misconfigured or attacker-controlled
+# TL_NPM_REGISTRY_URL. Override via TL_REGISTRY_AUTH_HOSTS (comma-separated)
+# and/or TL_REGISTRY_AUTH_PATH_PREFIXES (comma-separated) if needed.
+_DEFAULT_AUTH_HOSTS = frozenset({"packages.redhat.com"})
+_DEFAULT_AUTH_PATH_PREFIXES = (
+    "/api/pulp-content/lightwell-stage/",
+    "/api/pulp-content/lightwell/",
+    "/lightwell/",
+)
+
+
+def _auth_hosts():
+    raw = os.environ.get("TL_REGISTRY_AUTH_HOSTS", "").strip()
+    if not raw:
+        return _DEFAULT_AUTH_HOSTS
+    return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _auth_path_prefixes():
+    raw = os.environ.get("TL_REGISTRY_AUTH_PATH_PREFIXES", "").strip()
+    if not raw:
+        return _DEFAULT_AUTH_PATH_PREFIXES
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _url_allows_registry_auth(url):
+    """Return True if basic-auth may be sent to this registry URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if host not in _auth_hosts():
+        return False
+    path = parsed.path or "/"
+    prefixes = _auth_path_prefixes()
+    if not prefixes:
+        return True
+    return any(path.startswith(prefix) for prefix in prefixes)
+
+
+def _registry_auth_header(url):
+    """Return Authorization when creds are set and the URL is allowlisted."""
+    user = (
+        os.environ.get("SERVICE_ACCOUNT_USERNAME")
+        or os.environ.get("username")
+        or ""
+    ).strip()
+    password = (
+        os.environ.get("SERVICE_ACCOUNT_PASSWORD")
+        or os.environ.get("password")
+        or ""
+    ).strip()
+    if not user or not password:
+        return None
+    if not _url_allows_registry_auth(url):
+        print(
+            "[lookup-npm-tl-compliance] credentials present but registry URL is "
+            "not allowlisted for auth; requesting without Authorization: %s" % url,
+            file=sys.stderr,
+        )
+        return None
+    token = base64.b64encode(("%s:%s" % (user, password)).encode("utf-8")).decode(
+        "ascii"
+    )
+    return "Basic %s" % token
+
+
 def get_json(url):
     timeout = _registry_timeout()
     retries = _registry_retries()
     last_exc = None
+    headers = {"Accept": "application/json"}
+    auth = _registry_auth_header(url)
+    if auth:
+        headers["Authorization"] = auth
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
