@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assess dependency-closure compliance against the public TL npm registry.
+# Assess dependency-closure compliance against a TL npm registry.
 # Writes *.tl-compliance.json sidecars next to each .tgz (outside the tarball).
 #
 # Direct production dependencies come from the packed package.json (what
@@ -15,13 +15,16 @@
 # are not part of the check. Other optionals and peerDependencies are ignored.
 #
 # Dep compliance is read from (in order): this OCI's sidecars / in-run levels,
-# then lookup-npm-tl-compliance (public packument + adjacent compliance JSON).
+# then lookup-npm-tl-compliance (packument + adjacent compliance JSON).
 #
 # Usage:
 #   assess-npm-compliance [artifact-dir] [source-root] [package-dir ...]
 # Env:
 #   ARTIFACT_ROOT, SOURCE_ROOT
 #   TL_NPM_REGISTRY_URL  (default: packages.redhat.com .../javascript)
+#   SERVICE_ACCOUNT_USERNAME / SERVICE_ACCOUNT_PASSWORD
+#     Optional basic auth for gated registries (lightwell-stage). Aliases:
+#     username / password. Passed through to lookup-npm-tl-compliance.
 #   TL_SKIP_COMPLIANCE_SIDECAR  When set, do not fetch adjacent *.tl-compliance.json
 #                               from the TL registry (PoC: sidecars live in OCI only).
 #

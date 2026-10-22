@@ -192,6 +192,92 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(payload["compliance_level"], "L3")
 
 
+class AuthHeaderTests(unittest.TestCase):
+    ALLOWED = (
+        "https://packages.redhat.com/api/pulp-content/lightwell-stage/"
+        "javascript/validated/bluebird"
+    )
+
+    def _clear_auth_env(self):
+        for key in (
+            "SERVICE_ACCOUNT_USERNAME",
+            "SERVICE_ACCOUNT_PASSWORD",
+            "username",
+            "password",
+            "TL_REGISTRY_AUTH_HOSTS",
+            "TL_REGISTRY_AUTH_PATH_PREFIXES",
+        ):
+            os.environ.pop(key, None)
+
+    def test_no_auth_without_env(self):
+        self._clear_auth_env()
+        self.assertIsNone(lookup._registry_auth_header(self.ALLOWED))
+
+    def test_service_account_env_allowlisted(self):
+        self._clear_auth_env()
+        os.environ["SERVICE_ACCOUNT_USERNAME"] = "reader"
+        os.environ["SERVICE_ACCOUNT_PASSWORD"] = "secret"
+        try:
+            header = lookup._registry_auth_header(self.ALLOWED)
+        finally:
+            self._clear_auth_env()
+        self.assertEqual(header, "Basic cmVhZGVyOnNlY3JldA==")
+
+    def test_username_password_aliases(self):
+        self._clear_auth_env()
+        os.environ["username"] = "u"
+        os.environ["password"] = "p"
+        try:
+            header = lookup._registry_auth_header(self.ALLOWED)
+        finally:
+            self._clear_auth_env()
+        self.assertEqual(header, "Basic dTpw")
+
+    def test_no_auth_for_non_allowlisted_host(self):
+        self._clear_auth_env()
+        os.environ["SERVICE_ACCOUNT_USERNAME"] = "reader"
+        os.environ["SERVICE_ACCOUNT_PASSWORD"] = "secret"
+        try:
+            header = lookup._registry_auth_header(
+                "https://evil.example/javascript/validated/bluebird"
+            )
+        finally:
+            self._clear_auth_env()
+        self.assertIsNone(header)
+
+    def test_no_auth_for_http(self):
+        self._clear_auth_env()
+        os.environ["SERVICE_ACCOUNT_USERNAME"] = "reader"
+        os.environ["SERVICE_ACCOUNT_PASSWORD"] = "secret"
+        try:
+            header = lookup._registry_auth_header(
+                "http://packages.redhat.com/api/pulp-content/lightwell-stage/javascript/validated/"
+            )
+        finally:
+            self._clear_auth_env()
+        self.assertIsNone(header)
+
+    def test_no_auth_for_public_tl_path(self):
+        """Public TL path is same host but outside lightwell prefixes — no auth."""
+        self._clear_auth_env()
+        os.environ["SERVICE_ACCOUNT_USERNAME"] = "reader"
+        os.environ["SERVICE_ACCOUNT_PASSWORD"] = "secret"
+        try:
+            header = lookup._registry_auth_header(
+                "https://packages.redhat.com/api/pulp-content/"
+                "public-trusted-libraries/javascript/bluebird"
+            )
+        finally:
+            self._clear_auth_env()
+        self.assertIsNone(header)
+
+    def test_url_allows_registry_auth(self):
+        self.assertTrue(lookup._url_allows_registry_auth(self.ALLOWED))
+        self.assertFalse(
+            lookup._url_allows_registry_auth("https://evil.example/pulp-content/x")
+        )
+
+
 class SkipSidecarTests(unittest.TestCase):
     def test_skip_sidecar_returns_l3_without_fetch(self):
         old = os.environ.get("TL_SKIP_COMPLIANCE_SIDECAR")

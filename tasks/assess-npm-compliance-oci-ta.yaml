@@ -14,10 +14,12 @@ metadata:
 spec:
   description: >-
     Finalize a freshly built npm OCI artifact for release: oras pull the build
-    output → verify embedded SPDX SBOM → assess compliance against the public
-    TL npm registry (*.tl-compliance.json sidecars) → oras push the durable
-    snapshot tag. Used on-push after build-npm-package-oci-ta (no on-pr promote).
+    output → verify embedded SPDX SBOM → assess compliance against a TL npm
+    registry (*.tl-compliance.json sidecars) → oras push the durable snapshot
+    tag. Used on-push after build-npm-package-oci-ta (no on-pr promote).
     Requires PACKAGES_STATUS=has-packages and at least one .tgz in the source OCI.
+    Pass PULP_READ_SECRET_NAME to mount basic-auth for gated registries
+    (Lightwell); leave the default does-not-exist for Calunga/public TL.
   params:
     - name: SOURCE_IMAGE
       description: >-
@@ -49,9 +51,20 @@ spec:
       type: string
       default: has-packages
     - name: TL_NPM_REGISTRY_URL
-      description: Public TL npm registry base URL (read-only; no credentials)
+      description: >-
+        TL npm registry base URL for dependency-closure lookups. Public TL needs
+        no credentials; gated registries need PULP_READ_SECRET_NAME.
       type: string
       default: https://packages.redhat.com/api/pulp-content/public-trusted-libraries/javascript
+    - name: PULP_READ_SECRET_NAME
+      description: >-
+        Secret name for Pulp read basic-auth
+        (SERVICE_ACCOUNT_USERNAME/SERVICE_ACCOUNT_PASSWORD or username/password).
+        Mounted at /mnt/pulp-secret when that Secret exists. Default
+        does-not-exist keeps Calunga/public-TL runs unauthenticated; Lightwell
+        pipelines must pass lightwell-pulp-read-secret (or equivalent).
+      type: string
+      default: does-not-exist
     - name: IMAGE_EXPIRES_AFTER
       description: >-
         Delete image tag after specified time. Empty means keep the tag.
@@ -84,6 +97,10 @@ spec:
           - key: $(params.caTrustConfigMapKey)
             path: ca-bundle.crt
         name: $(params.caTrustConfigMapName)
+        optional: true
+    - name: pulp-secret
+      secret:
+        secretName: $(params.PULP_READ_SECRET_NAME)
         optional: true
     - name: workdir
       emptyDir: {}
@@ -188,11 +205,27 @@ spec:
       env:
         - name: TL_NPM_REGISTRY_URL
           value: $(params.TL_NPM_REGISTRY_URL)
+      volumeMounts:
+        - mountPath: /mnt/pulp-secret
+          name: pulp-secret
+          readOnly: true
       # PACKAGES via args → "$@" (avoids bash word-splitting of Tekton array expansion).
-      # Network required: public Pulp npm metadata (no credentials).
+      # Network required: TL registry metadata (optional basic auth from pulp-secret).
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+        if [[ -d /mnt/pulp-secret ]]; then
+          if [[ -f /mnt/pulp-secret/SERVICE_ACCOUNT_USERNAME ]]; then
+            export SERVICE_ACCOUNT_USERNAME="$(cat /mnt/pulp-secret/SERVICE_ACCOUNT_USERNAME)"
+          elif [[ -f /mnt/pulp-secret/username ]]; then
+            export SERVICE_ACCOUNT_USERNAME="$(cat /mnt/pulp-secret/username)"
+          fi
+          if [[ -f /mnt/pulp-secret/SERVICE_ACCOUNT_PASSWORD ]]; then
+            export SERVICE_ACCOUNT_PASSWORD="$(cat /mnt/pulp-secret/SERVICE_ACCOUNT_PASSWORD)"
+          elif [[ -f /mnt/pulp-secret/password ]]; then
+            export SERVICE_ACCOUNT_PASSWORD="$(cat /mnt/pulp-secret/password)"
+          fi
+        fi
         assess-npm-compliance \
           "$(params.WORKDIR_ROOT)/artifact" \
           "$(params.WORKDIR_ROOT)/source" \
