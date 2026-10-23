@@ -4,22 +4,27 @@ set -euo pipefail
 cd "${FILES_DIR}"
 ls -la .
 
-# used for twine upload
 PULP_DISTRIBUTION_BASE_PATH="${PULP_DISTRIBUTION_BASE_PATH:-${PULP_REPOSITORY}}"
 REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_DISTRIBUTION_BASE_PATH}/simple/"
 
-# base query for curling pulp api for a public- domain
+# Base API URL for direct Pulp API queries.
 PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
-AUTH=(-u "${TWINE_USERNAME}:${TWINE_PASSWORD}")
+AUTH=(-u "${PULP_USERNAME}:${PULP_PASSWORD}")
 
 # get most recent repository version for PULP_REPOSITORY
-PULP_REPOSITORY_VERSION=$( curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" \
-    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
+PULP_REPOSITORIES=$( curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" )
+PULP_REPOSITORY_VERSION=$( printf '%s' "${PULP_REPOSITORIES}" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href // empty" )
+PULP_REPOSITORY_HREF=$( printf '%s' "${PULP_REPOSITORIES}" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .pulp_href // empty" )
 
-if [[ -z "${PULP_REPOSITORY_VERSION}" ]]; then
+if [[ -z "${PULP_REPOSITORY_VERSION}" || -z "${PULP_REPOSITORY_HREF}" ]]; then
     echo "ERROR: Could not find repository '${PULP_REPOSITORY}' in Pulp (query: ${PULP_QUERY_BASE}repositories/python/python/)"
     exit 1
 fi
+
+# Pulp CLI's api-root is the path before the optional domain and api/v3.
+PULP_CLI_API_ROOT="${PULP_API_ROOT%/}/pulp/"
 
 shopt -s nullglob
 
@@ -47,7 +52,17 @@ for file in *.whl *.tar.gz; do
         continue
     fi
 
-    if twine upload --non-interactive --verbose --disable-progress-bar --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
+    if pulp \
+        --base-url "${PULP_BASE_URL}" \
+        --api-root "${PULP_CLI_API_ROOT}" \
+        --domain "${PULP_DOMAIN}" \
+        --username "${PULP_USERNAME}" \
+        --password "${PULP_PASSWORD}" \
+        python content create \
+        --relative-path "${file}" \
+        --file "${file}" \
+        --repository "${PULP_REPOSITORY_HREF}" \
+        --attestation "@${file}.attestation"; then
         echo "Uploaded $file with attestation."
         uploaded+=("$file")
     else

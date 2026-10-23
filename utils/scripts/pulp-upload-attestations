@@ -10,14 +10,14 @@
 #
 # Expected env vars (same as pulp-upload):
 #   FILES_DIR, PULP_BASE_URL, PULP_API_ROOT, PULP_DOMAIN,
-#   PULP_REPOSITORY, TWINE_USERNAME, TWINE_PASSWORD
+#   PULP_REPOSITORY, PULP_USERNAME, PULP_PASSWORD
 set -euo pipefail
 
 cd "${FILES_DIR}"
 ls -la .
 
 PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
-AUTH=(-u "${TWINE_USERNAME}:${TWINE_PASSWORD}")
+AUTH=(-u "${PULP_USERNAME}:${PULP_PASSWORD}")
 
 REPO_JSON=$( curl --fail --silent --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" )
 PULP_REPOSITORY_VERSION=$( echo "$REPO_JSON" \

@@ -62,7 +62,7 @@ COPY --from=oras /usr/local/bin/retry /usr/local/bin/retry
 # present in /usr/local/bin).
 COPY --chmod=755 scripts/* /usr/local/bin/
 
-RUN ln -s /venv/bin/twine /usr/local/bin/twine
+RUN ln -s /venv/bin/pulp /usr/local/bin/pulp
 
 # Force the stdout and stderr streams to be unbuffered.
 # https://docs.python.org/3/using/cmdline.html#envvar-PYTHONUNBUFFERED

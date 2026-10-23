@@ -136,9 +136,9 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        TWINE_USERNAME=$(< /etc/service-account-secret/username)
-        TWINE_PASSWORD=$(< /etc/service-account-secret/password)
-        export TWINE_USERNAME TWINE_PASSWORD
+        PULP_USERNAME=$(< /etc/service-account-secret/username)
+        PULP_PASSWORD=$(< /etc/service-account-secret/password)
+        export PULP_USERNAME PULP_PASSWORD
 
         cd "${FILES_DIR}"
         ls -la .
@@ -213,7 +213,7 @@ spec:
             }' "${file}.attestation" > "$PROVENANCE_FILE"
 
             if curl --fail --retry 3 --max-time 60 \
-                -u "${TWINE_USERNAME}:${TWINE_PASSWORD}" \
+                -u "${PULP_USERNAME}:${PULP_PASSWORD}" \
                 -X POST \
                 -F "file=@${PROVENANCE_FILE}" \
                 -F "package=${PACKAGE_HREF}" \
