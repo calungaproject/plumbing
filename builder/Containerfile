@@ -309,6 +309,15 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-bzip2.sh
 
 
+FROM build_base AS build_xz
+COPY build_scripts/build-xz.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export XZ_VERSION=5.8.1 && \
+    export XZ_HASH=507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543 && \
+    export XZ_DOWNLOAD_URL=https://github.com/tukaani-project/xz/releases/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-xz.sh
+
+
 FROM build_base AS build_libpng
 COPY --from=build_zlib /manylinux-buildfs /
 COPY build_scripts/build-libpng.sh /opt/_internal/build_scripts/
@@ -514,9 +523,135 @@ RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
     /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-cpython.sh thomas@python.org https://accounts.google.com 3.12.12
 
 
+# popt, required by rpm. Not in UBI8 repos, so build from source.
+FROM build_base AS build_popt
+COPY build_scripts/build-popt.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export POPT_VERSION=1.19 && \
+    export POPT_HASH=c25a4838fc8e4c1c8aacb8bd620edb3084a3d63bf8987fdad3ca2758c63240f9 && \
+    export POPT_DOWNLOAD_URL=http://ftp.rpm.org/popt/releases/popt-1.x && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-popt.sh
+
+
+# lua, required by rpm. Not in UBI8 repos, so build from source. The upstream
+# tarball has no liblua.so target and ships no pkg-config file, so build-lua.sh
+# links the shared library and writes lua.pc by hand.
+FROM build_base AS build_lua
+COPY build_scripts/build-lua.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LUA_VERSION=5.4.7 && \
+    export LUA_HASH=9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30 && \
+    export LUA_DOWNLOAD_URL=https://www.lua.org/ftp && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-lua.sh
+
+
+# file (libmagic), required at rpm configure time: rpm's CMakeLists does an
+# unconditional find_library/find_path for it, and rpmbuild links it. The
+# libraries createrepo_c links (librpm/librpmio) do not, so this tree is only
+# ever copied into build_rpm: it never reaches the final image or wheels.
+FROM build_base AS build_file
+COPY build_scripts/build-file.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export FILE_VERSION=5.46 && \
+    export FILE_HASH=c9cc77c7c560c543135edc555af609d5619dbef011997e988ce40a3d75d86088 && \
+    export FILE_DOWNLOAD_URL=https://distfiles.macports.org/file && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-file.sh
+
+
+# libarchive, required at rpm configure time: rpm's CMakeLists does an
+# unconditional pkg_check_modules for it, and rpm's tools (rpm2archive,
+# rpmuncompress) link it. The libraries createrepo_c links do not, so this
+# tree is only ever copied into build_rpm: it never reaches the final image
+# or wheels.
+FROM build_base AS build_libarchive
+COPY build_scripts/build-libarchive.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export LIBARCHIVE_VERSION=3.8.10 && \
+    export LIBARCHIVE_HASH=a1bffbe5152cfe869751179e7b16648c87c461cb8c46eee75062efbe164cc57c && \
+    export LIBARCHIVE_DOWNLOAD_URL=https://github.com/libarchive/libarchive/releases/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-libarchive.sh
+
+
+# librpm + librpmio, what createrepo_c links. rpm-devel is not in UBI8 repos,
+# so build from source. Links the popt and lua built above; file and
+# libarchive are only needed at configure time; gettext is needed for the po/
+# subdirectory (release tarballs always ship po/rpm.pot, so po/ is configured
+# even with -DENABLE_NLS=OFF).
+FROM build_base AS build_rpm
+ARG OPENSSL_SHARED_PREFIX
+COPY --from=build_openssl ${OPENSSL_SHARED_PREFIX} ${OPENSSL_SHARED_PREFIX}
+RUN echo "${OPENSSL_SHARED_PREFIX}/lib" > /etc/ld.so.conf.d/00-openssl.conf && ldconfig
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_xz /manylinux-buildfs /
+COPY --from=build_sqlite3 /manylinux-buildfs /
+COPY --from=build_zstd /manylinux-buildfs /
+COPY --from=build_popt /manylinux-buildfs /
+COPY --from=build_lua /manylinux-buildfs /
+COPY --from=build_file /manylinux-buildfs /
+COPY --from=build_libarchive /manylinux-buildfs /
+RUN dnf -y install --setopt install_weak_deps=0 gettext \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+# Register only the library dirs this build needs in the loader path, never
+# everything under /opt/_internal: this image deliberately keeps its
+# source-built libcurl off the default search path (see the build_curl and
+# build_arrow comments).
+RUN printf '%s\n' /opt/_internal/popt-*/lib /opt/_internal/lua-*/lib \
+        /opt/_internal/zlib-*/lib /opt/_internal/bzip2-*/lib /opt/_internal/xz-*/lib \
+        /opt/_internal/sqlite3*/lib /opt/_internal/zstd-*/lib \
+        > /etc/ld.so.conf.d/00-rpm-stack.conf && \
+    ldconfig
+COPY build_scripts/build-rpm.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export RPM_VERSION=4.20.1 && \
+    export RPM_HASH=52647e12638364533ab671cbc8e485c96f9f08889d93fe0ed104a6632661124f && \
+    export RPM_DOWNLOAD_URL=http://ftp.rpm.org/releases/rpm-4.20.x && \
+    export OPENSSL_ROOT_DIR=${OPENSSL_SHARED_PREFIX} && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-rpm.sh
+
+
+# libmodulemd, a hard requirement of createrepo_c (its WITH_LIBMODULEMD option
+# is ON by default, matching upstream PyPI wheels). Links the image's glib
+# (manylinux-whitelisted, stays external), libyaml, and the librpmio built
+# above. meson + ninja (and the python36 they pull in) are installed only in
+# this stage and never reach the final image.
+FROM build_base AS build_modulemd
+ARG OPENSSL_SHARED_PREFIX
+COPY --from=build_openssl ${OPENSSL_SHARED_PREFIX} ${OPENSSL_SHARED_PREFIX}
+RUN echo "${OPENSSL_SHARED_PREFIX}/lib" > /etc/ld.so.conf.d/00-openssl.conf && ldconfig
+COPY --from=build_zlib /manylinux-buildfs /
+COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_xz /manylinux-buildfs /
+COPY --from=build_sqlite3 /manylinux-buildfs /
+COPY --from=build_zstd /manylinux-buildfs /
+COPY --from=build_popt /manylinux-buildfs /
+COPY --from=build_lua /manylinux-buildfs /
+COPY --from=build_rpm /manylinux-buildfs /
+COPY --from=build_libyaml /manylinux-buildfs /
+RUN dnf -y install --setopt install_weak_deps=0 meson ninja-build \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+# Register only the library dirs this build needs in the loader path (see the
+# note in the build_rpm stage).
+RUN printf '%s\n' /opt/_internal/popt-*/lib /opt/_internal/lua-*/lib \
+        /opt/_internal/rpm-*/lib \
+        /opt/_internal/zlib-*/lib /opt/_internal/bzip2-*/lib /opt/_internal/xz-*/lib \
+        /opt/_internal/sqlite3*/lib /opt/_internal/zstd-*/lib \
+        > /etc/ld.so.conf.d/00-rpm-stack.conf && \
+    ldconfig
+COPY build_scripts/build-modulemd.sh /opt/_internal/build_scripts/
+RUN --mount=type=bind,from=static_clang,target=/tmp/cross-compiler,ro \
+    export MODULEMD_VERSION=2.15.3 && \
+    export MODULEMD_HASH=931b44eabdd5f7d170803f3476397c8e9dea07209589e1194ff8379429991ccb && \
+    export MODULEMD_DOWNLOAD_URL=https://github.com/fedora-modularity/libmodulemd/releases/download && \
+    /tmp/cross-compiler/entrypoint /opt/_internal/build_scripts/build-modulemd.sh
+
+
 FROM scratch AS merged_buildfs
 COPY --from=build_zlib /manylinux-buildfs /
 COPY --from=build_bzip2 /manylinux-buildfs /
+COPY --from=build_xz /manylinux-buildfs /
 COPY --from=build_libpng /manylinux-buildfs /
 COPY --from=build_libtiff /manylinux-buildfs /
 COPY --from=build_brotli /manylinux-buildfs /
@@ -536,6 +671,15 @@ COPY --from=build_openblas /manylinux-buildfs /
 COPY --from=build_libomp /manylinux-buildfs /
 COPY --from=build_arrow /manylinux-buildfs /
 COPY --from=build_ffmpeg /manylinux-buildfs /
+COPY --from=build_curl /manylinux-buildfs /
+# zstd dev files: packages like createrepo_c need pkg-config(libzstd) at wheel
+# build time; until now only the runtime library shipped.
+COPY --from=build_zstd /manylinux-buildfs /
+# dev files for the createrepo_c build dependencies
+COPY --from=build_popt /manylinux-buildfs /
+COPY --from=build_lua /manylinux-buildfs /
+COPY --from=build_rpm /manylinux-buildfs /
+COPY --from=build_modulemd /manylinux-buildfs /
 
 
 FROM runtime_base
@@ -547,6 +691,7 @@ COPY --from=build_git /manylinux-rootfs /
 COPY --from=build_rust /manylinux-rootfs /
 COPY --from=build_zlib /manylinux-rootfs /
 COPY --from=build_bzip2 /manylinux-rootfs /
+COPY --from=build_xz /manylinux-rootfs /
 COPY --from=build_libpng /manylinux-rootfs /
 COPY --from=build_libtiff /manylinux-rootfs /
 COPY --from=build_brotli /manylinux-rootfs /
@@ -566,6 +711,10 @@ COPY --from=build_openblas /manylinux-rootfs /
 COPY --from=build_libomp /manylinux-rootfs /
 COPY --from=build_arrow /manylinux-rootfs /
 COPY --from=build_ffmpeg /manylinux-rootfs /
+COPY --from=build_popt /manylinux-rootfs /
+COPY --from=build_lua /manylinux-rootfs /
+COPY --from=build_rpm /manylinux-rootfs /
+COPY --from=build_modulemd /manylinux-rootfs /
 RUN find /opt/_internal -name '*.so' -printf '%h\n' | sort -u >> /etc/ld.so.conf.d/00-manylinux.conf && \
     ldconfig
 
@@ -576,25 +725,38 @@ COPY --from=merged_buildfs /usr/local/lib/cmake /usr/local/lib/cmake
 COPY --from=merged_buildfs /usr/local/include /usr/local/include
 # Create symlinks in standard paths so build systems that don't use pkg-config
 # (e.g. PyYAML's setup.py) can find our source-built headers and libraries
-RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include /opt/_internal/ffmpeg*/include; do \
+RUN for dir in /opt/_internal/lib*/include /opt/_internal/openblas*/include /opt/_internal/zlib*/include /opt/_internal/bzip2*/include /opt/_internal/xz*/include /opt/_internal/libomp*/include /opt/_internal/freetype*/include /opt/_internal/lcms2*/include /opt/_internal/openjpeg*/include /opt/_internal/aom*/include /opt/_internal/brotli*/include /opt/_internal/harfbuzz*/include /opt/_internal/ffmpeg*/include /opt/_internal/curl*/include /opt/_internal/zstd*/include /opt/_internal/popt*/include /opt/_internal/lua*/include /opt/_internal/rpm*/include /opt/_internal/modulemd*/include; do \
         [ -d "$dir" ] || continue; \
         for item in "$dir"/*; do \
             ln -sf "$item" /usr/local/include/; \
         done; \
     done && \
-    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib /opt/_internal/ffmpeg*/lib; do \
+    for dir in /opt/_internal/lib*/lib /opt/_internal/openblas*/lib /opt/_internal/zlib*/lib /opt/_internal/bzip2*/lib /opt/_internal/xz*/lib /opt/_internal/libomp*/lib /opt/_internal/freetype*/lib /opt/_internal/lcms2*/lib /opt/_internal/openjpeg*/lib /opt/_internal/aom*/lib /opt/_internal/brotli*/lib /opt/_internal/harfbuzz*/lib /opt/_internal/ffmpeg*/lib /opt/_internal/curl*/lib /opt/_internal/zstd*/lib /opt/_internal/popt*/lib /opt/_internal/lua*/lib /opt/_internal/rpm*/lib /opt/_internal/modulemd*/lib; do \
         [ -d "$dir" ] || continue; \
         for lib in "$dir"/lib*.so; do \
             [ -f "$lib" ] && ln -sf "$lib" /usr/local/lib/; \
         done; \
     done
 COPY build_scripts /opt/_internal/build_scripts/
+# finalize.sh runs dnf, and dnf must survive the loader-path change above:
+# 00-manylinux.conf resolves libmodulemd.so.2 to the source-built one, whose
+# librpmio needs libcrypto.so.3 -- a soname UBI8 does not ship. The shared
+# OpenSSL lands in /opt/_internal only in this RUN, and the find that wrote
+# 00-manylinux.conf ran before it, while the /usr/local/lib symlinks come
+# later: without registering the prefix here, dnf dies on
+# "ImportError: libcrypto.so.3" while importing libdnf. Register only
+# OpenSSL, never a bulk append of /opt/_internal: libssl.so.3/libcrypto.so.3
+# shadow nothing UBI8 ships, whereas the source-built libcurl must stay off
+# the default search path (see the build_arrow comment).
+ARG OPENSSL_SHARED_PREFIX
 RUN    --mount=type=bind,target=/build_cpython312,from=build_cpython312 \
     --mount=type=bind,target=/build_cpython_base,from=build_cpython \
     mkdir -p /opt/_internal && \
     cp -rf /build_cpython*/opt/_internal/cpython* /opt/_internal/ && \
     if test -n "$(find /build_cpython_base/opt/_internal -maxdepth 1 -name 'openssl*' -print -quit)"; then cp -rf /build_cpython_base/opt/_internal/openssl* /opt/_internal/; fi && \
     if test -n "$(find /build_cpython_base/opt/_internal -maxdepth 1 -name 'static-openssl*' -print -quit)"; then cp -rf /build_cpython_base/opt/_internal/static-openssl* /opt/_internal/; fi && \
+    echo "${OPENSSL_SHARED_PREFIX}/lib" > /etc/ld.so.conf.d/00-openssl.conf && \
+    ldconfig && \
     manylinux-entrypoint /opt/_internal/build_scripts/finalize.sh \
       pp311-pypy311_pp73
 # build-openssl-static.sh asserts the legacy provider is in libcrypto.a, but it
