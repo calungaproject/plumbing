@@ -4,22 +4,108 @@ set -euo pipefail
 cd "${FILES_DIR}"
 ls -la .
 
-# used for twine upload
-PULP_DISTRIBUTION_BASE_PATH="${PULP_DISTRIBUTION_BASE_PATH:-${PULP_REPOSITORY}}"
-REPOSITORY_URL="${PULP_BASE_URL}${PULP_API_ROOT}pypi/${PULP_DOMAIN}/${PULP_DISTRIBUTION_BASE_PATH}/simple/"
-
-# base query for curling pulp api for a public- domain
+# Base API URL for direct Pulp API queries.
 PULP_QUERY_BASE="${PULP_BASE_URL}${PULP_API_ROOT}pulp/${PULP_DOMAIN}/api/v3/"
-AUTH=(-u "${TWINE_USERNAME}:${TWINE_PASSWORD}")
+
+# Pulp CLI's api-root is the path before the optional domain and api/v3.
+PULP_CLI_API_ROOT="${PULP_API_ROOT%/}/pulp/"
+
+toml_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\b'/\\b}"
+    value="${value//$'\f'/\\f}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "${value}"
+}
+
+curl_config_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "${value}"
+}
+
+umask 077
+PULP_CONFIG="$(mktemp)"
+CURL_CONFIG="$(mktemp)"
+trap 'rm -f "${PULP_CONFIG}" "${CURL_CONFIG}"' EXIT
+
+cat > "${PULP_CONFIG}" <<EOF
+[cli]
+base_url = "$(toml_escape "${PULP_BASE_URL%/}")"
+api_root = "$(toml_escape "${PULP_CLI_API_ROOT}")"
+domain = "$(toml_escape "${PULP_DOMAIN}")"
+username = "$(toml_escape "${TWINE_USERNAME}")"
+password = "$(toml_escape "${TWINE_PASSWORD}")"
+EOF
+
+cat > "${CURL_CONFIG}" <<EOF
+user = "$(curl_config_escape "${TWINE_USERNAME}"):$(curl_config_escape "${TWINE_PASSWORD}")"
+EOF
 
 # get most recent repository version for PULP_REPOSITORY
-PULP_REPOSITORY_VERSION=$( curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" "${PULP_QUERY_BASE}repositories/python/python/" \
-    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href" )
+PULP_REPOSITORIES=$( curl --fail -sS --retry 3 --max-time 30 \
+    --config "${CURL_CONFIG}" -G \
+    "${PULP_QUERY_BASE}repositories/python/python/" \
+    --data-urlencode "name=${PULP_REPOSITORY}" )
+PULP_REPOSITORY_VERSION=$( printf '%s' "${PULP_REPOSITORIES}" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .latest_version_href // empty" )
+PULP_REPOSITORY_HREF=$( printf '%s' "${PULP_REPOSITORIES}" \
+    | jq -r ".results[] | select(.name==\"${PULP_REPOSITORY}\") | .pulp_href // empty" )
 
-if [[ -z "${PULP_REPOSITORY_VERSION}" ]]; then
+if [[ -z "${PULP_REPOSITORY_VERSION}" || -z "${PULP_REPOSITORY_HREF}" ]]; then
     echo "ERROR: Could not find repository '${PULP_REPOSITORY}' in Pulp (query: ${PULP_QUERY_BASE}repositories/python/python/)"
     exit 1
 fi
+
+PULP_DISTRIBUTIONS=$( curl --fail -sS --retry 3 --max-time 30 \
+    --config "${CURL_CONFIG}" -G \
+    "${PULP_QUERY_BASE}distributions/python/pypi/" \
+    --data-urlencode "repository=${PULP_REPOSITORY_HREF}" )
+PULP_DISTRIBUTION_COUNT=$( printf '%s' "${PULP_DISTRIBUTIONS}" | jq '.results | length' )
+
+if (( PULP_DISTRIBUTION_COUNT == 0 )); then
+    echo "ERROR: Repository '${PULP_REPOSITORY}' has no Python distributions"
+    exit 1
+fi
+
+if [[ -n "${PULP_DISTRIBUTION_BASE_PATH:-}" ]]; then
+    PULP_INDEX_URLS=$( printf '%s' "${PULP_DISTRIBUTIONS}" \
+        | jq -r --arg base_path "${PULP_DISTRIBUTION_BASE_PATH}" \
+            '[.results[] | select(.base_path == $base_path) |
+                if .base_url == null or .base_url == "" then
+                    error("distribution has no base_url")
+                else
+                    (.base_url | rtrimstr("/")) + "/simple/"
+                end] | sort[]' )
+
+    if [[ -z "${PULP_INDEX_URLS}" ]]; then
+        echo "ERROR: Distribution '${PULP_DISTRIBUTION_BASE_PATH}' is not associated with repository '${PULP_REPOSITORY}'"
+        exit 1
+    fi
+else
+    PULP_INDEX_URLS=$( printf '%s' "${PULP_DISTRIBUTIONS}" \
+        | jq -r '[.results[] |
+            if .base_url == null or .base_url == "" then
+                error("distribution has no base_url")
+            else
+                (.base_url | rtrimstr("/")) + "/simple/"
+            end] | sort[]' )
+fi
+
+if [[ -z "${PULP_INDEX_URLS}" ]]; then
+    echo "ERROR: Repository '${PULP_REPOSITORY}' has distributions without a base URL"
+    exit 1
+fi
+
+PULP_INDEX_URL_COUNT=$( printf '%s\n' "${PULP_INDEX_URLS}" | wc -l )
 
 shopt -s nullglob
 
@@ -36,7 +122,7 @@ for file in *.whl *.tar.gz; do
     fi
 
     echo "Checking if ${file} exists in Pulp..."
-    WHEEL_EXISTS=$(curl --fail -sS --retry 3 --max-time 30 "${AUTH[@]}" -G \
+    WHEEL_EXISTS=$(curl --fail -sS --retry 3 --max-time 30 --config "${CURL_CONFIG}" -G \
         "${PULP_QUERY_BASE}content/python/packages/" \
         --data-urlencode "filename=${file}" \
         --data-urlencode "repository_version=${PULP_REPOSITORY_VERSION}" \
@@ -47,7 +133,13 @@ for file in *.whl *.tar.gz; do
         continue
     fi
 
-    if twine upload --non-interactive --verbose --disable-progress-bar --repository-url "${REPOSITORY_URL}" --attestations $file "${file}.attestation"; then
+    if pulp \
+        --config "${PULP_CONFIG}" \
+        python content create \
+        --relative-path "${file}" \
+        --file "${file}" \
+        --repository "${PULP_REPOSITORY_HREF}" \
+        --attestation "@${file}.attestation"; then
         echo "Uploaded $file with attestation."
         uploaded+=("$file")
     else
@@ -81,7 +173,14 @@ for f in "${failed[@]+"${failed[@]}"}"; do
     echo "  - $f"
 done
 echo ""
-echo "Index URL: ${REPOSITORY_URL}"
+if (( PULP_INDEX_URL_COUNT == 1 )); then
+    echo "Index URL: ${PULP_INDEX_URLS}"
+else
+    echo "Index URLs:"
+    while IFS= read -r index_url; do
+        echo "  - ${index_url}"
+    done < <(printf '%s\n' "${PULP_INDEX_URLS}")
+fi
 
 if [[ ${#failed[@]} -gt 0 || ${#skipped_no_attestation[@]} -gt 0 ]]; then
     echo "ERROR: ${#failed[@]} upload(s) failed, ${#skipped_no_attestation[@]} file(s) missing attestation"
