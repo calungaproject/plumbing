@@ -26,9 +26,10 @@ resolver](https://tekton.dev/docs/pipelines/bundle-resolver/). This allows us to
 a [Tekton Bundle](https://tekton.dev/docs/pipelines/tekton-bundle-contracts/) (an OCI artifact) and
 reference the `Task` from the `Pipeline` via an image reference.
 
-`build-pipeline.yaml` is used for building _traditional_ container images via a Containerfile. These
-are images that can be executed with podman or docker. The [builder](/builder/) image is one of
-those.
+`build-pipeline.yaml` is used for building multi-arch container images via a Containerfile
+(matrixed `buildah-remote-oci-ta` + OCI image index). These are images that can be executed with
+podman or docker. The [builder](/builder/) image is one of those. Pass `build-platforms` from the
+PipelineRun (defaults to `linux/x86_64` only).
 
 `bundle-build-pipeline.yaml` is used for building a Tekton bundle. This `Pipeline` produces an OCI
 artifact that contains Task and/or Pipeline definitions.
