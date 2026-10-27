@@ -85,54 +85,125 @@ assert_fail "npm-pulp-upload fails with no .tgz" \
       PULP_REPOSITORY="r" \
       npm-pulp-upload
 
-# --- pulp-upload repository URL derivation and distribution path ---
+# --- pulp-upload CLI arguments and distribution index URL ---
 upload_stub_bin="${tmpdir}/upload-stubs"
 mkdir -p "${upload_stub_bin}"
-upload_log="${tmpdir}/twine-upload.log"
-cat > "${upload_stub_bin}/twine" <<'EOF'
+upload_log="${tmpdir}/pulp-upload.log"
+pulp_upload_output="${tmpdir}/pulp-upload.out"
+curl_log="${tmpdir}/pulp-upload-curl.log"
+pulp_config_copy="${tmpdir}/pulp-upload-pulp-config.toml"
+curl_config_copy="${tmpdir}/pulp-upload-curl-config"
+export pulp_distributions_json='{"results":[{"base_path":"python-dist","base_url":"https://example.invalid/api/pypi/d/python-dist/"},{"base_path":"python-dist-landing","base_url":"https://example.invalid/api/pypi/d/python-dist-landing/"}]}'
+cat > "${upload_stub_bin}/pulp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "${TWINE_LOG_PATH}"
+if [[ "${1}" == "--config" ]]; then
+  cp "${2}" "${PULP_CONFIG_COPY}"
+fi
+printf '%s\n' "$*" >> "${PULP_LOG_PATH}"
 exit 0
 EOF
 cat > "${upload_stub_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "${PULP_CURL_LOG_PATH}"
+config_path=""
+for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--config" ]]; then
+    next=$((i + 1))
+    config_path="${!next}"
+    break
+  fi
+done
+[[ -n "${config_path}" ]] && cp "${config_path}" "${PULP_CURL_CONFIG_COPY}"
 if [[ "$*" == *"/content/python/packages"* ]]; then
   echo '{"results":[]}'
   exit 0
 fi
+if [[ "$*" == *"/distributions/python/pypi/"* ]]; then
+  printf '%s\n' "${PULP_DISTRIBUTIONS_JSON:-${pulp_distributions_json}}"
+  exit 0
+fi
 if [[ "$*" == *"/repositories/python/python/"* ]]; then
-  echo '{"results":[{"name":"r","latest_version_href":"/api/pulp/d/api/v3/repositories/python/python/r/versions/1/"}]}'
+  echo '{"results":[{"name":"r","pulp_href":"/api/pulp/d/api/v3/repositories/python/python/r/","latest_version_href":"/api/pulp/d/api/v3/repositories/python/python/r/versions/1/"}]}'
   exit 0
 fi
 echo "mock curl: unhandled: $*" >&2
 exit 22
 EOF
-chmod +x "${upload_stub_bin}/twine" "${upload_stub_bin}/curl"
+chmod +x "${upload_stub_bin}/pulp" "${upload_stub_bin}/curl"
 
 pulp_upload_files="${tmpdir}/pulp-upload-files"
 mkdir -p "${pulp_upload_files}"
 printf 'wheel-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl"
 printf 'attestation-data' > "${pulp_upload_files}/demo-1.0.0-py3-none-any.whl.attestation"
 
-: > "${upload_log}"
-assert_ok "pulp-upload uses repository as distribution path by default" \
-  env PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" TWINE_LOG_PATH="${upload_log}" \
-      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
-      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
-      PULP_REPOSITORY="r" pulp-upload
-assert_ok "pulp-upload default URL passed to twine" \
-  grep -Fq -- '--repository-url https://example.invalid/api/pypi/d/r/simple/' "${upload_log}"
+run_pulp_upload() {
+  env "$@" pulp-upload > "${pulp_upload_output}"
+}
 
 : > "${upload_log}"
-assert_ok "pulp-upload uses distribution base path when present" \
-  env PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" TWINE_LOG_PATH="${upload_log}" \
+assert_ok "pulp-upload succeeds with pulp-cli" \
+  run_pulp_upload PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" \
+      PULP_LOG_PATH="${upload_log}" PULP_CURL_LOG_PATH="${curl_log}" \
+      PULP_CONFIG_COPY="${pulp_config_copy}" PULP_CURL_CONFIG_COPY="${curl_config_copy}" \
       FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
       PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
-      PULP_REPOSITORY="r" PULP_DISTRIBUTION_BASE_PATH="python-dist" pulp-upload
-assert_ok "pulp-upload distribution URL passed to twine" \
-  grep -Fq -- '--repository-url https://example.invalid/api/pypi/d/python-dist/simple/' "${upload_log}"
+      PULP_REPOSITORY="r"
+assert_ok "pulp-upload filters repository lookup by name" \
+  grep -Fq -- '--data-urlencode name=r' "${curl_log}"
+assert_ok "pulp-upload filters distribution lookup by repository" \
+  grep -Fq -- '--data-urlencode repository=/api/pulp/d/api/v3/repositories/python/python/r/' "${curl_log}"
+assert_ok "pulp-upload uses a protected curl credential config" \
+  grep -Fq -- 'user = "user:pass"' "${curl_config_copy}"
+assert_ok "pulp-upload does not pass credentials on the curl command line" \
+  bash -c '! grep -Eq "(^|[[:space:]])-u([[:space:]]|$)|--user" "${1}" && ! grep -Fq "user:pass" "${1}"' _ "${curl_log}"
+assert_eq "$(stat -c '%a' "${curl_config_copy}")" "600" "curl credential config is mode 0600"
+assert_ok "pulp-upload uses a protected pulp-cli config" \
+  grep -Fq -- '--config' "${upload_log}"
+assert_ok "pulp-upload pulp-cli config contains the API endpoint" \
+  grep -Fq -- 'api_root = "/api/pulp/"' "${pulp_config_copy}"
+assert_ok "pulp-upload pulp-cli config contains the domain" \
+  grep -Fq -- 'domain = "d"' "${pulp_config_copy}"
+assert_ok "pulp-upload pulp-cli config contains the credentials" \
+  grep -Fq -- 'username = "user"' "${pulp_config_copy}" \
+    && grep -Fq -- 'password = "pass"' "${pulp_config_copy}"
+assert_ok "pulp-upload does not pass credentials on the pulp-cli command line" \
+  bash -c '[[ "$(cat "${1}")" != *"--password"* && "$(cat "${1}")" != *"--username"* ]]' _ "${upload_log}"
+assert_eq "$(stat -c '%a' "${pulp_config_copy}")" "600" "pulp-cli config is mode 0600"
+assert_ok "pulp-upload sends package, repository, and attestation to pulp-cli" \
+  grep -Fq -- 'python content create --relative-path demo-1.0.0-py3-none-any.whl --file demo-1.0.0-py3-none-any.whl --repository /api/pulp/d/api/v3/repositories/python/python/r/ --attestation @demo-1.0.0-py3-none-any.whl.attestation' "${upload_log}"
+assert_ok "pulp-upload prints all associated distribution index URLs by default" \
+  grep -Fq -- 'Index URLs:' "${pulp_upload_output}" \
+    && grep -Fq -- '  - https://example.invalid/api/pypi/d/python-dist/simple/' "${pulp_upload_output}" \
+    && grep -Fq -- '  - https://example.invalid/api/pypi/d/python-dist-landing/simple/' "${pulp_upload_output}"
+
+: > "${upload_log}"
+assert_ok "pulp-upload succeeds with a custom distribution base path" \
+  run_pulp_upload PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" \
+      PULP_LOG_PATH="${upload_log}" PULP_CURL_LOG_PATH="${curl_log}" \
+      PULP_CONFIG_COPY="${pulp_config_copy}" PULP_CURL_CONFIG_COPY="${curl_config_copy}" \
+      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
+      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
+      PULP_REPOSITORY="r" PULP_DISTRIBUTION_BASE_PATH="python-dist"
+assert_ok "pulp-upload prints configured distribution index URL" \
+  grep -Fq -- 'Index URL: https://example.invalid/api/pypi/d/python-dist/simple/' "${pulp_upload_output}"
+
+assert_fail "pulp-upload fails when the repository has no distributions" \
+  run_pulp_upload PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" \
+      PULP_LOG_PATH="${upload_log}" PULP_CURL_LOG_PATH="${curl_log}" \
+      PULP_CONFIG_COPY="${pulp_config_copy}" PULP_CURL_CONFIG_COPY="${curl_config_copy}" \
+      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
+      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
+      PULP_REPOSITORY="r" PULP_DISTRIBUTIONS_JSON='{"results":[]}'
+
+assert_fail "pulp-upload fails for an unassociated distribution override" \
+  run_pulp_upload PATH="${upload_stub_bin}:${SCRIPTS}:${PATH}" \
+      PULP_LOG_PATH="${upload_log}" PULP_CURL_LOG_PATH="${curl_log}" \
+      PULP_CONFIG_COPY="${pulp_config_copy}" PULP_CURL_CONFIG_COPY="${curl_config_copy}" \
+      FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
+      PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
+      PULP_REPOSITORY="r" PULP_DISTRIBUTION_BASE_PATH="missing-dist"
 
 # --- npm-release-upload missing secret fails ---
 sec="${tmpdir}/secret-empty"
