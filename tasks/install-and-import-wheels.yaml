@@ -112,8 +112,8 @@ spec:
 
         # Runtime dependencies of the packages under test. Package names differ
         # by manager; the checks below use tool names and sonames, which do not.
-        RUNTIME_DEPS_DNF=(git libgomp)
-        RUNTIME_DEPS_APT=(git libgomp1 libgobject-2.0-0)
+        RUNTIME_DEPS_DNF=(git libgomp python3-rpm)
+        RUNTIME_DEPS_APT=(git libgomp1 libgobject-2.0-0 python3-rpm)
         RUNTIME_TOOLS=(git)
         RUNTIME_LIBS=(libgomp.so.1 libgobject-2.0.so.0)
 
