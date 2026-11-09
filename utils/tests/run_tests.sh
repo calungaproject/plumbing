@@ -101,6 +101,7 @@ if [[ "${1}" == "--config" ]]; then
   cp "${2}" "${PULP_CONFIG_COPY}"
 fi
 printf '%s\n' "$*" >> "${PULP_LOG_PATH}"
+printf 'XDG_CACHE_HOME=%s\n' "${XDG_CACHE_HOME:-}" >> "${PULP_LOG_PATH}"
 exit 0
 EOF
 cat > "${upload_stub_bin}/curl" <<'EOF'
@@ -149,7 +150,9 @@ assert_ok "pulp-upload succeeds with pulp-cli" \
       PULP_CONFIG_COPY="${pulp_config_copy}" PULP_CURL_CONFIG_COPY="${curl_config_copy}" \
       FILES_DIR="${pulp_upload_files}" TWINE_USERNAME="user" TWINE_PASSWORD="pass" \
       PULP_BASE_URL="https://example.invalid" PULP_API_ROOT="/api/" PULP_DOMAIN="d" \
-      PULP_REPOSITORY="r"
+      PULP_REPOSITORY="r" HOME=/ XDG_CACHE_HOME=
+assert_ok "pulp-upload uses a writable pulp-cli cache with an unusable HOME" \
+  grep -Fxq 'XDG_CACHE_HOME=/tmp/pulp-cli-cache' "${upload_log}"
 assert_ok "pulp-upload filters repository lookup by name" \
   grep -Fq -- '--data-urlencode name=r' "${curl_log}"
 assert_ok "pulp-upload filters distribution lookup by repository" \
