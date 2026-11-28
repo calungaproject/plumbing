@@ -308,9 +308,9 @@ packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
     # via pulp-glue
-pulp-cli==0.41.1 \
-    --hash=sha256:25b41005a8532fa32c4661cc440e8b10aa83a156df3bdf41e11a1d5c82c773d4 \
-    --hash=sha256:2bf7e3082a9b6eab7f48573601a7fbe57bb401c1cdcbfb65fcc6f26b525ff419
+pulp-cli==0.41.2 \
+    --hash=sha256:7bd4fae69655b106a890ffe73ff69b3875969c82d7d2b36b6866e844a5013b3c \
+    --hash=sha256:a455855d2b8f10c78707ec2ee3fc93e750f01cd39c28ddec31332955d639dc9b
     # via -r utils/requirements.in
 pulp-glue==0.41.1 \
     --hash=sha256:52e801c76cbf20bc873d298c408a8d7297ef0bd5312302bc61cbb3e40837c253 \
