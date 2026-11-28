@@ -312,9 +312,9 @@ pulp-cli==0.41.1 \
     --hash=sha256:25b41005a8532fa32c4661cc440e8b10aa83a156df3bdf41e11a1d5c82c773d4 \
     --hash=sha256:2bf7e3082a9b6eab7f48573601a7fbe57bb401c1cdcbfb65fcc6f26b525ff419
     # via -r utils/requirements.in
-pulp-glue==0.41.1 \
-    --hash=sha256:52e801c76cbf20bc873d298c408a8d7297ef0bd5312302bc61cbb3e40837c253 \
-    --hash=sha256:bb68761065e7344a40b2fef6ffff7135d94add5dff017b54d22fd111730f2877
+pulp-glue==0.41.2 \
+    --hash=sha256:aab9960c1b84507c5925526342806b2b8f8a383f10cce77b007a05907ba0df86 \
+    --hash=sha256:b1bff1177d694775b06377fdb27264d02b3c41390a43bee4fb4d227cdfedbffe
     # via pulp-cli
 pydantic==2.14.1 \
     --hash=sha256:9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454 \
